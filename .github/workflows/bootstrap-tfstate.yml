@@ -91,7 +91,7 @@ jobs:
           echo "principal_id=$PRINCIPAL_ID"       >> "$GITHUB_OUTPUT"
 
       - name: Azure login (OIDC)
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id:       ${{ steps.params.outputs.azure_client_id }}
           tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
