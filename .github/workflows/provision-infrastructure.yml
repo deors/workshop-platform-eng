@@ -115,10 +115,11 @@ jobs:
             exit 1
           fi
 
-          # Mask sensitive values in log output
-          echo "::add-mask::$SUBSCRIPTION_ID"
-          echo "::add-mask::$AZURE_CLIENT_ID"
-          echo "::add-mask::$AZURE_TENANT_ID"
+          # Note: subscription_id, azure_client_id, azure_tenant_id are GUIDs that
+          # identify Azure resources/principals. They are not secrets in an OIDC flow
+          # (security comes from the federated credential subject claim). They are
+          # NOT masked here because GitHub Actions blanks masked values when they
+          # flow through job outputs to downstream jobs.
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
           echo "subscription_id=$SUBSCRIPTION_ID"               >> "$GITHUB_OUTPUT"

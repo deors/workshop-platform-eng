@@ -80,9 +80,8 @@ jobs:
             exit 1
           fi
 
-          echo "::add-mask::$SUBSCRIPTION_ID"
-          echo "::add-mask::$AZURE_CLIENT_ID"
-          echo "::add-mask::$AZURE_TENANT_ID"
+          # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
+          # mask them — masking blanks values when they pass through step outputs.
 
           echo "app_name=$APP_NAME"               >> "$GITHUB_OUTPUT"
           echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
