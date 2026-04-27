@@ -277,6 +277,11 @@ jobs:
     # authenticate without --backend-config / provider-block boilerplate.
     env:
       ARM_USE_OIDC:        "true"
+      # Tell the backend to use Azure AD against the blob endpoint, not shared
+      # keys. The state SA is created with --allow-shared-key-access=false, so
+      # without this the backend hits 403 KeyBasedAuthenticationNotPermitted
+      # even though the OIDC token itself is valid.
+      ARM_USE_AZUREAD:     "true"
       ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
       ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
       ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
@@ -325,7 +330,8 @@ jobs:
             -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
             -backend-config="container_name=tfstate" \
             -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
-            -backend-config="use_oidc=true"
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
 
       - name: Terraform validate
         working-directory: terraform/environments/${{ matrix.environment }}

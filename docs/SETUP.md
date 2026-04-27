@@ -262,6 +262,13 @@ If your threat model requires network-level isolation, switch to a Private
 Endpoint and run the workflows on a self-hosted runner inside the VNet. That
 trade-off is intentionally out of scope for the workshop baseline.
 
+> **Backend implication.** Because the SA forbids shared-key auth, the
+> azurerm backend must also be told to use Azure AD against the blob endpoint
+> (not just for credential acquisition). The workflow sets both
+> `use_oidc=true` and `use_azuread_auth=true` (plus `ARM_USE_AZUREAD=true`).
+> Without the second flag, `terraform init` hits `403 KeyBasedAuthenticationNotPermitted`
+> even with a valid OIDC token.
+
 ---
 
 ## Step 6 — Handle GitHub Advanced Security (optional)
