@@ -271,6 +271,16 @@ jobs:
         environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
     environment: ${{ matrix.environment }}   # enables GitHub environment protection rules
 
+    # The azurerm backend and provider read ARM_* env vars for OIDC auth.
+    # azure/login sets AZURE_* (different prefix); we surface ARM_* here so
+    # `terraform init` (backend) and `terraform plan` (provider) can both
+    # authenticate without --backend-config / provider-block boilerplate.
+    env:
+      ARM_USE_OIDC:        "true"
+      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v5
