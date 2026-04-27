@@ -1,0 +1,28 @@
+# Checkov configuration for Terraform – Azure Web App (container-based)
+# Docs: https://www.checkov.io/2.Basics/CLI%20Command%20Reference.html
+
+# Enforce hard-fail by default; CI passes --soft-fail=false explicitly.
+# To permit a new check during a migration, add it here with a comment
+# explaining why and a tracking issue reference.
+
+compact: false
+download_external_modules: false
+evaluate_variables: true
+
+skip-check:
+  # ── Language-version checks – not applicable for container deployments ──────
+  - CKV_AZURE_80   # PHP version: managed by the container image, not the App Service runtime
+  - CKV_AZURE_81   # Python version: same rationale
+  - CKV_AZURE_82   # Java version: same rationale
+  - CKV_AZURE_84   # .NET version: same rationale
+
+  # ── Azure Files storage – not applicable for stateless containers ───────────
+  - CKV_AZURE_88   # "Ensure App Service uses Azure Files": containers are stateless; no persistent mount needed
+
+  # ── Checks covered by architecture decisions, not resource-level config ─────
+  # CKV_AZURE_17 (client certificates) is intentionally NOT skipped.
+  # If your application does not require mutual TLS, add it here and document why:
+  # - CKV_AZURE_17  # Client certificates: add your reason and tracking issue
+
+  # CKV_AZURE_13 / CKV_AZURE_16 (AAD auth / Easy Auth) are NOT skipped.
+  # Consider enabling Easy Auth in the webapp module if your app requires it.

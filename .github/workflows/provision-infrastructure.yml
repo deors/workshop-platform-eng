@@ -1,0 +1,353 @@
+name: Provision Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod, all]
+        required: true
+        default: dev
+      app_name:
+        description: Application name (short, lowercase, no spaces)
+        type: string
+        required: true
+      subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      container_image:
+        description: "Container image reference (e.g. myregistry.azurecr.io/myapp:latest)"
+        type: string
+        required: true
+      container_registry_url:
+        description: Container registry URL (leave empty for public Docker Hub images)
+        type: string
+        required: false
+        default: ""
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+
+  repository_dispatch:
+    types:
+      - provision-infrastructure
+      - update-infrastructure
+
+# Permissions required for OIDC login and SARIF upload to Security tab
+permissions:
+  id-token:        write
+  contents:        read
+  security-events: write
+
+concurrency:
+  group: provision-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
+  cancel-in-progress: false   # never cancel an in-flight provision
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Resolve & validate inputs from either trigger source
+  # ────────────────────────────────────────────────────────────────────────────
+  resolve-inputs:
+    name: Resolve inputs
+    runs-on: ubuntu-latest
+    outputs:
+      environments:           ${{ steps.matrix.outputs.environments }}
+      app_name:               ${{ steps.params.outputs.app_name }}
+      subscription_id:        ${{ steps.params.outputs.subscription_id }}
+      container_image:        ${{ steps.params.outputs.container_image }}
+      container_registry_url: ${{ steps.params.outputs.container_registry_url }}
+      azure_client_id:        ${{ steps.params.outputs.azure_client_id }}
+      azure_tenant_id:        ${{ steps.params.outputs.azure_tenant_id }}
+      tfstate_storage_account: ${{ steps.tfstate_names.outputs.storage_account }}
+      tfstate_resource_group:  ${{ steps.tfstate_names.outputs.resource_group }}
+
+    steps:
+      - name: Extract and validate parameters
+        id: params
+        env:
+          # workflow_dispatch values
+          WD_ENV:      ${{ github.event.inputs.environment }}
+          WD_APP:      ${{ github.event.inputs.app_name }}
+          WD_SUB:      ${{ github.event.inputs.subscription_id }}
+          WD_IMAGE:    ${{ github.event.inputs.container_image }}
+          WD_REGISTRY:   ${{ github.event.inputs.container_registry_url }}
+          WD_CLIENT_ID:  ${{ github.event.inputs.azure_client_id }}
+          WD_TENANT_ID:  ${{ github.event.inputs.azure_tenant_id }}
+          # repository_dispatch values (client_payload)
+          RD_ENV:        ${{ github.event.client_payload.environment }}
+          RD_APP:        ${{ github.event.client_payload.app_name }}
+          RD_SUB:        ${{ github.event.client_payload.subscription_id }}
+          RD_IMAGE:      ${{ github.event.client_payload.container_image }}
+          RD_REGISTRY:   ${{ github.event.client_payload.container_registry_url }}
+          RD_CLIENT_ID:  ${{ github.event.client_payload.azure_client_id }}
+          RD_TENANT_ID:  ${{ github.event.client_payload.azure_tenant_id }}
+        run: |
+          APP_NAME="${WD_APP:-$RD_APP}"
+          SUBSCRIPTION_ID="${WD_SUB:-$RD_SUB}"
+          CONTAINER_IMAGE="${WD_IMAGE:-$RD_IMAGE}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
+          ENVIRONMENT="${WD_ENV:-$RD_ENV}"
+          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
+          AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
+          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
+          [[ -z "$CONTAINER_IMAGE" ]] && MISSING+=(container_image)
+          [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
+          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
+          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          # Validate app_name: lowercase alphanumeric + hyphens only
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3–22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+
+          # Mask sensitive values in log output
+          echo "::add-mask::$SUBSCRIPTION_ID"
+          echo "::add-mask::$AZURE_CLIENT_ID"
+          echo "::add-mask::$AZURE_TENANT_ID"
+
+          echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
+          echo "subscription_id=$SUBSCRIPTION_ID"               >> "$GITHUB_OUTPUT"
+          echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
+          echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
+
+      - name: Derive tfstate resource names
+        id: tfstate_names
+        env:
+          APP_NAME:        ${{ steps.params.outputs.app_name }}
+          SUBSCRIPTION_ID: ${{ steps.params.outputs.subscription_id }}
+        run: |
+          # Must match the formula in scripts/bootstrap-tfstate.sh exactly
+          APP_SHORT=$(echo "$APP_NAME"        | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+          SUB_SHORT=$(echo "$SUBSCRIPTION_ID" | tr -d '-'                               | cut -c1-8)
+          echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "resource_group=rg-tfstate-${APP_NAME}"        >> "$GITHUB_OUTPUT"
+
+      - name: Build environment matrix
+        id: matrix
+        env:
+          ENVIRONMENT: ${{ steps.params.outputs.environment }}
+        run: |
+          if [[ "$ENVIRONMENT" == "all" ]]; then
+            echo 'environments=["dev","staging","prod"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "environments=[\"$ENVIRONMENT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        env:
+          APP_NAME:    ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT: ${{ steps.params.outputs.environment }}
+          IMAGE:       ${{ steps.params.outputs.container_image }}
+          TRIGGER:     ${{ github.event_name }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Provision Infrastructure
+
+          | Parameter   | Value         |
+          |-------------|---------------|
+          | Trigger     | \`$TRIGGER\`  |
+          | App name    | \`$APP_NAME\` |
+          | Environment | \`$ENVIRONMENT\` |
+          | Image       | \`$IMAGE\`    |
+          EOF
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Checkov – security and compliance scan over all Terraform code
+  # ────────────────────────────────────────────────────────────────────────────
+  checkov:
+    name: Checkov scan
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory:             terraform/
+          framework:             terraform
+          config_file:           .checkov.yaml
+          output_format:         cli,sarif
+          output_file_path:      console,checkov-results.sarif
+          download_external_modules: false
+          soft_fail:             false
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()   # upload even when checkov fails so findings are visible
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file:      checkov-results.sarif
+          category:        checkov-terraform
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. Terraform format check (once, not per-environment)
+  # ────────────────────────────────────────────────────────────────────────────
+  fmt:
+    name: Terraform fmt check
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform/
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 4. Bootstrap remote state storage (idempotent – safe to run every time)
+  # ────────────────────────────────────────────────────────────────────────────
+  bootstrap-tfstate:
+    name: Bootstrap tfstate storage
+    needs: [resolve-inputs, checkov, fmt]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+      - name: Run bootstrap script
+        env:
+          APP_NAME:        ${{ needs.resolve-inputs.outputs.app_name }}
+          SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
+        run: |
+          bash scripts/bootstrap-tfstate.sh \
+            --app-name        "$APP_NAME" \
+            --subscription-id "$SUBSCRIPTION_ID"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 5. Terraform plan – one job per target environment, after scan passes
+  # ────────────────────────────────────────────────────────────────────────────
+  plan:
+    name: "Plan · ${{ matrix.environment }}"
+    needs: [resolve-inputs, checkov, fmt, bootstrap-tfstate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # plan remaining envs even if one fails
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    environment: ${{ matrix.environment }}   # enables GitHub environment protection rules
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Generate tfvars
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
+          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.subscription_id }}
+          CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
+          CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
+        run: |
+          # Write tfvars using printf to avoid shell interpolation of HCL syntax
+          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
+          printf 'app_name               = "%s"\n' "$APP_NAME"               >> terraform.tfvars
+          printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
+          printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
+
+      - name: Terraform init
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
+          RESOURCE_GROUP:  ${{ needs.resolve-inputs.outputs.tfstate_resource_group }}
+          ENVIRONMENT:     ${{ matrix.environment }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="resource_group_name=${RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="use_oidc=true"
+
+      - name: Terraform validate
+        working-directory: terraform/environments/${{ matrix.environment }}
+        run: terraform validate
+
+      - name: Terraform plan
+        id: plan
+        working-directory: terraform/environments/${{ matrix.environment }}
+        run: |
+          terraform plan \
+            -input=false \
+            -out=tfplan \
+            2>&1 | tee plan-output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Write plan summary
+        if: always()
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          {
+            echo "## Plan · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            echo "<details><summary>Show plan output</summary>"
+            echo ""
+            echo '```'
+            cat plan-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name:              tfplan-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          retention-days:    7
+          if-no-files-found: error
+          path: |
+            terraform/environments/${{ matrix.environment }}/tfplan
+            terraform/environments/${{ matrix.environment }}/plan-output.txt

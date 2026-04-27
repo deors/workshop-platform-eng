@@ -1,0 +1,9 @@
+subscription_id        = "00000000-0000-0000-0000-000000000000"
+location               = "westeurope"
+app_name               = "myapp"
+container_image        = "myregistry.azurecr.io/myapp:latest"
+container_registry_url = "myregistry.azurecr.io"
+
+app_settings = {
+  ASPNETCORE_ENVIRONMENT = "Development"
+}

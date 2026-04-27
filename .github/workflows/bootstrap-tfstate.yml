@@ -1,0 +1,156 @@
+name: Bootstrap Terraform State
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name (must match the value used in provision-infrastructure)
+        type: string
+        required: true
+      subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal used for OIDC login
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      location:
+        description: Azure region for the tfstate storage account
+        type: string
+        required: false
+        default: westeurope
+      principal_id:
+        description: "Object ID to assign Storage Blob Data Contributor (optional — leave empty to skip RBAC)"
+        type: string
+        required: false
+        default: ""
+
+  repository_dispatch:
+    types:
+      - bootstrap-tfstate
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Bootstrap tfstate storage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve inputs
+        id: params
+        env:
+          WD_APP:          ${{ github.event.inputs.app_name }}
+          WD_SUB:          ${{ github.event.inputs.subscription_id }}
+          WD_CLIENT_ID:    ${{ github.event.inputs.azure_client_id }}
+          WD_TENANT_ID:    ${{ github.event.inputs.azure_tenant_id }}
+          WD_LOCATION:     ${{ github.event.inputs.location }}
+          WD_PRINCIPAL_ID: ${{ github.event.inputs.principal_id }}
+          RD_APP:          ${{ github.event.client_payload.app_name }}
+          RD_SUB:          ${{ github.event.client_payload.subscription_id }}
+          RD_CLIENT_ID:    ${{ github.event.client_payload.azure_client_id }}
+          RD_TENANT_ID:    ${{ github.event.client_payload.azure_tenant_id }}
+          RD_LOCATION:     ${{ github.event.client_payload.location }}
+          RD_PRINCIPAL_ID: ${{ github.event.client_payload.principal_id }}
+        run: |
+          APP_NAME="${WD_APP:-$RD_APP}"
+          SUBSCRIPTION_ID="${WD_SUB:-$RD_SUB}"
+          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
+          AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
+          LOCATION="${WD_LOCATION:-${RD_LOCATION:-westeurope}}"
+          PRINCIPAL_ID="${WD_PRINCIPAL_ID:-${RD_PRINCIPAL_ID:-}}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
+          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
+          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
+          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          echo "::add-mask::$SUBSCRIPTION_ID"
+          echo "::add-mask::$AZURE_CLIENT_ID"
+          echo "::add-mask::$AZURE_TENANT_ID"
+
+          echo "app_name=$APP_NAME"               >> "$GITHUB_OUTPUT"
+          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID" >> "$GITHUB_OUTPUT"
+          echo "location=$LOCATION"               >> "$GITHUB_OUTPUT"
+          echo "principal_id=$PRINCIPAL_ID"       >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ steps.params.outputs.azure_client_id }}
+          tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
+          subscription-id: ${{ steps.params.outputs.subscription_id }}
+
+      - name: Run bootstrap script
+        id: bootstrap
+        env:
+          APP_NAME:        ${{ steps.params.outputs.app_name }}
+          SUBSCRIPTION_ID: ${{ steps.params.outputs.subscription_id }}
+          LOCATION:        ${{ steps.params.outputs.location }}
+          PRINCIPAL_ID:    ${{ steps.params.outputs.principal_id }}
+        run: |
+          ARGS=(
+            --app-name        "$APP_NAME"
+            --subscription-id "$SUBSCRIPTION_ID"
+            --location        "$LOCATION"
+          )
+          [[ -n "$PRINCIPAL_ID" ]] && ARGS+=(--principal-id "$PRINCIPAL_ID")
+
+          # Capture stdout (the KEY=VALUE output lines) into a variable
+          OUTPUT=$(bash scripts/bootstrap-tfstate.sh "${ARGS[@]}")
+          echo "$OUTPUT"
+
+          # Parse outputs and forward to GITHUB_OUTPUT
+          while IFS='=' read -r key value; do
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done <<< "$OUTPUT"
+
+      - name: Write summary
+        env:
+          APP_NAME: ${{ steps.params.outputs.app_name }}
+          RG:       ${{ steps.bootstrap.outputs.TFSTATE_RESOURCE_GROUP }}
+          SA:       ${{ steps.bootstrap.outputs.TFSTATE_STORAGE_ACCOUNT }}
+          CT:       ${{ steps.bootstrap.outputs.TFSTATE_CONTAINER }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Terraform State Storage
+
+          | Resource        | Name          |
+          |-----------------|---------------|
+          | Resource Group  | \`$RG\`       |
+          | Storage Account | \`$SA\`       |
+          | Container       | \`$CT\`       |
+
+          ### Backend config for \`$APP_NAME\`
+
+          Use these values in \`terraform init\` or copy to \`backend.tf\`:
+
+          \`\`\`hcl
+          terraform {
+            backend "azurerm" {
+              resource_group_name  = "$RG"
+              storage_account_name = "$SA"
+              container_name       = "$CT"
+              key                  = "<environment>/terraform.tfstate"
+              use_oidc             = true
+            }
+          }
+          \`\`\`
+          EOF
