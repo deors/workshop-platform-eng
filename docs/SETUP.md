@@ -244,6 +244,24 @@ User Access Administrator
 > be revisited (likely a per-subscription identity rather than a single
 > shared SP).
 
+### Bootstrap storage account — security model
+
+The state storage account is created with:
+
+- `--allow-shared-key-access false` — disables SAS/account keys; **AAD auth is
+  the only way in**, gated by `Storage Blob Data Contributor`. This is the
+  primary security boundary.
+- `--allow-blob-public-access false` — no anonymous blob reads.
+- `--https-only true` and `--min-tls-version TLS1_2`.
+- Public network endpoint **enabled** (`defaultAction = Allow`). GitHub-hosted
+  runners have no fixed egress IPs, so a firewall (`defaultAction = Deny`)
+  would block the bootstrap and every `terraform init`. AAD-only auth
+  + RBAC is what protects the account, not the network layer.
+
+If your threat model requires network-level isolation, switch to a Private
+Endpoint and run the workflows on a self-hosted runner inside the VNet. That
+trade-off is intentionally out of scope for the workshop baseline.
+
 ---
 
 ## Step 6 — Handle GitHub Advanced Security (optional)
@@ -321,11 +339,24 @@ finished yet. Re-run after a minute. If it persists, re-run the
 `az role assignment list` command from step 5 and confirm all three roles are
 listed at subscription scope.
 
-### `This request is not authorized to perform this operation` on the container
+### `Failed to query container 'tfstate' on '<account>'` during `bootstrap-tfstate`
 
-Symptom: the storage account gets created, but `az storage container create`
-fails. Cause: the SP has `Contributor` (control plane) but not
-`Storage Blob Data Contributor` (data plane). Add the missing role and re-run.
+The script (`scripts/bootstrap-tfstate.sh`) traps this on the
+`az storage container exists` call. Two possible causes:
+
+1. **RBAC**: the SP has `Contributor` (control plane) but not
+   `Storage Blob Data Contributor` (data plane). Re-check step 5.
+2. **Network rules**: the storage account has `defaultAction = Deny` (e.g.
+   created by an earlier version of the script, or modified manually). The
+   GitHub-hosted runner has no fixed egress IP and is blocked. Fix:
+
+   ```bash
+   az storage account update \
+     --name <account> --resource-group <rg> --default-action Allow
+   ```
+
+   The current bootstrap script keeps `defaultAction = Allow` by design — see
+   the security-model note in step 5.
 
 ### `terraform init` fails with `Error refreshing state`
 

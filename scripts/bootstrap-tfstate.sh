@@ -101,6 +101,11 @@ else
 fi
 
 if [[ "$ACCOUNT_EXISTS" == false ]]; then
+  # Network: public endpoint open, but AAD-only auth (allow-shared-key-access=false)
+  # is the security boundary. A firewall (--default-action Deny) would block
+  # GitHub-hosted runners (no fixed egress IPs) and any operator running this
+  # script from outside Azure. Use Private Endpoint + self-hosted runner if
+  # stronger network isolation is required.
   az storage account create \
     --name                "$STORAGE_ACCOUNT_NAME" \
     --resource-group      "$RESOURCE_GROUP_NAME" \
@@ -112,8 +117,6 @@ if [[ "$ACCOUNT_EXISTS" == false ]]; then
     --https-only          true \
     --allow-blob-public-access false \
     --allow-shared-key-access  false \
-    --default-action      Deny \
-    --bypass              AzureServices \
     --tags                "managed-by=bootstrap-tfstate" "platform=platform-engineering" \
     --output none
   ok "Storage account created"
@@ -128,6 +131,7 @@ az storage account update \
   --https-only          true \
   --allow-blob-public-access false \
   --allow-shared-key-access  false \
+  --default-action      Allow \
   --output none
 ok "Security settings enforced"
 
@@ -148,12 +152,22 @@ ok "Versioning and soft-delete configured (30-day retention)"
 # ── Container ─────────────────────────────────────────────────────────────────
 
 log "Checking container '$CONTAINER_NAME'…"
-CONTAINER_EXISTS=$(az storage container exists \
-  --name         "$CONTAINER_NAME" \
-  --account-name "$STORAGE_ACCOUNT_NAME" \
-  --auth-mode    login \
-  --query        "exists" \
-  --output       tsv 2>/dev/null)
+# Note: --auth-mode login uses Azure AD on the data plane and requires
+# 'Storage Blob Data Contributor' on the storage account (or higher scope).
+# 'Contributor' on the control plane is NOT sufficient.
+if ! CONTAINER_EXISTS=$(az storage container exists \
+       --name         "$CONTAINER_NAME" \
+       --account-name "$STORAGE_ACCOUNT_NAME" \
+       --auth-mode    login \
+       --query        "exists" \
+       --output       tsv); then
+  err "Failed to query container '$CONTAINER_NAME' on '$STORAGE_ACCOUNT_NAME'.
+  Most likely cause: the calling principal lacks 'Storage Blob Data Contributor'
+  on the storage account (data-plane role). The account is configured with
+  --allow-shared-key-access=false, so AAD auth is mandatory.
+  Fix: assign 'Storage Blob Data Contributor' at subscription or resource-group
+  scope to the OIDC service principal, then re-run. See docs/SETUP.md."
+fi
 
 if [[ "$CONTAINER_EXISTS" == "true" ]]; then
   skip "Container already exists"
