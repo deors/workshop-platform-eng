@@ -51,6 +51,12 @@ variable "zone_balancing_enabled" {
   default     = false
 }
 
+variable "worker_count" {
+  description = "Initial number of workers for the App Service Plan. Set to ≥2 in prod for failover; autoscale manages dynamic count after creation."
+  type        = number
+  default     = 1
+}
+
 # Container image
 variable "container_image" {
   description = "Full container image reference (e.g. mcr.microsoft.com/appsvc/staticsite:latest)"

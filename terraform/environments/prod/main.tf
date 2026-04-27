@@ -51,13 +51,14 @@ module "webapp" {
   # Prod: zone-redundant P2v3 (minimum 3 instances for AZ redundancy)
   sku_name               = "P2v3"
   zone_balancing_enabled = true
+  worker_count           = 3 # min 3 for zone redundancy and failover baseline
 
   container_image                         = var.container_image
   container_registry_url                  = var.container_registry_url
   container_registry_use_managed_identity = var.container_registry_url != ""
 
-  app_settings   = var.app_settings
-  custom_domain  = var.custom_domain
+  app_settings  = var.app_settings
+  custom_domain = var.custom_domain
 
   virtual_network_subnet_id  = module.networking.webapp_integration_subnet_id
   private_endpoint_subnet_id = module.networking.private_endpoint_subnet_id
@@ -66,7 +67,7 @@ module "webapp" {
   log_analytics_workspace_id = module.monitoring.log_analytics_workspace_id
 
   autoscale_enabled       = true
-  autoscale_min_count     = 3   # min 3 for zone redundancy
+  autoscale_min_count     = 3 # min 3 for zone redundancy
   autoscale_default_count = 3
   autoscale_max_count     = 10
 

@@ -170,24 +170,32 @@ jobs:
           EOF
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 2. Checkov – security and compliance scan over all Terraform code
+  # 2. Checkov – security and compliance scan, per target environment
+  #    Per-env scoping lets us keep prod-strict baselines (zone redundancy, min
+  #    instance count) while allowing dev/staging to run lighter footprints.
   # ────────────────────────────────────────────────────────────────────────────
   checkov:
-    name: Checkov scan
+    name: "Checkov · ${{ matrix.environment }}"
     needs: resolve-inputs
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run Checkov
         id: checkov
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory:             terraform/
+          directory:             terraform/environments/${{ matrix.environment }}
           framework:             terraform
-          config_file:           .checkov.yaml
+          # Prod uses the strict baseline; dev/staging use the relaxed config
+          # that additionally skips CKV_AZURE_212 and CKV_AZURE_225.
+          config_file: ${{ matrix.environment == 'prod' && '.checkov.yaml' || '.checkov.nonprod.yaml' }}
           output_format:         cli,sarif
           output_file_path:      console,checkov-results.sarif
           download_external_modules: false
@@ -195,10 +203,10 @@ jobs:
 
       - name: Upload SARIF to GitHub Security tab
         if: always()   # upload even when checkov fails so findings are visible
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file:      checkov-results.sarif
-          category:        checkov-terraform
+          category:        checkov-terraform-${{ matrix.environment }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 3. Terraform format check (once, not per-environment)
@@ -210,7 +218,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -231,7 +239,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -264,7 +272,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Azure login (OIDC)
         uses: azure/login@v2
@@ -343,7 +351,7 @@ jobs:
 
       - name: Upload plan artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name:              tfplan-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
           retention-days:    7

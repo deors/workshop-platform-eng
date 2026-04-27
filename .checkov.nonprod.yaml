@@ -1,0 +1,24 @@
+# Checkov configuration for non-production environments (dev, staging).
+# Mirrors .checkov.yaml plus the two checks that are prod-only baselines.
+# Keep the skip lists in sync with .checkov.yaml when adding/removing entries.
+
+compact: false
+
+skip-check:
+  # ── Language-version checks – not applicable for container deployments ──────
+  - CKV_AZURE_80   # PHP version: managed by the container image
+  - CKV_AZURE_81   # Python version: same rationale
+  - CKV_AZURE_82   # Java version: same rationale
+  - CKV_AZURE_84   # .NET version: same rationale
+
+  # ── Azure Files storage – not applicable for stateless containers ───────────
+  - CKV_AZURE_88   # Ensure App Service uses Azure Files
+
+  # ── Temporarily skipped globally — TODO: revisit ────────────────────────────
+  - CKV_AZURE_13   # App Service Authentication (Easy Auth)
+  - CKV_AZURE_17   # Client certificates (mTLS)
+  - CKV_AZURE_222  # Public network access disabled
+
+  # ── Prod-only baselines, skipped for dev/staging ────────────────────────────
+  - CKV_AZURE_212  # Minimum instances for failover: dev/staging start at 1
+  - CKV_AZURE_225  # App Service Plan zone redundancy: only prod is zone-redundant

@@ -4,9 +4,9 @@ locals {
 
   # Merge caller tags with mandatory platform tags
   base_tags = merge(var.tags, {
-    environment    = var.environment
-    managed-by     = "terraform"
-    platform       = "platform-engineering"
+    environment = var.environment
+    managed-by  = "terraform"
+    platform    = "platform-engineering"
   })
 
   # Key Vault references for secrets: @Microsoft.KeyVault(SecretUri=…)
@@ -101,8 +101,15 @@ resource "azurerm_service_plan" "this" {
   location               = var.location
   os_type                = var.os_type
   sku_name               = var.sku_name
+  worker_count           = var.worker_count
   zone_balancing_enabled = var.zone_balancing_enabled
   tags                   = local.base_tags
+
+  # Autoscale manages dynamic count after creation; ignore drift on worker_count
+  # so terraform plans stay clean once the autoscale rules take over.
+  lifecycle {
+    ignore_changes = [worker_count]
+  }
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -118,7 +125,7 @@ resource "azurerm_linux_web_app" "this" {
   # ── Security ──────────────────────────────────────────────────────────────
   https_only                    = true
   public_network_access_enabled = !local.create_private_endpoint
-  client_affinity_enabled       = false  # stateless; sticky sessions via load balancer if needed
+  client_affinity_enabled       = false # stateless; sticky sessions via load balancer if needed
 
   identity {
     type         = "UserAssigned"
@@ -127,13 +134,13 @@ resource "azurerm_linux_web_app" "this" {
 
   # ── Site configuration ────────────────────────────────────────────────────
   site_config {
-    always_on              = true
-    http2_enabled          = true
-    minimum_tls_version    = var.minimum_tls_version
-    ftps_state             = "Disabled"
-    use_32_bit_worker      = false
-    worker_count           = 1
-    health_check_path      = var.health_check_path
+    always_on                         = true
+    http2_enabled                     = true
+    minimum_tls_version               = var.minimum_tls_version
+    ftps_state                        = "Disabled"
+    use_32_bit_worker                 = false
+    worker_count                      = 1
+    health_check_path                 = var.health_check_path
     health_check_eviction_time_in_min = var.health_check_eviction_time_in_min
 
     # IP restrictions – if no private endpoint is used and explicit CIDRs are given
@@ -175,13 +182,13 @@ resource "azurerm_linux_web_app" "this" {
   app_settings = merge(
     {
       # Observability
-      APPLICATIONINSIGHTS_CONNECTION_STRING         = local.appinsights_connection_string
-      ApplicationInsightsAgent_EXTENSION_VERSION    = "~3"
-      APPLICATIONINSIGHTS_ROLE_NAME                 = "${local.prefix}"
+      APPLICATIONINSIGHTS_CONNECTION_STRING      = local.appinsights_connection_string
+      ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
+      APPLICATIONINSIGHTS_ROLE_NAME              = "${local.prefix}"
 
       # Avoid credential-based deployments
-      WEBSITES_ENABLE_APP_SERVICE_STORAGE           = "false"
-      DOCKER_ENABLE_CI                              = "false"
+      WEBSITES_ENABLE_APP_SERVICE_STORAGE = "false"
+      DOCKER_ENABLE_CI                    = "false"
     },
     var.app_settings,
     local.kv_app_settings,
@@ -227,7 +234,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
   }
 
   site_config {
-    always_on           = false  # staging slot does not need to stay warm
+    always_on           = false # staging slot does not need to stay warm
     http2_enabled       = true
     minimum_tls_version = var.minimum_tls_version
     ftps_state          = "Disabled"
@@ -249,6 +256,7 @@ resource "azurerm_linux_web_app_slot" "staging" {
       ApplicationInsightsAgent_EXTENSION_VERSION = "~3"
       APPLICATIONINSIGHTS_ROLE_NAME              = "${local.prefix}-staging"
       WEBSITES_ENABLE_APP_SERVICE_STORAGE        = "false"
+
     },
     var.app_settings,
     local.kv_app_settings,
