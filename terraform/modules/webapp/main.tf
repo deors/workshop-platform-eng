@@ -25,8 +25,10 @@ locals {
     azurerm_application_insights.this[0].connection_string
   ) : var.application_insights_connection_string
 
-  # Only create private endpoint when a subnet is provided
-  create_private_endpoint = var.private_endpoint_subnet_id != ""
+  # Whether to provision a Private Endpoint. Driven by an explicit flag so the
+  # value is known at plan time (subnet IDs are computed and would force the
+  # count to "known after apply").
+  create_private_endpoint = var.private_endpoint_enabled
 
   # Only bind custom hostname when one is given
   create_custom_domain = var.custom_domain != ""

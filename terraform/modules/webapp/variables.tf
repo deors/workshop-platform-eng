@@ -101,8 +101,14 @@ variable "virtual_network_subnet_id" {
   default     = ""
 }
 
+variable "private_endpoint_enabled" {
+  description = "Whether to provision a Private Endpoint for inbound traffic. Decoupled from the subnet ID so the toggle is known at plan time."
+  type        = bool
+  default     = true
+}
+
 variable "private_endpoint_subnet_id" {
-  description = "Subnet ID for the private endpoint (inbound traffic). Empty = public access allowed."
+  description = "Subnet ID for the private endpoint. Required when private_endpoint_enabled = true."
   type        = string
   default     = ""
 }
@@ -114,7 +120,7 @@ variable "private_dns_zone_id" {
 }
 
 variable "allowed_ip_ranges" {
-  description = "List of CIDRs allowed to reach the Web App. Only used when private_endpoint_subnet_id is empty."
+  description = "List of CIDRs allowed to reach the Web App. Only used when private_endpoint_enabled = false."
   type        = list(string)
   default     = []
 }
