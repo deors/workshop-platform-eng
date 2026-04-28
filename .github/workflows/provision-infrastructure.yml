@@ -933,17 +933,13 @@ jobs:
 
           # Closing paragraph branches on whether CI actually succeeded so the
           # comment doesn't tell people "ready for development" when CI is red.
+          # Single-line strings: hard line breaks become literal newlines in
+          # the rendered Markdown and cause mid-sentence wrapping.
           if [[ "$CI_CONCLUSION" == "success" ]]; then
-            CLOSING="The application repository is now ready for development. Merge the
-          template README updates and start iterating — every push to \`main\`
-          will run CI and (on success) deploy to dev."
+            CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
           else
             CI_LINK="${CI_URL:-the CI run}"
-            CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`).
-          Investigate ${CI_LINK} and fix the failures before iterating on the
-          application — pushes to \`main\` will keep failing until the issue is
-          resolved. Re-run CI from the app repo's Actions tab once fixed; this
-          platform run does not need to be re-invoked."
+            CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
           fi
 
           BODY=$(cat <<MARKDOWN
