@@ -714,9 +714,7 @@ jobs:
               echo
               echo "## Application CI"
               echo
-              echo "Template generation auto-triggered the CI workflow on the new repo."
-              echo "It builds, tests, and (if the dev environment is in this run) deploys"
-              echo "to dev. A summary comment will be appended once that run finishes."
+              echo "Template generation auto-triggered the CI workflow on the new repo. It builds, tests, and (if the dev environment is in this run) deploys to dev. A summary comment will be appended once that run finishes."
             fi
           } > /tmp/issue-body.md
 
