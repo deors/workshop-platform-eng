@@ -34,6 +34,15 @@ on:
         description: Azure Tenant ID
         type: string
         required: true
+      template_repo:
+        description: "Template repo for the application source (owner/name). Created under the same org as <app_name>."
+        type: string
+        required: true
+      ci_workflow_file:
+        description: Filename of the CI workflow inside the application repo
+        type: string
+        required: false
+        default: ci.yml
 
   repository_dispatch:
     types:
@@ -67,6 +76,9 @@ jobs:
       azure_tenant_id:        ${{ steps.params.outputs.azure_tenant_id }}
       tfstate_storage_account: ${{ steps.tfstate_names.outputs.storage_account }}
       tfstate_resource_group:  ${{ steps.tfstate_names.outputs.resource_group }}
+      template_repo:           ${{ steps.params.outputs.template_repo }}
+      ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
+      app_repo_full:           ${{ steps.params.outputs.app_repo_full }}
 
     steps:
       - name: Extract and validate parameters
@@ -80,6 +92,8 @@ jobs:
           WD_REGISTRY:   ${{ github.event.inputs.container_registry_url }}
           WD_CLIENT_ID:  ${{ github.event.inputs.azure_client_id }}
           WD_TENANT_ID:  ${{ github.event.inputs.azure_tenant_id }}
+          WD_TEMPLATE:   ${{ github.event.inputs.template_repo }}
+          WD_CI_FILE:    ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
           RD_ENV:        ${{ github.event.client_payload.environment }}
           RD_APP:        ${{ github.event.client_payload.app_name }}
@@ -88,6 +102,9 @@ jobs:
           RD_REGISTRY:   ${{ github.event.client_payload.container_registry_url }}
           RD_CLIENT_ID:  ${{ github.event.client_payload.azure_client_id }}
           RD_TENANT_ID:  ${{ github.event.client_payload.azure_tenant_id }}
+          RD_TEMPLATE:   ${{ github.event.client_payload.template_repo }}
+          RD_CI_FILE:    ${{ github.event.client_payload.ci_workflow_file }}
+          OWNER:         ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           SUBSCRIPTION_ID="${WD_SUB:-$RD_SUB}"
@@ -96,6 +113,8 @@ jobs:
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
           AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
+          TEMPLATE_REPO="${WD_TEMPLATE:-$RD_TEMPLATE}"
+          CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
           [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
@@ -104,6 +123,7 @@ jobs:
           [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
           [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
           [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$TEMPLATE_REPO"   ]] && MISSING+=(template_repo)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
@@ -128,6 +148,9 @@ jobs:
           echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
+          echo "template_repo=$TEMPLATE_REPO"                   >> "$GITHUB_OUTPUT"
+          echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
+          echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
 
       - name: Derive tfstate resource names
         id: tfstate_names
@@ -483,3 +506,257 @@ jobs:
       subscription_id: ${{ needs.resolve-inputs.outputs.subscription_id }}
       azure_client_id: ${{ needs.resolve-inputs.outputs.azure_client_id }}
       azure_tenant_id: ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 8. Application repository – create from template (idempotent).
+  #    If the target repo already exists, downstream jobs are skipped: the
+  #    contract is "first-run setup", not ongoing reconciliation.
+  #
+  #    Requires a PAT with `repo` + `workflow` + `admin:repo_hook` scopes (or a
+  #    GitHub App installation token) exposed as the `GH_PAT` repository secret.
+  #    The default GITHUB_TOKEN is scoped to this repo only and cannot create
+  #    repositories or write to other repos' environments/variables.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-app-repo:
+    name: Create application repo
+    needs: [resolve-inputs, verify]
+    runs-on: ubuntu-latest
+    outputs:
+      repo_existed: ${{ steps.create.outputs.repo_existed }}
+      repo_full:    ${{ needs.resolve-inputs.outputs.app_repo_full }}
+    steps:
+      - name: Create from template
+        id: create
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          OWNER:     ${{ github.repository_owner }}
+          APP_NAME:  ${{ needs.resolve-inputs.outputs.app_name }}
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
+          TEMPLATE:  ${{ needs.resolve-inputs.outputs.template_repo }}
+        run: |
+          if gh api "repos/${REPO_FULL}" --silent 2>/dev/null; then
+            echo "Repository ${REPO_FULL} already exists — skipping creation"
+            echo "repo_existed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Creating ${REPO_FULL} from template ${TEMPLATE}…"
+          gh api -X POST "repos/${TEMPLATE}/generate" \
+            -f "owner=${OWNER}" \
+            -f "name=${APP_NAME}" \
+            -f "description=Application repository for ${APP_NAME} (provisioned by platform-eng)" \
+            -F "private=true" \
+            -F "include_all_branches=false"
+
+          # The "generate" endpoint is async — wait for the repo to be queryable.
+          for _ in $(seq 1 30); do
+            gh api "repos/${REPO_FULL}" --silent 2>/dev/null && break
+            sleep 2
+          done
+
+          echo "repo_existed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
+          EXISTED:   ${{ steps.create.outputs.repo_existed }}
+        run: |
+          {
+            echo "## Application repository"
+            if [[ "$EXISTED" == "true" ]]; then
+              echo ""
+              echo "[\`$REPO_FULL\`](https://github.com/$REPO_FULL) already existed — downstream setup jobs were skipped."
+            else
+              echo ""
+              echo "Created [\`$REPO_FULL\`](https://github.com/$REPO_FULL) from template."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 9. First issue – tracker for the bootstrap, used later to post the summary.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-first-issue:
+    name: Create bootstrap issue
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      issue_number: ${{ steps.issue.outputs.number }}
+      issue_url:    ${{ steps.issue.outputs.url }}
+    steps:
+      - name: Open issue
+        id: issue
+        env:
+          GH_TOKEN:     ${{ secrets.GH_PAT }}
+          REPO_FULL:    ${{ needs.create-app-repo.outputs.repo_full }}
+          APP_NAME:     ${{ needs.resolve-inputs.outputs.app_name }}
+          TEMPLATE:     ${{ needs.resolve-inputs.outputs.template_repo }}
+          PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BODY=$(cat <<MARKDOWN
+          # Initial setup — \`${APP_NAME}\`
+
+          This issue tracks the bootstrap of the application repository, its
+          GitHub Environments, and the first end-to-end build & deployment.
+
+          ## Provisioning
+
+          - Platform run: [#${{ github.run_id }}](${PROVISION_URL})
+          - Template: [\`${TEMPLATE}\`](https://github.com/${TEMPLATE})
+          - Environments: \`dev\`, \`staging\`, \`prod\`
+
+          A summary comment will be appended once the first CI run and the
+          dev deployment finish.
+          MARKDOWN
+          )
+          URL=$(gh issue create -R "$REPO_FULL" \
+            --title "Initial setup and first deployment" \
+            --body  "$BODY")
+          NUMBER="${URL##*/}"
+          echo "url=$URL"        >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 10. Configure GitHub Environments and variables — one job per environment.
+  # ────────────────────────────────────────────────────────────────────────────
+  configure-environments:
+    name: "Configure env · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    steps:
+      - name: Create environment and set variables
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
+          ENV:       ${{ matrix.environment }}
+          APP_NAME:  ${{ needs.resolve-inputs.outputs.app_name }}
+          SUB:       ${{ needs.resolve-inputs.outputs.subscription_id }}
+          CID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          TID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          REGISTRY:  ${{ needs.resolve-inputs.outputs.container_registry_url }}
+        run: |
+          # 1. Create the environment (PUT is idempotent — 200 if it already exists).
+          gh api -X PUT "repos/${REPO_FULL}/environments/${ENV}" --silent
+
+          # 2. Set per-environment variables. Try update first, fall back to create.
+          set_var() {
+            local name="$1" value="$2"
+            if ! gh api -X PATCH "repos/${REPO_FULL}/environments/${ENV}/variables/${name}" \
+                   -f "name=${name}" -f "value=${value}" --silent 2>/dev/null; then
+              gh api -X POST "repos/${REPO_FULL}/environments/${ENV}/variables" \
+                -f "name=${name}" -f "value=${value}" --silent
+            fi
+          }
+
+          set_var AZURE_SUBSCRIPTION_ID "$SUB"
+          set_var AZURE_CLIENT_ID       "$CID"
+          set_var AZURE_TENANT_ID       "$TID"
+          set_var AZURE_RESOURCE_GROUP  "rg-${APP_NAME}-${ENV}"
+          set_var AZURE_WEBAPP_NAME     "app-${APP_NAME}-${ENV}"
+          [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
+
+          echo "Environment '${ENV}' configured on ${REPO_FULL}"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 11. Trigger the application's CI workflow.
+  #
+  #     Contract with the template repo: ci.yml runs build/test AND calls the
+  #     dev-deploy job as a reusable workflow inside the same run. So a single
+  #     `success` conclusion on the CI run means "build + test + dev deploy all
+  #     passed" — no separate deploy run to discover.
+  # ────────────────────────────────────────────────────────────────────────────
+  trigger-ci:
+    name: Trigger CI in app repo
+    needs: [resolve-inputs, create-app-repo, configure-environments]
+    if: needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
+      ci_run_url:    ${{ steps.ci.outputs.ci_run_url }}
+      ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
+    steps:
+      - name: Checkout (for helper script)
+        uses: actions/checkout@v5
+
+      - name: Dispatch CI workflow
+        id: dispatch
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          WORKFLOW_FILE: ${{ needs.resolve-inputs.outputs.ci_workflow_file }}
+        run: |
+          SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$WORKFLOW_FILE" -R "$REPO_FULL" --ref main
+          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
+
+      - name: Watch CI run (build + test + dev deploy)
+        id: ci
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          WORKFLOW_FILE: ${{ needs.resolve-inputs.outputs.ci_workflow_file }}
+          SINCE:         ${{ steps.dispatch.outputs.since }}
+        run: |
+          bash scripts/watch-run.sh \
+            --repo        "$REPO_FULL" \
+            --workflow    "$WORKFLOW_FILE" \
+            --since       "$SINCE" \
+            --output-key  ci \
+            --timeout-min 20
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 12. Final summary + comment on the bootstrap issue.
+  # ────────────────────────────────────────────────────────────────────────────
+  finalize:
+    name: Summarize and comment
+    needs: [resolve-inputs, create-app-repo, create-first-issue, trigger-ci]
+    if: always() && needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build summary and post issue comment
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          ISSUE_NUMBER:  ${{ needs.create-first-issue.outputs.issue_number }}
+          ISSUE_URL:     ${{ needs.create-first-issue.outputs.issue_url }}
+          PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_URL:        ${{ needs.trigger-ci.outputs.ci_run_url }}
+          CI_CONCLUSION: ${{ needs.trigger-ci.outputs.ci_conclusion }}
+        run: |
+          fmt() {
+            local url="$1" status="$2"
+            if [[ -n "$url" ]]; then
+              echo "[\`$status\`]($url)"
+            else
+              echo "\`${status:-not run}\`"
+            fi
+          }
+
+          BODY=$(cat <<MARKDOWN
+          ## End-to-end bootstrap summary
+
+          | Stage                            | Result |
+          |----------------------------------|--------|
+          | Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |
+          | CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |
+
+          The application repository is now ready for development. Merge the
+          template README updates and start iterating — every push to \`main\`
+          will run CI and (on success) deploy to dev.
+          MARKDOWN
+          )
+
+          # Step summary on the platform side
+          echo "$BODY" >> "$GITHUB_STEP_SUMMARY"
+          echo ""      >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$ISSUE_URL" ]] && echo "Bootstrap issue: $ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
+
+          # Comment on the bootstrap issue in the app repo
+          if [[ -n "$ISSUE_NUMBER" ]]; then
+            gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body "$BODY"
+          fi

@@ -289,7 +289,39 @@ If you can't enable it, the upload step will fail. Either:
 
 ---
 
-## Step 7 — Trigger the first run
+## Step 7 — Provide a `GH_PAT` secret for cross-repo operations
+
+After the infrastructure is provisioned and verified, the workflow continues
+into **application-repo bootstrap**: it creates a new repo from a template,
+opens a tracking issue, configures GitHub Environments + variables, dispatches
+the app's CI workflow and posts a summary back to the issue.
+
+All of those operations write to **a different repository** than the one the
+workflow runs in. The default `GITHUB_TOKEN` is scoped to this repo only and
+cannot create repositories or write to other repos' environments/variables.
+
+Provide a Personal Access Token (or a GitHub App installation token) as a
+**repository secret** named `GH_PAT`, with these scopes:
+
+| Scope | Used for |
+|-------|----------|
+| `repo` | Read/write the application repository (creation, issues, comments) |
+| `workflow` | Dispatch the CI workflow in the application repo |
+| `admin:repo_hook` _(optional)_ | Future drift-detection wiring |
+
+Create one at <https://github.com/settings/tokens?type=beta> (fine-grained,
+recommended) with the target organization and `Administration: Read and write`,
+`Contents: Read and write`, `Issues: Read and write`, `Actions: Read and write`,
+`Variables: Read and write`, `Environments: Read and write` repository
+permissions. Save it as the `GH_PAT` secret on this platform repo.
+
+> **Why a PAT and not the workflow token?** GitHub deliberately scopes
+> `GITHUB_TOKEN` to the repository running the workflow. Cross-repo writes
+> require a token whose installation/owner has access to the target.
+
+---
+
+## Step 8 — Trigger the first run
 
 In the GitHub UI: **Actions → Provision Infrastructure → Run workflow**, and
 provide:
@@ -303,15 +335,24 @@ provide:
 | `azure_tenant_id` | the tenant GUID captured in step 3 |
 | `container_image` | `mcr.microsoft.com/appsvc/staticsite:latest` |
 | `container_registry_url` | _(leave empty — public image)_ |
+| `template_repo` | the `<owner>/<name>` of the application template repo |
+| `ci_workflow_file` | _(leave empty — defaults to `ci.yml`)_ |
 
 ### What you should observe
 
 ```
-resolve-inputs       ✓ validated inputs, derived sttftestwebapp<sub8>
-checkov              ✓ no findings (or upload to Security tab)
-fmt                  ✓ formatting clean
-bootstrap-tfstate    ✓ rg-tfstate-test-webapp + storage account + container
-plan · dev           ✓ terraform plan generated, artifact uploaded
+resolve-inputs           ✓ validated inputs, derived sttftestwebapp<sub8>
+checkov · {dev|staging|prod}  ✓ no findings
+fmt                      ✓ formatting clean
+bootstrap-tfstate        ✓ rg-tfstate-test-webapp + storage account + container
+plan · {env}             ✓ terraform plan generated, artifact uploaded
+apply · {env}            ✓ terraform apply succeeded
+verify · {env}           ✓ control-plane assertions passed
+create-app-repo          ✓ <owner>/<app_name> created from template (or skipped)
+create-first-issue       ✓ tracking issue opened
+configure-env · {env}    ✓ GitHub Environment + variables set
+trigger-ci               ✓ CI dispatched, build+test+dev-deploy succeeded
+finalize                 ✓ summary posted as issue comment
 ```
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as
