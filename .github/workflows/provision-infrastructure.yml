@@ -568,6 +568,22 @@ jobs:
 
           echo "repo_existed=false" >> "$GITHUB_OUTPUT"
 
+      # Grant the default GITHUB_TOKEN write permission to GHCR (and other
+      # in-repo writes) so the template's CI workflow can `docker push` to
+      # ghcr.io/<owner>/<repo> using the workflow token. New repos default to
+      # `read` only, which causes `denied: permission_denied: write_package`.
+      # Idempotent (PUT) — safe to run on every invocation.
+      - name: Allow workflows to write packages
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
+        run: |
+          gh api --method PUT "repos/${REPO_FULL}/actions/permissions/workflow" \
+            -f default_workflow_permissions=write \
+            -F can_approve_pull_request_reviews=false \
+            --silent
+          echo "Default workflow permissions on ${REPO_FULL} set to 'write'"
+
       - name: Summary
         env:
           REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
