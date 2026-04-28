@@ -508,6 +508,46 @@ Most often a missing `Storage Blob Data Contributor` assignment. Same fix as
 above. If RBAC is correct, double-check that the workflow is using
 `use_oidc=true` in the `-backend-config` flags (it is, by default).
 
+### CI in the new app repo fails with `denied: permission_denied: write_package`
+
+The container push to GHCR (`docker push ghcr.io/<owner>/<repo>:<tag>`) is
+rejected even though the platform workflow set the new repo's default
+workflow permissions to `write`. Common causes, in rough order of frequency:
+
+1. **The CI workflow declares its own `permissions:` block** that omits
+   `packages: write`. The block replaces the default — it doesn't merge with
+   it. The workflow must include all the scopes it needs, e.g.
+   `contents: read`, `packages: write`, `id-token: write`.
+
+2. **The login step uses the wrong token or username.** For `docker
+   login ghcr.io`, expect `username: ${{ github.actor }}` and
+   `password: ${{ secrets.GITHUB_TOKEN }}` — typos or a stale PAT will fail
+   with the same `denied` error.
+
+3. **Org-level setting overrides the repo setting.** Org admins can lock
+   workflow permissions at *Settings → Actions → General* with override
+   disabled. The repo-level PUT is silently ignored. Ask the org admin to
+   allow per-repo overrides or set the org default to `write`.
+
+4. **Image namespace mismatch.** GHCR only accepts pushes to
+   `ghcr.io/<owner>/<name>` where `<owner>` matches the repo owner. A tag
+   computed against a different org/user is rejected.
+
+5. **A pre-existing GHCR package linked to a different repo (or unlinked).**
+   If a package with the same name already exists in the owner's namespace
+   from a deleted repo or earlier experiment, GHCR refuses pushes from this
+   repo even with correct permissions. Visit
+   `https://github.com/orgs/<owner>/packages` (or
+   `/users/<owner>/packages`), open the package's settings and either
+   **delete** it or use **Manage Actions access** to link it to the new
+   repository.
+
+Useful diagnostic command:
+
+```bash
+gh run view <run-id> -R <owner>/<app> --log-failed
+```
+
 ### Checkov reports new findings after a Terraform change
 
 Either fix the finding or, if you've judged it a false positive or
