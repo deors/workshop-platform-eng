@@ -509,8 +509,13 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 8. Application repository – create from template (idempotent).
-  #    If the target repo already exists, downstream jobs are skipped: the
-  #    contract is "first-run setup", not ongoing reconciliation.
+  #
+  #    The workflow can be re-invoked any number of times — typically once per
+  #    environment as it is rolled out. On re-runs the repo already exists and
+  #    creation is skipped, but environment configuration and federated
+  #    credential registration still run (they're idempotent). The bootstrap
+  #    issue, CI observation and final comment are only emitted on first
+  #    creation.
   #
   #    Requires a PAT with `repo` + `workflow` + `admin:repo_hook` scopes (or a
   #    GitHub App installation token) exposed as the `GH_PAT` repository secret.
@@ -524,6 +529,7 @@ jobs:
     outputs:
       repo_existed: ${{ steps.create.outputs.repo_existed }}
       repo_full:    ${{ needs.resolve-inputs.outputs.app_repo_full }}
+      created_at:   ${{ steps.create.outputs.created_at }}
     steps:
       - name: Create from template
         id: create
@@ -539,6 +545,12 @@ jobs:
             echo "repo_existed=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+
+          # Capture the wall-clock just before the create call so we can later
+          # find the auto-triggered CI run (template generation enqueues a
+          # workflow run on the first commit it pushes to `main`).
+          CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "created_at=${CREATED_AT}" >> "$GITHUB_OUTPUT"
 
           echo "Creating ${REPO_FULL} from template ${TEMPLATE}…"
           gh api -X POST "repos/${TEMPLATE}/generate" \
@@ -565,7 +577,7 @@ jobs:
             echo "## Application repository"
             if [[ "$EXISTED" == "true" ]]; then
               echo ""
-              echo "[\`$REPO_FULL\`](https://github.com/$REPO_FULL) already existed — downstream setup jobs were skipped."
+              echo "[\`$REPO_FULL\`](https://github.com/$REPO_FULL) already existed — environment configuration will be reconciled, CI observation skipped."
             else
               echo ""
               echo "Created [\`$REPO_FULL\`](https://github.com/$REPO_FULL) from template."
@@ -618,11 +630,12 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 10. Configure GitHub Environments and variables — one job per environment.
+  #     Always runs (idempotent: PUT for the env, PATCH→POST for each variable)
+  #     so re-invocations can roll out additional envs to an existing app repo.
   # ────────────────────────────────────────────────────────────────────────────
   configure-environments:
     name: "Configure env · ${{ matrix.environment }}"
     needs: [resolve-inputs, create-app-repo]
-    if: needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -667,15 +680,17 @@ jobs:
   #      OIDC tokens issued for the new app repo are accepted by Entra ID.
   #      Without these, deploy.yml in the new repo fails on `azure/login` with
   #      AADSTS70021 ("No matching federated identity record found").
+  #      Always runs (idempotent: skips if the subject already has a
+  #      credential) so re-invocations can register additional environments.
   #
   #      Prerequisite: the SP itself must be an Owner of its own App
-  #      Registration (or hold Application.ReadWrite.OwnedBy on Microsoft Graph)
-  #      to manage its own federated credentials. See docs/SETUP.md step 5.
+  #      Registration AND hold Application.ReadWrite.OwnedBy on Microsoft
+  #      Graph (admin consent) to manage its own federated credentials.
+  #      See docs/SETUP.md step 5.
   # ────────────────────────────────────────────────────────────────────────────
   configure-federated-credentials:
     name: "Federated credential · ${{ matrix.environment }}"
     needs: [resolve-inputs, create-app-repo]
-    if: needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -720,15 +735,21 @@ jobs:
           echo "Registered federated credential '${NAME}' for subject '${SUBJECT}'"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 12. Trigger the application's CI workflow.
+  # 12. Observe the CI run that template-generation auto-triggered.
+  #
+  #     When a repo is created from a template, GitHub pushes the initial
+  #     commit to `main` and any `on: push` workflows fire automatically. So
+  #     we don't dispatch CI ourselves — we just find that auto-run, watch it
+  #     to completion, and propagate its conclusion as this job's status.
   #
   #     Contract with the template repo: ci.yml runs build/test AND calls the
-  #     dev-deploy job as a reusable workflow inside the same run. So a single
-  #     `success` conclusion on the CI run means "build + test + dev deploy all
-  #     passed" — no separate deploy run to discover.
+  #     dev-deploy job as a reusable workflow inside the same run. A single
+  #     `success` conclusion means "build + test + dev deploy all passed".
+  #
+  #     Skipped on re-runs: the auto-trigger only happens at creation time.
   # ────────────────────────────────────────────────────────────────────────────
-  trigger-ci:
-    name: Trigger CI in app repo
+  observe-ci:
+    name: Observe CI in app repo
     needs: [resolve-inputs, create-app-repo, configure-environments, configure-federated-credentials]
     if: needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
@@ -740,24 +761,13 @@ jobs:
       - name: Checkout (for helper script)
         uses: actions/checkout@v5
 
-      - name: Dispatch CI workflow
-        id: dispatch
-        env:
-          GH_TOKEN:      ${{ secrets.GH_PAT }}
-          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
-          WORKFLOW_FILE: ${{ needs.resolve-inputs.outputs.ci_workflow_file }}
-        run: |
-          SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          gh workflow run "$WORKFLOW_FILE" -R "$REPO_FULL" --ref main
-          echo "since=$SINCE" >> "$GITHUB_OUTPUT"
-
       - name: Watch CI run (build + test + dev deploy)
         id: ci
         env:
           GH_TOKEN:      ${{ secrets.GH_PAT }}
           REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
           WORKFLOW_FILE: ${{ needs.resolve-inputs.outputs.ci_workflow_file }}
-          SINCE:         ${{ steps.dispatch.outputs.since }}
+          SINCE:         ${{ needs.create-app-repo.outputs.created_at }}
         run: |
           bash scripts/watch-run.sh \
             --repo        "$REPO_FULL" \
@@ -766,12 +776,26 @@ jobs:
             --output-key  ci \
             --timeout-min 20
 
+      # watch-run.sh always exits 0 (it reports the conclusion via outputs).
+      # Translate a non-success conclusion into a job failure here so the
+      # platform run reflects reality.
+      - name: Fail on non-success conclusion
+        env:
+          CI_CONCLUSION: ${{ steps.ci.outputs.ci_conclusion }}
+          CI_URL:        ${{ steps.ci.outputs.ci_run_url }}
+        run: |
+          if [[ "$CI_CONCLUSION" != "success" ]]; then
+            echo "::error::CI run concluded as '${CI_CONCLUSION}' — see ${CI_URL:-(no URL)}"
+            exit 1
+          fi
+          echo "CI succeeded: $CI_URL"
+
   # ────────────────────────────────────────────────────────────────────────────
   # 13. Final summary + comment on the bootstrap issue.
   # ────────────────────────────────────────────────────────────────────────────
   finalize:
     name: Summarize and comment
-    needs: [resolve-inputs, create-app-repo, create-first-issue, trigger-ci]
+    needs: [resolve-inputs, create-app-repo, create-first-issue, observe-ci]
     if: always() && needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
     steps:
@@ -782,8 +806,8 @@ jobs:
           ISSUE_NUMBER:  ${{ needs.create-first-issue.outputs.issue_number }}
           ISSUE_URL:     ${{ needs.create-first-issue.outputs.issue_url }}
           PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CI_URL:        ${{ needs.trigger-ci.outputs.ci_run_url }}
-          CI_CONCLUSION: ${{ needs.trigger-ci.outputs.ci_conclusion }}
+          CI_URL:        ${{ needs.observe-ci.outputs.ci_run_url }}
+          CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
         run: |
           fmt() {
             local url="$1" status="$2"

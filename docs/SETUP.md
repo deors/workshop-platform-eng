@@ -430,7 +430,7 @@ create-app-repo                      ✓ <owner>/<app_name> created from templat
 create-first-issue                   ✓ tracking issue opened
 configure-env · {env}                ✓ GitHub Environment + variables set
 federated-credential · {env}         ✓ AAD subject registered on the SP
-trigger-ci                           ✓ CI dispatched, build+test+dev-deploy succeeded
+observe-ci                           ✓ template auto-triggered CI watched, build+test+dev-deploy succeeded
 finalize                             ✓ summary posted as issue comment
 ```
 
