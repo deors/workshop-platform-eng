@@ -427,7 +427,7 @@ plan · {env}             ✓ terraform plan generated, artifact uploaded
 apply · {env}            ✓ terraform apply succeeded
 verify · {env}           ✓ control-plane assertions passed
 create-app-repo                      ✓ <owner>/<app_name> created from template (or skipped)
-create-first-issue                   ✓ tracking issue opened
+create-run-issue                     ✓ per-run tracking issue opened
 configure-env · {env}                ✓ GitHub Environment + variables set
 federated-credential · {env}         ✓ AAD subject registered on the SP
 observe-ci                           ✓ template auto-triggered CI watched, build+test+dev-deploy succeeded
