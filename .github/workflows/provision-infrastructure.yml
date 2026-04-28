@@ -620,10 +620,14 @@ jobs:
           ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
 
           # Per-env status, parsed from the plan-output.txt of each artifact.
+          # upload-artifact preserves workspace-relative paths inside the
+          # artifact (so plan-output.txt lives a few directories deep). Use
+          # find so we don't depend on the exact layout.
           STATUSES=""
           for env in $ENVS; do
-            PLAN_FILE="plans/tfplan-${APP_NAME}-${env}/plan-output.txt"
-            if [[ ! -f "$PLAN_FILE" ]]; then
+            ARTIFACT_DIR="plans/tfplan-${APP_NAME}-${env}"
+            PLAN_FILE=$(find "$ARTIFACT_DIR" -name plan-output.txt -print -quit 2>/dev/null || true)
+            if [[ -z "$PLAN_FILE" || ! -f "$PLAN_FILE" ]]; then
               STATUSES+="- \`${env}\` — plan output not available"$'\n'
               continue
             fi
@@ -886,6 +890,21 @@ jobs:
             fi
           }
 
+          # Closing paragraph branches on whether CI actually succeeded so the
+          # comment doesn't tell people "ready for development" when CI is red.
+          if [[ "$CI_CONCLUSION" == "success" ]]; then
+            CLOSING="The application repository is now ready for development. Merge the
+          template README updates and start iterating — every push to \`main\`
+          will run CI and (on success) deploy to dev."
+          else
+            CI_LINK="${CI_URL:-the CI run}"
+            CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`).
+          Investigate ${CI_LINK} and fix the failures before iterating on the
+          application — pushes to \`main\` will keep failing until the issue is
+          resolved. Re-run CI from the app repo's Actions tab once fixed; this
+          platform run does not need to be re-invoked."
+          fi
+
           BODY=$(cat <<MARKDOWN
           ## End-to-end bootstrap summary
 
@@ -894,9 +913,7 @@ jobs:
           | Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |
           | CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |
 
-          The application repository is now ready for development. Merge the
-          template README updates and start iterating — every push to \`main\`
-          will run CI and (on success) deploy to dev.
+          ${CLOSING}
           MARKDOWN
           )
 
