@@ -253,27 +253,74 @@ one per environment, scoped to the new app repo (subjects
 workflows in the new repo fail at `azure/login` with `AADSTS70021`.
 
 The platform workflow does this automatically (see job
-`configure-federated-credentials`), but the SP can only modify its own App
-Registration if it is listed as an **owner** of that App Registration. Add it
-once:
+`configure-federated-credentials`), but the SP needs **two** things to be
+allowed to write to its own App Registration:
+
+1. **Self-ownership** of the App Registration object (directory-level), and
+2. The `Application.ReadWrite.OwnedBy` **application permission** on
+   Microsoft Graph, with admin consent.
+
+Ownership alone is sufficient for *user-delegated* flows but **not** for
+*application-only* flows like the OIDC token a workflow runs under, even
+in your own tenant — the corporate Entra default policy denies the call
+with `Insufficient privileges to complete the operation`.
+
+#### 1. Add the SP as owner of its own App Registration
 
 ```bash
 APP_OBJECT_ID=$(az ad app show --id "$APP_ID" --query id -o tsv)
 
 az ad app owner add \
-  --id           "$APP_OBJECT_ID" \
+  --id              "$APP_OBJECT_ID" \
   --owner-object-id "$SP_OBJECT_ID"
 
 # Verify
 az ad app owner list --id "$APP_OBJECT_ID" --query "[].id" -o tsv
 ```
 
-You should see the SP's object ID alongside your own user object ID.
+#### 2. Grant `Application.ReadWrite.OwnedBy` on Microsoft Graph
 
-> **Why ownership and not a Graph role?** Granting
-> `Application.ReadWrite.OwnedBy` requires admin consent on Microsoft Graph,
-> which is intrusive. Self-ownership of one App Registration is the least
-> privileged way to let the SP manage just its own federated credentials.
+This step **requires admin consent** in the tenant: a Global Administrator,
+Privileged Role Administrator, Cloud Application Administrator, or
+Application Administrator must run it (or grant consent in the portal). In a
+corporate tenant this typically means filing an internal request.
+
+```bash
+# Microsoft Graph's well-known appId
+GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
+GRAPH_SP_ID=$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)
+
+# AppRoleId for Application.ReadWrite.OwnedBy on Graph
+ROLE_ID=$(az ad sp show --id "$GRAPH_APP_ID" \
+  --query "appRoles[?value=='Application.ReadWrite.OwnedBy'].id | [0]" -o tsv)
+
+# Grant it (admin consent required to execute this call)
+az rest --method POST \
+  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+  --headers "Content-Type=application/json" \
+  --body "{
+    \"principalId\": \"${SP_OBJECT_ID}\",
+    \"resourceId\":  \"${GRAPH_SP_ID}\",
+    \"appRoleId\":   \"${ROLE_ID}\"
+  }"
+
+# Verify — should list one row with role 'Application.ReadWrite.OwnedBy'
+az rest --method GET \
+  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+  --query "value[].{resource:resourceDisplayName, roleId:appRoleId}" -o table
+```
+
+#### Portal alternative
+
+Entra ID → App registrations → your app → **API permissions** → **Add a
+permission** → Microsoft Graph → **Application permissions** →
+`Application.ReadWrite.OwnedBy` → **Add**. Then click **Grant admin consent
+for &lt;tenant&gt;**.
+
+> **Why `OwnedBy` and not `All`?** `Application.ReadWrite.OwnedBy` only lets
+> the SP write to App Registrations where it is an owner (set in step 1
+> above). `Application.ReadWrite.All` would let it write to *any* App
+> Registration in the tenant — a much wider blast radius.
 
 ### Bootstrap storage account — security model
 
@@ -411,6 +458,23 @@ Registration. Re-check:
 - If you triggered the workflow from a branch other than `main`, the
   branch-scoped credential won't match. Either trigger from `main` or add
   another federated credential for that branch.
+
+### `Insufficient privileges to complete the operation` in `configure-federated-credentials`
+
+The job calls `az ad app federated-credential create`, which hits Microsoft
+Graph (`POST /applications/{id}/federatedIdentityCredentials`). Two things
+are required and people commonly stop after the first:
+
+1. The SP is an **owner** of its own App Registration
+   (`az ad app owner add …`).
+2. The SP has the `Application.ReadWrite.OwnedBy` Graph application
+   permission **with admin consent**.
+
+Without (2), even a fully-owning SP gets `Insufficient privileges`. Run the
+two-step procedure in *step 5 — Allow the SP to manage its own federated
+credentials*. Step (2) requires a directory-role admin (Global,
+Privileged Role, Cloud Application, or Application Administrator) — in a
+corporate tenant this is usually an internal request.
 
 ### `AuthorizationFailed` during `bootstrap-tfstate`
 
