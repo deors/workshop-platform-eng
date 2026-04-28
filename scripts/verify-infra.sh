@@ -60,7 +60,9 @@ echo "::group::App Service Plan"
 ASP_JSON=$(az appservice plan show -n "$ASP" -g "$RG" -o json 2>/dev/null || echo '{}')
 assert_eq "ASP SKU"           "$(jq -r '.sku.name      // "missing"' <<<"$ASP_JSON")" "$EXPECTED_SKU"
 assert_eq "ASP zoneRedundant" "$(jq -r '.zoneRedundant // false'     <<<"$ASP_JSON")" "$EXPECTED_ZONE"
-assert_ge "ASP workerCount"   "$(jq -r '.numberOfWorkers // 0'       <<<"$ASP_JSON")" "$EXPECTED_WORKERS"
+# .sku.capacity is the authoritative worker count; .numberOfWorkers is unreliable
+# across CLI versions and often reports 0 even when capacity is set.
+assert_ge "ASP workerCount"   "$(jq -r '.sku.capacity // 0'          <<<"$ASP_JSON")" "$EXPECTED_WORKERS"
 echo "::endgroup::"
 
 # ── Web App ───────────────────────────────────────────────────────────────────
@@ -86,7 +88,9 @@ echo "::endgroup::"
 echo "::group::Diagnostic settings"
 WA_ID=$(jq -r '.id // ""' <<<"$WA_JSON")
 if [[ -n "$WA_ID" ]]; then
-  DIAG_COUNT=$(az monitor diagnostic-settings list --resource "$WA_ID" --query 'length(value)' -o tsv 2>/dev/null || echo 0)
+  # `az monitor diagnostic-settings list` returns a flat array, not a wrapped
+  # {value:[…]} object — use length(@) on the array root.
+  DIAG_COUNT=$(az monitor diagnostic-settings list --resource "$WA_ID" --query 'length(@)' -o tsv 2>/dev/null || echo 0)
   assert_ge "WebApp diagnostic settings" "$DIAG_COUNT" 1
 fi
 echo "::endgroup::"
