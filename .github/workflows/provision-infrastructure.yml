@@ -379,3 +379,129 @@ jobs:
           path: |
             terraform/environments/${{ matrix.environment }}/tfplan
             terraform/environments/${{ matrix.environment }}/plan-output.txt
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 6. Terraform apply – consume the plan artifact and provision per environment
+  # ────────────────────────────────────────────────────────────────────────────
+  apply:
+    name: "Apply · ${{ matrix.environment }}"
+    needs: [resolve-inputs, plan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    environment: ${{ matrix.environment }}
+
+    env:
+      ARM_USE_OIDC:        "true"
+      ARM_USE_AZUREAD:     "true"
+      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Generate tfvars
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
+          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.subscription_id }}
+          CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
+          CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
+        run: |
+          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
+          printf 'app_name               = "%s"\n' "$APP_NAME"               >> terraform.tfvars
+          printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
+          printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
+
+      - name: Terraform init
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
+          RESOURCE_GROUP:  ${{ needs.resolve-inputs.outputs.tfstate_resource_group }}
+          ENVIRONMENT:     ${{ matrix.environment }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="resource_group_name=${RESOURCE_GROUP}" \
+            -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: Download tfplan
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          path: terraform/environments/${{ matrix.environment }}
+
+      - name: Terraform apply
+        working-directory: terraform/environments/${{ matrix.environment }}
+        run: |
+          terraform apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
+
+      - name: Write apply summary
+        if: always()
+        working-directory: terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          {
+            echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            echo "<details><summary>Show apply output</summary>"
+            echo ""
+            echo '```'
+            cat apply-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 7. Verify – control-plane assertions on the deployed stack
+  # ────────────────────────────────────────────────────────────────────────────
+  verify:
+    name: "Verify · ${{ matrix.environment }}"
+    needs: [resolve-inputs, apply]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    environment: ${{ matrix.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+      - name: Verify infrastructure
+        env:
+          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: bash scripts/verify-infra.sh
