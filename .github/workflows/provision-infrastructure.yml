@@ -605,6 +605,16 @@ jobs:
           pattern: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-*
           path:    plans
 
+      - name: Inspect downloaded plan artifacts
+        run: |
+          echo "::group::plans/ tree"
+          if [[ -d plans ]]; then
+            find plans -maxdepth 6 -print | head -100
+          else
+            echo "(plans/ does not exist)"
+          fi
+          echo "::endgroup::"
+
       - name: Build issue body
         id: body
         env:
@@ -620,13 +630,16 @@ jobs:
           ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
 
           # Per-env status, parsed from the plan-output.txt of each artifact.
-          # upload-artifact preserves workspace-relative paths inside the
-          # artifact (so plan-output.txt lives a few directories deep). Use
-          # find so we don't depend on the exact layout.
+          # upload-artifact preserves workspace-relative paths, and
+          # download-artifact may add an extra directory layer per artifact.
+          # Anchor on `tfplan-<app>-<env>/` anywhere in the path to find the
+          # right plan-output.txt regardless of the exact layout.
           STATUSES=""
           for env in $ENVS; do
-            ARTIFACT_DIR="plans/tfplan-${APP_NAME}-${env}"
-            PLAN_FILE=$(find "$ARTIFACT_DIR" -name plan-output.txt -print -quit 2>/dev/null || true)
+            PLAN_FILE=$(find plans \
+                          -path "*tfplan-${APP_NAME}-${env}/*" \
+                          -name plan-output.txt \
+                          -print -quit 2>/dev/null || true)
             if [[ -z "$PLAN_FILE" || ! -f "$PLAN_FILE" ]]; then
               STATUSES+="- \`${env}\` — plan output not available"$'\n'
               continue
