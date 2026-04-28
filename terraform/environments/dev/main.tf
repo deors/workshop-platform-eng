@@ -69,10 +69,15 @@ module "webapp" {
 
   app_settings = var.app_settings
 
-  # Networking – VNet integration + private endpoint
-  virtual_network_subnet_id  = module.networking.webapp_integration_subnet_id
-  private_endpoint_subnet_id = module.networking.private_endpoint_subnet_id
-  private_dns_zone_id        = module.networking.webapp_private_dns_zone_id
+  # Networking – VNet integration + private endpoint AND public endpoint open.
+  # Dev allows public ingress so GitHub-hosted runners (no fixed IP, not in
+  # the VNet) can reach the deployed app for HTTP smoke tests in CI/CD.
+  # Staging and prod keep the public endpoint closed and rely on
+  # control-plane validation instead — see docs/SETUP.md.
+  virtual_network_subnet_id     = module.networking.webapp_integration_subnet_id
+  private_endpoint_subnet_id    = module.networking.private_endpoint_subnet_id
+  private_dns_zone_id           = module.networking.webapp_private_dns_zone_id
+  public_network_access_enabled = true
 
   # Observability
   log_analytics_workspace_id = module.monitoring.log_analytics_workspace_id

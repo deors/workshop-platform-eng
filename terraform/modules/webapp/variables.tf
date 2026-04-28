@@ -107,6 +107,12 @@ variable "private_endpoint_enabled" {
   default     = true
 }
 
+variable "public_network_access_enabled" {
+  description = "Whether the Web App accepts traffic on its public hostname. Independent from private_endpoint_enabled — both can be true (dev: PE + public so GitHub-hosted runners can smoke-test) or both can be false. Default false: PE-only is the secure baseline for staging/prod."
+  type        = bool
+  default     = false
+}
+
 variable "private_endpoint_subnet_id" {
   description = "Subnet ID for the private endpoint. Required when private_endpoint_enabled = true."
   type        = string
@@ -120,7 +126,7 @@ variable "private_dns_zone_id" {
 }
 
 variable "allowed_ip_ranges" {
-  description = "List of CIDRs allowed to reach the Web App. Only used when private_endpoint_enabled = false."
+  description = "List of CIDRs allowed to reach the Web App's public endpoint. Only used when public_network_access_enabled = true."
   type        = list(string)
   default     = []
 }

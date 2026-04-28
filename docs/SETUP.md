@@ -347,6 +347,48 @@ trade-off is intentionally out of scope for the workshop baseline.
 > Without the second flag, `terraform init` hits `403 KeyBasedAuthenticationNotPermitted`
 > even with a valid OIDC token.
 
+### Web App network exposure — per-environment policy
+
+Application Web Apps follow a deliberate per-env split:
+
+| Env | Private Endpoint | Public endpoint | Rationale |
+|-----|------------------|-----------------|-----------|
+| `dev` | enabled | **enabled** | GitHub-hosted runners are not in the VNet and have no fixed egress IP. The dev environment intentionally accepts public traffic so the application repo's CI/CD can run an HTTP smoke test against `https://<webapp>.azurewebsites.net/health` after each deploy. |
+| `staging` | enabled | **disabled** | PE-only. Mirrors the production posture so any data flowing through staging is treated with the same network sensitivity as prod. |
+| `prod` | enabled | **disabled** | PE-only. The only path in is from the integration subnet via the private endpoint. |
+
+The toggle is a module variable, `public_network_access_enabled` (default
+`false`). Dev sets it to `true` explicitly; staging/prod inherit the secure
+default. `CKV_AZURE_222` (Public network access disabled) is enforced for
+prod and skipped for dev/staging in `.checkov.nonprod.yaml` so the dev
+exception doesn't fail policy.
+
+#### Deploy validation strategy
+
+Because staging and prod cannot be reached over HTTP from a GitHub-hosted
+runner, the application repo's `deploy.yml` should validate differently per
+env:
+
+- **dev** — `azure/login` (OIDC), update the container image on the App
+  Service, then `curl -fsS https://<webapp>.azurewebsites.net/health`.
+- **staging / prod** — `azure/login` (OIDC), update the image, then use
+  control-plane assertions only:
+  ```bash
+  az webapp show -g $RG -n $APP --query state -o tsv          # → Running
+  az webapp config container show -g $RG -n $APP \
+    --query linuxFxVersion -o tsv                             # contains the deployed image tag
+  ```
+  This proves the platform accepted the new image. App Service's built-in
+  health check (configured in this module to hit `/health`) handles the
+  "is it actually serving traffic?" question and marks unhealthy instances
+  unavailable automatically — the platform's `verify` job assertions cover
+  the rest.
+
+Operators who need real HTTP smoke tests against PE-only environments
+should run the deploy workflow on a self-hosted runner inside
+`webapp_integration_subnet` (or a peered VNet). Out of scope for the
+workshop baseline.
+
 ---
 
 ## Step 6 — Handle GitHub Advanced Security (optional)

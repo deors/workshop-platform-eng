@@ -126,7 +126,7 @@ resource "azurerm_linux_web_app" "this" {
 
   # ── Security ──────────────────────────────────────────────────────────────
   https_only                    = true
-  public_network_access_enabled = !local.create_private_endpoint
+  public_network_access_enabled = var.public_network_access_enabled
   client_affinity_enabled       = false # stateless; sticky sessions via load balancer if needed
 
   identity {
@@ -145,9 +145,11 @@ resource "azurerm_linux_web_app" "this" {
     health_check_path                 = var.health_check_path
     health_check_eviction_time_in_min = var.health_check_eviction_time_in_min
 
-    # IP restrictions – if no private endpoint is used and explicit CIDRs are given
+    # IP restrictions apply only to the public endpoint. When the public
+    # endpoint is closed, the rules are moot (no traffic arrives via that
+    # path); when it's open, allowed_ip_ranges tightens which sources reach it.
     dynamic "ip_restriction" {
-      for_each = !local.create_private_endpoint ? var.allowed_ip_ranges : []
+      for_each = var.public_network_access_enabled ? var.allowed_ip_ranges : []
       content {
         ip_address = ip_restriction.value
         action     = "Allow"
@@ -158,7 +160,7 @@ resource "azurerm_linux_web_app" "this" {
 
     # Deny all other inbound traffic when IP restrictions are configured
     dynamic "ip_restriction" {
-      for_each = !local.create_private_endpoint && length(var.allowed_ip_ranges) > 0 ? [1] : []
+      for_each = var.public_network_access_enabled && length(var.allowed_ip_ranges) > 0 ? [1] : []
       content {
         ip_address = "Any"
         action     = "Deny"
