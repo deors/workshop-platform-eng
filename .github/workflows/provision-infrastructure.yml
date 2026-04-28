@@ -599,33 +599,38 @@ jobs:
       issue_number: ${{ steps.issue.outputs.number }}
       issue_url:    ${{ steps.issue.outputs.url }}
     steps:
-      # Download each env's plan artifact into its own predictable directory
-      # (plans/<env>/). actions/download-artifact@v8 with `pattern:` and a
-      # single matching artifact flattens contents into `path:` instead of
-      # creating the per-artifact subdirectory documented in v4 — which made
-      # the env-name disappear from the path. Doing one download per env via
-      # `gh run download --name --dir` gives us the same layout regardless of
-      # how many envs the matrix produced.
-      - name: Download plan artifacts for requested environments
-        env:
-          GH_TOKEN:          ${{ github.token }}
-          REPO:              ${{ github.repository }}
-          RUN_ID:            ${{ github.run_id }}
-          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
-          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
-        run: |
-          mkdir -p plans
-          for env in $(jq -r '.[]' <<<"$ENVIRONMENTS_JSON"); do
-            ARTIFACT="tfplan-${APP_NAME}-${env}"
-            mkdir -p "plans/${env}"
-            echo "Downloading ${ARTIFACT} → plans/${env}/"
-            gh run download "$RUN_ID" -R "$REPO" --name "$ARTIFACT" --dir "plans/${env}"
-          done
+      # One download step per env, gated by membership in the resolved matrix.
+      # Using `name:` (not `pattern:`) gives deterministic placement: contents
+      # of each artifact land directly under `path:`, so plan-output.txt is
+      # always at plans/<env>/plan-output.txt regardless of how many envs are
+      # in this run. This sidesteps the v8 quirk where `pattern:` with a
+      # single match flattens contents instead of creating an artifact-name
+      # subdirectory.
+      - name: Download plan artifact (dev)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-dev
+          path: plans/dev
+
+      - name: Download plan artifact (staging)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-staging
+          path: plans/staging
+
+      - name: Download plan artifact (prod)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-prod
+          path: plans/prod
 
       - name: Inspect downloaded plan artifacts
         run: |
           echo "::group::plans/ tree"
-          find plans -maxdepth 4 -print | head -50
+          find plans -maxdepth 3 -print | head -50
           echo "::endgroup::"
 
       - name: Build issue body
