@@ -244,6 +244,37 @@ User Access Administrator
 > be revisited (likely a per-subscription identity rather than a single
 > shared SP).
 
+### Allow the SP to manage its own federated credentials
+
+After the platform provisions infrastructure for a new app, it must register
+**three additional federated credentials** on this same App Registration —
+one per environment, scoped to the new app repo (subjects
+`repo:<owner>/<app>:environment:{dev,staging,prod}`). Without these, deploy
+workflows in the new repo fail at `azure/login` with `AADSTS70021`.
+
+The platform workflow does this automatically (see job
+`configure-federated-credentials`), but the SP can only modify its own App
+Registration if it is listed as an **owner** of that App Registration. Add it
+once:
+
+```bash
+APP_OBJECT_ID=$(az ad app show --id "$APP_ID" --query id -o tsv)
+
+az ad app owner add \
+  --id           "$APP_OBJECT_ID" \
+  --owner-object-id "$SP_OBJECT_ID"
+
+# Verify
+az ad app owner list --id "$APP_OBJECT_ID" --query "[].id" -o tsv
+```
+
+You should see the SP's object ID alongside your own user object ID.
+
+> **Why ownership and not a Graph role?** Granting
+> `Application.ReadWrite.OwnedBy` requires admin consent on Microsoft Graph,
+> which is intrusive. Self-ownership of one App Registration is the least
+> privileged way to let the SP manage just its own federated credentials.
+
 ### Bootstrap storage account — security model
 
 The state storage account is created with:
@@ -348,11 +379,12 @@ bootstrap-tfstate        ✓ rg-tfstate-test-webapp + storage account + containe
 plan · {env}             ✓ terraform plan generated, artifact uploaded
 apply · {env}            ✓ terraform apply succeeded
 verify · {env}           ✓ control-plane assertions passed
-create-app-repo          ✓ <owner>/<app_name> created from template (or skipped)
-create-first-issue       ✓ tracking issue opened
-configure-env · {env}    ✓ GitHub Environment + variables set
-trigger-ci               ✓ CI dispatched, build+test+dev-deploy succeeded
-finalize                 ✓ summary posted as issue comment
+create-app-repo                      ✓ <owner>/<app_name> created from template (or skipped)
+create-first-issue                   ✓ tracking issue opened
+configure-env · {env}                ✓ GitHub Environment + variables set
+federated-credential · {env}         ✓ AAD subject registered on the SP
+trigger-ci                           ✓ CI dispatched, build+test+dev-deploy succeeded
+finalize                             ✓ summary posted as issue comment
 ```
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as

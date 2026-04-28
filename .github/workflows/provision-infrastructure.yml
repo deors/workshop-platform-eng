@@ -663,7 +663,64 @@ jobs:
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 11. Trigger the application's CI workflow.
+  # 11. Register federated credentials on the platform-eng App Registration so
+  #      OIDC tokens issued for the new app repo are accepted by Entra ID.
+  #      Without these, deploy.yml in the new repo fails on `azure/login` with
+  #      AADSTS70021 ("No matching federated identity record found").
+  #
+  #      Prerequisite: the SP itself must be an Owner of its own App
+  #      Registration (or hold Application.ReadWrite.OwnedBy on Microsoft Graph)
+  #      to manage its own federated credentials. See docs/SETUP.md step 5.
+  # ────────────────────────────────────────────────────────────────────────────
+  configure-federated-credentials:
+    name: "Federated credential · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+
+      - name: Register federated credential
+        env:
+          APP_ID:    ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
+          ENV:       ${{ matrix.environment }}
+        run: |
+          SUBJECT="repo:${REPO_FULL}:environment:${ENV}"
+
+          # Idempotent: skip if a credential with this exact subject already exists.
+          EXISTING=$(az ad app federated-credential list --id "$APP_ID" \
+            --query "[?subject=='${SUBJECT}'].id | [0]" -o tsv 2>/dev/null || true)
+          if [[ -n "$EXISTING" ]]; then
+            echo "Federated credential for '${SUBJECT}' already exists — skipping"
+            exit 0
+          fi
+
+          # Name: alphanumeric + hyphens, ≤120 chars. owner-app-env is unique.
+          NAME="${REPO_FULL//\//-}-${ENV}"
+
+          az ad app federated-credential create --id "$APP_ID" --parameters @<(cat <<JSON
+          {
+            "name":      "${NAME}",
+            "issuer":    "https://token.actions.githubusercontent.com",
+            "subject":   "${SUBJECT}",
+            "audiences": ["api://AzureADTokenExchange"]
+          }
+          JSON
+          )
+          echo "Registered federated credential '${NAME}' for subject '${SUBJECT}'"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 12. Trigger the application's CI workflow.
   #
   #     Contract with the template repo: ci.yml runs build/test AND calls the
   #     dev-deploy job as a reusable workflow inside the same run. So a single
@@ -672,7 +729,7 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   trigger-ci:
     name: Trigger CI in app repo
-    needs: [resolve-inputs, create-app-repo, configure-environments]
+    needs: [resolve-inputs, create-app-repo, configure-environments, configure-federated-credentials]
     if: needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
     outputs:
@@ -710,7 +767,7 @@ jobs:
             --timeout-min 20
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 12. Final summary + comment on the bootstrap issue.
+  # 13. Final summary + comment on the bootstrap issue.
   # ────────────────────────────────────────────────────────────────────────────
   finalize:
     name: Summarize and comment
