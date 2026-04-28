@@ -1,0 +1,135 @@
+name: Verify Infrastructure
+
+# Reusable verification of a deployed Web App stack against the per-environment
+# expectations encoded in scripts/verify-infra.sh. Three entry points:
+#
+#   1. workflow_call      – invoked from provision-infrastructure.yml as a
+#                           matrix job after `apply`.
+#   2. workflow_dispatch  – ad-hoc manual run from the GitHub UI.
+#   3. repository_dispatch – external trigger via the GitHub API
+#                            (event type: verify-infrastructure).
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, staging, prod)
+        type: string
+        required: true
+      subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID for OIDC login
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+        default: dev
+      subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal used for OIDC login
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+
+  repository_dispatch:
+    types:
+      - verify-infrastructure
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  verify:
+    name: "Verify · ${{ inputs.environment || github.event.client_payload.environment }}"
+    runs-on: ubuntu-latest
+    # Bind to the GitHub Environment so the env-scoped federated credential
+    # (`repo:<org>/<repo>:environment:<env>`) matches the OIDC token subject.
+    environment: ${{ inputs.environment || github.event.client_payload.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Resolve inputs
+        id: params
+        env:
+          # Typed inputs (workflow_call & workflow_dispatch share the same
+          # `inputs.*` context).
+          IN_APP:       ${{ inputs.app_name }}
+          IN_ENV:       ${{ inputs.environment }}
+          IN_SUB:       ${{ inputs.subscription_id }}
+          IN_CLIENT_ID: ${{ inputs.azure_client_id }}
+          IN_TENANT_ID: ${{ inputs.azure_tenant_id }}
+          # repository_dispatch payload (untyped).
+          RD_APP:       ${{ github.event.client_payload.app_name }}
+          RD_ENV:       ${{ github.event.client_payload.environment }}
+          RD_SUB:       ${{ github.event.client_payload.subscription_id }}
+          RD_CLIENT_ID: ${{ github.event.client_payload.azure_client_id }}
+          RD_TENANT_ID: ${{ github.event.client_payload.azure_tenant_id }}
+        run: |
+          APP_NAME="${IN_APP:-$RD_APP}"
+          ENVIRONMENT="${IN_ENV:-$RD_ENV}"
+          SUBSCRIPTION_ID="${IN_SUB:-$RD_SUB}"
+          AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
+          AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
+          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
+          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
+          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
+          # mask them — masking blanks values when they pass through step outputs.
+
+          echo "app_name=$APP_NAME"               >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"         >> "$GITHUB_OUTPUT"
+          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          client-id:       ${{ steps.params.outputs.azure_client_id }}
+          tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
+          subscription-id: ${{ steps.params.outputs.subscription_id }}
+
+      - name: Verify infrastructure
+        env:
+          APP_NAME:    ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT: ${{ steps.params.outputs.environment }}
+        run: bash scripts/verify-infra.sh

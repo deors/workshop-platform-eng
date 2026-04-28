@@ -231,32 +231,19 @@ jobs:
         run: terraform fmt -check -recursive terraform/
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 4. Bootstrap remote state storage (idempotent – safe to run every time)
+  # 4. Bootstrap remote state storage (idempotent – safe to run every time).
+  #    Delegates to the reusable bootstrap-tfstate.yml workflow so the same
+  #    logic can be triggered standalone.
   # ────────────────────────────────────────────────────────────────────────────
   bootstrap-tfstate:
     name: Bootstrap tfstate storage
     needs: [resolve-inputs, checkov, fmt]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v3
-        with:
-          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
-          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
-
-      - name: Run bootstrap script
-        env:
-          APP_NAME:        ${{ needs.resolve-inputs.outputs.app_name }}
-          SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
-        run: |
-          bash scripts/bootstrap-tfstate.sh \
-            --app-name        "$APP_NAME" \
-            --subscription-id "$SUBSCRIPTION_ID"
+    uses: ./.github/workflows/bootstrap-tfstate.yml
+    with:
+      app_name:        ${{ needs.resolve-inputs.outputs.app_name }}
+      subscription_id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+      azure_client_id: ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      azure_tenant_id: ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 5. Terraform plan – one job per target environment, after scan passes
@@ -477,31 +464,22 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 7. Verify – control-plane assertions on the deployed stack
+  # 7. Verify – delegates to the reusable verify-infrastructure.yml workflow.
+  #    The reusable workflow owns the GitHub Environment binding and the
+  #    OIDC login, so federated credential matching stays consistent whether
+  #    verify runs from here or is triggered standalone.
   # ────────────────────────────────────────────────────────────────────────────
   verify:
     name: "Verify · ${{ matrix.environment }}"
     needs: [resolve-inputs, apply]
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
-    environment: ${{ matrix.environment }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Azure login (OIDC)
-        uses: azure/login@v3
-        with:
-          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
-          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
-
-      - name: Verify infrastructure
-        env:
-          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
-          ENVIRONMENT: ${{ matrix.environment }}
-        run: bash scripts/verify-infra.sh
+    uses: ./.github/workflows/verify-infrastructure.yml
+    with:
+      app_name:        ${{ needs.resolve-inputs.outputs.app_name }}
+      environment:     ${{ matrix.environment }}
+      subscription_id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+      azure_client_id: ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      azure_tenant_id: ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
