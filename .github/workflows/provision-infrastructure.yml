@@ -619,6 +619,7 @@ jobs:
     outputs:
       issue_number:    ${{ steps.issue.outputs.number }}
       issue_url:       ${{ steps.issue.outputs.url }}
+      run_kind:        ${{ steps.body.outputs.run_kind }}
       total_added:     ${{ steps.body.outputs.total_added }}
       total_changed:   ${{ steps.body.outputs.total_changed }}
       total_destroyed: ${{ steps.body.outputs.total_destroyed }}
@@ -751,15 +752,27 @@ jobs:
             echo "total_failed=$TOTAL_FAIL"
           } >> "$GITHUB_OUTPUT"
 
-          # Repository line depends on whether this run created the repo.
-          if [[ "$REPO_EXISTED" == "true" ]]; then
-            REPO_LINE="Repository already existed — environment configuration reconciled."
-          else
+          # Three-way classification used for both the issue title and the
+          # repo line in the body:
+          #   - bootstrap : repo created in this run
+          #   - provision : repo already existed, new env(s) created (added > 0)
+          #   - reconcile : repo and env(s) already existed, only updates / no-op
+          if [[ "$REPO_EXISTED" == "false" ]]; then
+            RUN_KIND="bootstrap"
             REPO_LINE="Repository created from template [\`${TEMPLATE}\`](https://github.com/${TEMPLATE})."
+            TITLE_PREFIX="Bootstrap run"
+          elif [[ "$TOTAL_ADD" -gt 0 ]]; then
+            RUN_KIND="provision"
+            REPO_LINE="Repository already exists — provisioning new environment(s) on it."
+            TITLE_PREFIX="Provision run"
+          else
+            RUN_KIND="reconcile"
+            REPO_LINE="Repository already exists — reconciling existing environment(s)."
+            TITLE_PREFIX="Reconcile run"
           fi
 
           {
-            echo "# Provision run — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
             echo
             echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
             echo
@@ -770,7 +783,7 @@ jobs:
             echo "## Environment status"
             echo
             printf '%s' "${STATUSES}"
-            if [[ "$REPO_EXISTED" == "false" ]]; then
+            if [[ "$RUN_KIND" == "bootstrap" ]]; then
               echo
               echo "## Application CI"
               echo
@@ -778,12 +791,9 @@ jobs:
             fi
           } > /tmp/issue-body.md
 
-          # Title: include the env list so multiple issues are easily distinguishable.
-          if [[ "$REPO_EXISTED" == "false" ]]; then
-            echo "title=Bootstrap run — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
-          else
-            echo "title=Reconcile run — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
-          fi
+          # Title and run kind for downstream jobs.
+          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+          echo "run_kind=${RUN_KIND}"                >> "$GITHUB_OUTPUT"
 
       - name: Open issue
         id: issue
@@ -977,9 +987,9 @@ jobs:
         env:
           GH_TOKEN:      ${{ secrets.GH_PAT }}
           REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
-          REPO_EXISTED:  ${{ needs.create-app-repo.outputs.repo_existed }}
           ISSUE_NUMBER:  ${{ needs.create-run-issue.outputs.issue_number }}
           ISSUE_URL:     ${{ needs.create-run-issue.outputs.issue_url }}
+          RUN_KIND:      ${{ needs.create-run-issue.outputs.run_kind }}
           PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_URL:        ${{ needs.observe-ci.outputs.ci_run_url }}
           CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
@@ -998,36 +1008,39 @@ jobs:
             fi
           }
 
-          # The body branches on whether this is the first-time bootstrap (CI
-          # observed) or a reconcile run (CI not re-triggered — the deployed
-          # app is preserved by Terraform's lifecycle ignore on
-          # site_config.application_stack).
+          # Three-way classification driven by create-run-issue's RUN_KIND:
+          #   - bootstrap : new repo + new env(s); CI auto-triggered.
+          #   - provision : existing repo + at least one new env; no CI.
+          #   - reconcile : existing repo + only updates / no-ops; no CI.
           # Single-line strings: hard line breaks become literal newlines in
           # the rendered Markdown and cause mid-sentence wrapping.
           PROV_ROW="| Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |"
-
-          # Resources changed across all envs in this run; verification tests
-          # passed/failed across the same envs. Both rows are added regardless
-          # of bootstrap vs reconcile.
           RES_ROW="| Resources changed                | + ${ADD:-0} · ~ ${CHANGE:-0} · - ${DESTROY:-0} |"
           TEST_ROW="| Verification tests               | passed ${PASSED:-0} · failed ${FAILED:-0} |"
 
-          if [[ "$REPO_EXISTED" == "false" ]]; then
-            HEADING="Bootstrap run summary"
-            CI_ROW="| CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |"
-            ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$CI_ROW" "$RES_ROW" "$TEST_ROW")
-            if [[ "$CI_CONCLUSION" == "success" ]]; then
-              CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
-            else
-              CI_LINK="${CI_URL:-the CI run}"
-              CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
-            fi
-          else
-            HEADING="Reconcile run summary"
-            RECONCILE_ROW="| Provisioning (reconcile)         | [#${{ github.run_id }}]($PROVISION_URL) |"
-            ROWS=$(printf '%s\n%s\n%s' "$RECONCILE_ROW" "$RES_ROW" "$TEST_ROW")
-            CLOSING="No CI was re-triggered for this run — the previously deployed application image is preserved (Terraform's lifecycle ignores changes to the App Service container configuration after the initial create). Inspect the per-environment status above to see what infra changed; if you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
-          fi
+          case "$RUN_KIND" in
+            bootstrap)
+              HEADING="Bootstrap run summary"
+              CI_ROW="| CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |"
+              ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$CI_ROW" "$RES_ROW" "$TEST_ROW")
+              if [[ "$CI_CONCLUSION" == "success" ]]; then
+                CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
+              else
+                CI_LINK="${CI_URL:-the CI run}"
+                CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
+              fi
+              ;;
+            provision)
+              HEADING="Provision run summary"
+              ROWS=$(printf '%s\n%s\n%s' "$PROV_ROW" "$RES_ROW" "$TEST_ROW")
+              CLOSING="New environment(s) provisioned on the existing application repository. Other environments and any application instances already deployed elsewhere were not modified. To deploy the application to the new environment(s), trigger the CI workflow from the app repo's Actions tab."
+              ;;
+            reconcile|*)
+              HEADING="Reconcile run summary"
+              ROWS=$(printf '%s\n%s\n%s' "$PROV_ROW" "$RES_ROW" "$TEST_ROW")
+              CLOSING="Existing environment(s) reconciled — no new resources were added. Any deployed application image is preserved (Terraform's lifecycle ignores changes to the App Service container configuration after the initial create). If you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
+              ;;
+          esac
 
           BODY=$(cat <<MARKDOWN
           ## ${HEADING}
