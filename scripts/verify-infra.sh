@@ -59,7 +59,10 @@ echo "::endgroup::"
 echo "::group::App Service Plan"
 ASP_JSON=$(az appservice plan show -n "$ASP" -g "$RG" -o json 2>/dev/null || echo '{}')
 assert_eq "ASP SKU"           "$(jq -r '.sku.name      // "missing"' <<<"$ASP_JSON")" "$EXPECTED_SKU"
-assert_eq "ASP zoneRedundant" "$(jq -r '.zoneRedundant // false'     <<<"$ASP_JSON")" "$EXPECTED_ZONE"
+# .properties.zoneRedundant is the authoritative location; the flat
+# .zoneRedundant at the top of the response is unreliably populated by `az`
+# (often null even when the plan is genuinely zone-redundant).
+assert_eq "ASP zoneRedundant" "$(jq -r '.properties.zoneRedundant // .zoneRedundant // false' <<<"$ASP_JSON")" "$EXPECTED_ZONE"
 # .sku.capacity is the authoritative worker count; .numberOfWorkers is unreliable
 # across CLI versions and often reports 0 even when capacity is set.
 assert_ge "ASP workerCount"   "$(jq -r '.sku.capacity // 0'          <<<"$ASP_JSON")" "$EXPECTED_WORKERS"
