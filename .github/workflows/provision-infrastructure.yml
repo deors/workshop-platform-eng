@@ -907,13 +907,17 @@ jobs:
   finalize:
     name: Summarize and comment
     needs: [resolve-inputs, create-app-repo, create-run-issue, observe-ci]
-    if: always() && needs.create-app-repo.outputs.repo_existed == 'false'
+    # Always runs (with always()), regardless of whether observe-ci was
+    # skipped because the repo already existed. Reconcile runs still need
+    # their own summary comment on the per-run issue.
+    if: always() && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Build summary and post issue comment
         env:
           GH_TOKEN:      ${{ secrets.GH_PAT }}
           REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:  ${{ needs.create-app-repo.outputs.repo_existed }}
           ISSUE_NUMBER:  ${{ needs.create-run-issue.outputs.issue_number }}
           ISSUE_URL:     ${{ needs.create-run-issue.outputs.issue_url }}
           PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -929,24 +933,36 @@ jobs:
             fi
           }
 
-          # Closing paragraph branches on whether CI actually succeeded so the
-          # comment doesn't tell people "ready for development" when CI is red.
+          # The body branches on whether this is the first-time bootstrap (CI
+          # observed) or a reconcile run (CI not re-triggered — the deployed
+          # app is preserved by Terraform's lifecycle ignore on
+          # site_config.application_stack).
           # Single-line strings: hard line breaks become literal newlines in
           # the rendered Markdown and cause mid-sentence wrapping.
-          if [[ "$CI_CONCLUSION" == "success" ]]; then
-            CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
+          PROV_ROW="| Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |"
+
+          if [[ "$REPO_EXISTED" == "false" ]]; then
+            HEADING="End-to-end bootstrap summary"
+            CI_ROW="| CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |"
+            ROWS=$(printf '%s\n%s' "$PROV_ROW" "$CI_ROW")
+            if [[ "$CI_CONCLUSION" == "success" ]]; then
+              CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
+            else
+              CI_LINK="${CI_URL:-the CI run}"
+              CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
+            fi
           else
-            CI_LINK="${CI_URL:-the CI run}"
-            CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
+            HEADING="Reconcile run summary"
+            ROWS="| Provisioning (reconcile)         | [#${{ github.run_id }}]($PROVISION_URL) |"
+            CLOSING="No CI was re-triggered for this run — the previously deployed application image is preserved (Terraform's lifecycle ignores changes to the App Service container configuration after the initial create). Inspect the per-environment status above to see what infra changed; if you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
           fi
 
           BODY=$(cat <<MARKDOWN
-          ## End-to-end bootstrap summary
+          ## ${HEADING}
 
           | Stage                            | Result |
           |----------------------------------|--------|
-          | Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |
-          | CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |
+          ${ROWS}
 
           ${CLOSING}
           MARKDOWN
@@ -955,9 +971,9 @@ jobs:
           # Step summary on the platform side
           echo "$BODY" >> "$GITHUB_STEP_SUMMARY"
           echo ""      >> "$GITHUB_STEP_SUMMARY"
-          [[ -n "$ISSUE_URL" ]] && echo "Bootstrap issue: $ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$ISSUE_URL" ]] && echo "Run issue: $ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
 
-          # Comment on the bootstrap issue in the app repo
+          # Comment on the per-run issue in the app repo
           if [[ -n "$ISSUE_NUMBER" ]]; then
             gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body "$BODY"
           fi

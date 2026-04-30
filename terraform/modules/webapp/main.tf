@@ -215,9 +215,16 @@ resource "azurerm_linux_web_app" "this" {
   virtual_network_subnet_id = var.virtual_network_subnet_id != "" ? var.virtual_network_subnet_id : null
 
   lifecycle {
+    # CI/CD owns the container after first apply: image, registry URL, and
+    # any registry credentials all live in `application_stack`. Ignoring
+    # only `docker_image_name` left `docker_registry_url` exposed — when CI
+    # deploys to a different registry than var.container_registry_url, the
+    # plan recomposes the whole block and reverts the image to the var.
+    # Ignoring the whole nested block lets re-runs reconcile everything
+    # else (TLS, health check, app_settings, etc.) without disturbing the
+    # deployed app.
     ignore_changes = [
-      # Allow external CI/CD to update the container image without Terraform drift
-      site_config[0].application_stack[0].docker_image_name,
+      site_config[0].application_stack,
     ]
   }
 }
@@ -270,8 +277,11 @@ resource "azurerm_linux_web_app_slot" "staging" {
   )
 
   lifecycle {
+    # Same rationale as the main app: post-create the slot's container is
+    # owned by CI/CD (slot swaps, manual deploys), so ignore the whole
+    # application_stack block.
     ignore_changes = [
-      site_config[0].application_stack[0].docker_image_name,
+      site_config[0].application_stack,
     ]
   }
 }
