@@ -614,11 +614,16 @@ jobs:
   # ────────────────────────────────────────────────────────────────────────────
   create-run-issue:
     name: Create run issue
-    needs: [resolve-inputs, create-app-repo, apply]
+    needs: [resolve-inputs, create-app-repo, apply, verify]
     runs-on: ubuntu-latest
     outputs:
-      issue_number: ${{ steps.issue.outputs.number }}
-      issue_url:    ${{ steps.issue.outputs.url }}
+      issue_number:    ${{ steps.issue.outputs.number }}
+      issue_url:       ${{ steps.issue.outputs.url }}
+      total_added:     ${{ steps.body.outputs.total_added }}
+      total_changed:   ${{ steps.body.outputs.total_changed }}
+      total_destroyed: ${{ steps.body.outputs.total_destroyed }}
+      total_passed:    ${{ steps.body.outputs.total_passed }}
+      total_failed:    ${{ steps.body.outputs.total_failed }}
     steps:
       # One download step per env, gated by membership in the resolved matrix.
       # Using `name:` (not `pattern:`) gives deterministic placement: contents
@@ -648,10 +653,36 @@ jobs:
           name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-prod
           path: plans/prod
 
-      - name: Inspect downloaded plan artifacts
+      # Verify summary artifacts — same per-env pattern as plans. Each contains
+      # a tiny key=value file with passed/failed counts from verify-infra.sh.
+      - name: Download verify summary (dev)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-dev
+          path: verify/dev
+
+      - name: Download verify summary (staging)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-staging
+          path: verify/staging
+
+      - name: Download verify summary (prod)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-prod
+          path: verify/prod
+
+      - name: Inspect downloaded artifacts
         run: |
           echo "::group::plans/ tree"
           find plans -maxdepth 3 -print | head -50
+          echo "::endgroup::"
+          echo "::group::verify/ tree"
+          find verify -maxdepth 3 -print | head -50
           echo "::endgroup::"
 
       - name: Build issue body
@@ -668,33 +699,57 @@ jobs:
           # Render comma-joined env list for the title and intro.
           ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
 
-          # The download step above puts every env's plan-output.txt at a
-          # predictable plans/<env>/plan-output.txt path.
+          # Per-env plan parsing + cross-env aggregation. The download steps
+          # above put files at predictable paths:
+          #   plans/<env>/plan-output.txt
+          #   verify/<env>/verify-summary.txt
           STATUSES=""
+          TOTAL_ADD=0; TOTAL_CHANGE=0; TOTAL_DESTROY=0
+          TOTAL_PASS=0; TOTAL_FAIL=0
           for env in $ENVS; do
             PLAN_FILE="plans/${env}/plan-output.txt"
             if [[ ! -f "$PLAN_FILE" ]]; then
               STATUSES+="- \`${env}\` — plan output not available"$'\n'
-              continue
-            fi
-            if grep -qE "^No changes\." "$PLAN_FILE"; then
+            elif grep -qE "^No changes\." "$PLAN_FILE"; then
               STATUSES+="- \`${env}\` — **no changes** (already up-to-date)"$'\n'
-              continue
-            fi
-            PLAN_LINE=$(grep -E "^Plan: " "$PLAN_FILE" | tail -1 || true)
-            ADD=$(   grep -oE "[0-9]+ to add"     <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
-            CHANGE=$(grep -oE "[0-9]+ to change"  <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
-            DESTROY=$(grep -oE "[0-9]+ to destroy" <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
-            if   [[ "$ADD" -gt 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
-              STATUSES+="- \`${env}\` — **created** (${ADD} resources added)"$'\n'
-            elif [[ "$ADD" -eq 0 && "$CHANGE" -gt 0 && "$DESTROY" -eq 0 ]]; then
-              STATUSES+="- \`${env}\` — **refreshed** (${CHANGE} resources updated)"$'\n'
-            elif [[ "$ADD" -eq 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
-              STATUSES+="- \`${env}\` — **no changes**"$'\n'
             else
-              STATUSES+="- \`${env}\` — applied (${ADD} added, ${CHANGE} changed, ${DESTROY} destroyed)"$'\n'
+              PLAN_LINE=$(grep -E "^Plan: " "$PLAN_FILE" | tail -1 || true)
+              ADD=$(   grep -oE "[0-9]+ to add"     <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              CHANGE=$(grep -oE "[0-9]+ to change"  <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              DESTROY=$(grep -oE "[0-9]+ to destroy" <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              TOTAL_ADD=$((TOTAL_ADD + ADD))
+              TOTAL_CHANGE=$((TOTAL_CHANGE + CHANGE))
+              TOTAL_DESTROY=$((TOTAL_DESTROY + DESTROY))
+              if   [[ "$ADD" -gt 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **created** (${ADD} resources added)"$'\n'
+              elif [[ "$ADD" -eq 0 && "$CHANGE" -gt 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **refreshed** (${CHANGE} resources updated)"$'\n'
+              elif [[ "$ADD" -eq 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **no changes**"$'\n'
+              else
+                STATUSES+="- \`${env}\` — applied (${ADD} added, ${CHANGE} changed, ${DESTROY} destroyed)"$'\n'
+              fi
+            fi
+
+            # Verify summary (passed=N\nfailed=N). Missing file → counts stay
+            # at zero for that env, which surfaces as 0/0 in the totals row.
+            VERIFY_FILE="verify/${env}/verify-summary.txt"
+            if [[ -f "$VERIFY_FILE" ]]; then
+              ENV_PASS=$(grep -oE '^passed=[0-9]+' "$VERIFY_FILE" | cut -d= -f2 || echo 0)
+              ENV_FAIL=$(grep -oE '^failed=[0-9]+' "$VERIFY_FILE" | cut -d= -f2 || echo 0)
+              TOTAL_PASS=$((TOTAL_PASS + ENV_PASS))
+              TOTAL_FAIL=$((TOTAL_FAIL + ENV_FAIL))
             fi
           done
+
+          # Surface aggregates as job outputs for finalize to render.
+          {
+            echo "total_added=$TOTAL_ADD"
+            echo "total_changed=$TOTAL_CHANGE"
+            echo "total_destroyed=$TOTAL_DESTROY"
+            echo "total_passed=$TOTAL_PASS"
+            echo "total_failed=$TOTAL_FAIL"
+          } >> "$GITHUB_OUTPUT"
 
           # Repository line depends on whether this run created the repo.
           if [[ "$REPO_EXISTED" == "true" ]]; then
@@ -725,9 +780,9 @@ jobs:
 
           # Title: include the env list so multiple issues are easily distinguishable.
           if [[ "$REPO_EXISTED" == "false" ]]; then
-            echo "title=Bootstrap — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+            echo "title=Bootstrap run — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
           else
-            echo "title=Provision run — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+            echo "title=Reconcile run — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Open issue
@@ -928,6 +983,11 @@ jobs:
           PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           CI_URL:        ${{ needs.observe-ci.outputs.ci_run_url }}
           CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
+          ADD:           ${{ needs.create-run-issue.outputs.total_added }}
+          CHANGE:        ${{ needs.create-run-issue.outputs.total_changed }}
+          DESTROY:       ${{ needs.create-run-issue.outputs.total_destroyed }}
+          PASSED:        ${{ needs.create-run-issue.outputs.total_passed }}
+          FAILED:        ${{ needs.create-run-issue.outputs.total_failed }}
         run: |
           fmt() {
             local url="$1" status="$2"
@@ -946,10 +1006,16 @@ jobs:
           # the rendered Markdown and cause mid-sentence wrapping.
           PROV_ROW="| Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |"
 
+          # Resources changed across all envs in this run; verification tests
+          # passed/failed across the same envs. Both rows are added regardless
+          # of bootstrap vs reconcile.
+          RES_ROW="| Resources changed                | + ${ADD:-0} · ~ ${CHANGE:-0} · - ${DESTROY:-0} |"
+          TEST_ROW="| Verification tests               | passed ${PASSED:-0} · failed ${FAILED:-0} |"
+
           if [[ "$REPO_EXISTED" == "false" ]]; then
-            HEADING="End-to-end bootstrap summary"
+            HEADING="Bootstrap run summary"
             CI_ROW="| CI + dev deploy (app repo)       | $(fmt "$CI_URL" "${CI_CONCLUSION:-skipped}") |"
-            ROWS=$(printf '%s\n%s' "$PROV_ROW" "$CI_ROW")
+            ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$CI_ROW" "$RES_ROW" "$TEST_ROW")
             if [[ "$CI_CONCLUSION" == "success" ]]; then
               CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
             else
@@ -958,7 +1024,8 @@ jobs:
             fi
           else
             HEADING="Reconcile run summary"
-            ROWS="| Provisioning (reconcile)         | [#${{ github.run_id }}]($PROVISION_URL) |"
+            RECONCILE_ROW="| Provisioning (reconcile)         | [#${{ github.run_id }}]($PROVISION_URL) |"
+            ROWS=$(printf '%s\n%s\n%s' "$RECONCILE_ROW" "$RES_ROW" "$TEST_ROW")
             CLOSING="No CI was re-triggered for this run — the previously deployed application image is preserved (Terraform's lifecycle ignores changes to the App Service container configuration after the initial create). Inspect the per-environment status above to see what infra changed; if you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
           fi
 

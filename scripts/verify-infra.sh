@@ -123,6 +123,14 @@ fi
   echo "</details>"
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
+# Machine-readable summary for downstream aggregation (uploaded as an
+# artifact by the calling workflow). Always written, even on failure.
+{
+  echo "environment=${ENVIRONMENT}"
+  echo "passed=${#PASSES[@]}"
+  echo "failed=${#FAILURES[@]}"
+} > "${VERIFY_SUMMARY_FILE:-/tmp/verify-summary.txt}"
+
 if [[ ${#FAILURES[@]} -gt 0 ]]; then
   echo
   echo "FAILED: ${#FAILURES[@]} of $((${#PASSES[@]} + ${#FAILURES[@]})) checks"

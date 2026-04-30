@@ -133,3 +133,15 @@ jobs:
           APP_NAME:    ${{ steps.params.outputs.app_name }}
           ENVIRONMENT: ${{ steps.params.outputs.environment }}
         run: bash scripts/verify-infra.sh
+
+      # Always upload, even when verify failed — the script writes the
+      # summary file before exiting non-zero, and the calling workflow's
+      # final summary still wants to render the counts.
+      - name: Upload verify summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              verify-${{ steps.params.outputs.environment }}
+          path:              /tmp/verify-summary.txt
+          retention-days:    7
+          if-no-files-found: warn
