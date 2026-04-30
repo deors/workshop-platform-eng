@@ -21,7 +21,7 @@ on:
         description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/deploy)"
         type: string
         required: false
-        default: "myregistry.azurecr.io/myapp:latest"
+        default: "mcr.microsoft.com/appsvc/staticsite:latest"
       container_registry_url:
         description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
         type: string
