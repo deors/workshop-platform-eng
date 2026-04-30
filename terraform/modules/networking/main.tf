@@ -186,6 +186,9 @@ resource "azurerm_storage_account" "flow_logs" {
   # checkov:skip=CKV_AZURE_206: LRS is sufficient for the flow-log SA — single-region writer, ephemeral data, no SLA requirement justifying GRS cost.
   # checkov:skip=CKV_AZURE_33: queues aren't used here; the flow log writer only writes blobs.
   # checkov:skip=CKV_AZURE_59: the Microsoft.Network flow log writer requires the storage public endpoint to be reachable; locking it down breaks the integration without adding meaningful security since the only client is Azure's own logging plane.
+  # checkov:skip=CKV2_AZURE_1: workshop uses platform-managed encryption keys; CMK setup is out of scope.
+  # checkov:skip=CKV2_AZURE_33: same rationale as CKV_AZURE_59 — Microsoft.Network flow log writer requires the public storage endpoint.
+  # checkov:skip=CKV2_AZURE_40: shared-key authorization is required by the flow-log writer; AAD-only auth breaks the integration.
   name                     = lower(substr("stflow${replace(local.prefix, "-", "")}", 0, 24))
   resource_group_name      = var.resource_group_name
   location                 = var.location
@@ -196,6 +199,22 @@ resource "azurerm_storage_account" "flow_logs" {
   https_traffic_only_enabled      = true
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
+
+  # Blob soft-delete: cheap recovery from accidental deletion (CKV2_AZURE_38).
+  blob_properties {
+    delete_retention_policy {
+      days = 7
+    }
+  }
+
+  # SAS expiration policy: enforces a max lifetime on any SAS tokens generated
+  # from the shared keys. Action "Log" is non-blocking — issuing a SAS with a
+  # longer expiry just emits a warning, which is enough to satisfy
+  # CKV2_AZURE_41 without risking breakage of the flow-log writer's path.
+  sas_policy {
+    expiration_period = "07.00:00:00"
+    expiration_action = "Log"
+  }
 
   tags = local.base_tags
 }
