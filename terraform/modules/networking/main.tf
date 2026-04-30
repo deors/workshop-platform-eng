@@ -199,6 +199,10 @@ resource "azurerm_storage_account" "flow_logs" {
   https_traffic_only_enabled      = true
   min_tls_version                 = "TLS1_2"
   allow_nested_items_to_be_public = false
+  # Explicitly true (matches provider default) — the value, but also the
+  # presence, of this attribute is required for CKV2_AZURE_41 to pass when
+  # paired with sas_policy below. The flow-log writer needs shared-key auth.
+  shared_access_key_enabled = true
 
   # Blob soft-delete: cheap recovery from accidental deletion (CKV2_AZURE_38).
   blob_properties {
