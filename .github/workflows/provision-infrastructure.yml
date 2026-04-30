@@ -18,11 +18,12 @@ on:
         type: string
         required: true
       container_image:
-        description: "Container image reference (e.g. myregistry.azurecr.io/myapp:latest)"
+        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/deploy)"
         type: string
-        required: true
+        required: false
+        default: "myregistry.azurecr.io/myapp:latest"
       container_registry_url:
-        description: Container registry URL (leave empty for public Docker Hub images)
+        description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
         type: string
         required: false
         default: ""
@@ -108,7 +109,12 @@ jobs:
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           SUBSCRIPTION_ID="${WD_SUB:-$RD_SUB}"
-          CONTAINER_IMAGE="${WD_IMAGE:-$RD_IMAGE}"
+          # container_image is optional. The placeholder is what Terraform
+          # writes on the first apply; thereafter the lifecycle.ignore_changes
+          # on site_config[0].application_stack means whatever CI/deploy
+          # put there stays put. Reconcile runs therefore don't need a real
+          # image value.
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-myregistry.azurecr.io/myapp:latest}}"
           CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
@@ -119,7 +125,6 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
           [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
-          [[ -z "$CONTAINER_IMAGE" ]] && MISSING+=(container_image)
           [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
           [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
           [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
