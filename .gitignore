@@ -26,3 +26,7 @@ override.tf.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local-only scripts (internal tooling not meant for the public template,
+# e.g. organisation-specific compliance tagging with internal identifiers).
+scripts/local/
