@@ -163,3 +163,56 @@ resource "azurerm_private_dns_zone_virtual_network_link" "webapp" {
   registration_enabled  = false
   tags                  = local.base_tags
 }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# VNet flow logs
+#
+# Reference the auto-created Network Watcher (Azure provisions one per region
+# when the first VNet is created). One flow log resource per VNet covers all
+# NSGs attached to subnets within it — preferred over per-NSG flow logs by
+# Microsoft and simpler to maintain.
+# ──────────────────────────────────────────────────────────────────────────────
+data "azurerm_network_watcher" "this" {
+  name                = "NetworkWatcher_${var.location}"
+  resource_group_name = "NetworkWatcherRG"
+}
+
+# Storage account dedicated to flow logs. Single-purpose, single-writer
+# (the Microsoft.Network flow log service); shared-key auth must remain
+# enabled because the writer does not support AAD auth on this path.
+# Naming: 24-char limit, lowercase alphanumeric only — substr is defensive
+# in case var.name pushes the prefix past that bound.
+resource "azurerm_storage_account" "flow_logs" {
+  # checkov:skip=CKV_AZURE_206: LRS is sufficient for the flow-log SA — single-region writer, ephemeral data, no SLA requirement justifying GRS cost.
+  # checkov:skip=CKV_AZURE_33: queues aren't used here; the flow log writer only writes blobs.
+  # checkov:skip=CKV_AZURE_59: the Microsoft.Network flow log writer requires the storage public endpoint to be reachable; locking it down breaks the integration without adding meaningful security since the only client is Azure's own logging plane.
+  name                     = lower(substr("stflow${replace(local.prefix, "-", "")}", 0, 24))
+  resource_group_name      = var.resource_group_name
+  location                 = var.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  account_kind             = "StorageV2"
+
+  https_traffic_only_enabled      = true
+  min_tls_version                 = "TLS1_2"
+  allow_nested_items_to_be_public = false
+
+  tags = local.base_tags
+}
+
+resource "azurerm_network_watcher_flow_log" "vnet" {
+  name                 = "flowlog-${local.prefix}"
+  network_watcher_name = data.azurerm_network_watcher.this.name
+  resource_group_name  = data.azurerm_network_watcher.this.resource_group_name
+
+  target_resource_id = azurerm_virtual_network.this.id
+  storage_account_id = azurerm_storage_account.flow_logs.id
+  enabled            = true
+
+  retention_policy {
+    enabled = true
+    days    = 90
+  }
+
+  tags = local.base_tags
+}
