@@ -300,6 +300,40 @@ resource "azurerm_app_service_certificate_binding" "this" {
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
+# End-to-end TLS encryption (front-end ↔ worker hop inside App Service).
+# Patches siteConfig.endToEndEncryptionEnabled = true on the Web App and the
+# staging slot. The hashicorp/azurerm provider does not yet expose this
+# preview attribute (see provider issue #25126), so we use azapi to PATCH
+# the existing resource Terraform created via azurerm_linux_web_app.
+# ──────────────────────────────────────────────────────────────────────────────
+resource "azapi_update_resource" "end_to_end_encryption" {
+  type        = "Microsoft.Web/sites@2024-04-01"
+  resource_id = azurerm_linux_web_app.this.id
+
+  body = {
+    properties = {
+      siteConfig = {
+        endToEndEncryptionEnabled = true
+      }
+    }
+  }
+}
+
+resource "azapi_update_resource" "end_to_end_encryption_slot" {
+  count       = var.deployment_slot_enabled ? 1 : 0
+  type        = "Microsoft.Web/sites/slots@2024-04-01"
+  resource_id = azurerm_linux_web_app_slot.staging[0].id
+
+  body = {
+    properties = {
+      siteConfig = {
+        endToEndEncryptionEnabled = true
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Private endpoint (inbound)
 # ──────────────────────────────────────────────────────────────────────────────
 resource "azurerm_private_endpoint" "this" {

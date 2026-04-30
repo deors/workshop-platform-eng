@@ -58,20 +58,36 @@ resource "azurerm_network_security_group" "webapp_integration" {
   location            = var.location
   tags                = local.base_tags
 
-  # Allow outbound to Azure services
+  # Allow HTTPS outbound to Azure services. Scoped to the specific port and
+  # protocol the App Service VNet integration actually needs — wildcards on
+  # protocol/port are flagged by compliance scanners as over-permissive.
   security_rule {
-    name                       = "allow-azure-outbound"
+    name                       = "allow-https-to-azure"
     priority                   = 100
     direction                  = "Outbound"
     access                     = "Allow"
-    protocol                   = "*"
+    protocol                   = "Tcp"
     source_port_range          = "*"
-    destination_port_range     = "*"
+    destination_port_range     = "443"
     source_address_prefix      = "VirtualNetwork"
     destination_address_prefix = "AzureCloud"
   }
 
-  # Deny all other outbound (default Azure rule override not needed; explicit deny below)
+  # Allow DNS resolution to Azure DNS (53/UDP). Required for the App Service
+  # to resolve names of the Azure services it talks to.
+  security_rule {
+    name                       = "allow-dns-to-azure"
+    priority                   = 110
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Udp"
+    source_port_range          = "*"
+    destination_port_range     = "53"
+    source_address_prefix      = "VirtualNetwork"
+    destination_address_prefix = "AzureCloud"
+  }
+
+  # Deny all other outbound (covers Internet, VNet-to-VNet, etc.).
   security_rule {
     name                       = "deny-internet-outbound"
     priority                   = 200
@@ -91,6 +107,10 @@ resource "azurerm_network_security_group" "private_endpoints" {
   location            = var.location
   tags                = local.base_tags
 
+  # Allow VNet → PE subnet on web ports only. Both source and destination
+  # are pinned to VirtualNetwork so the rule does not extend beyond intended
+  # peers — wildcard destination is flagged as over-permissive by compliance
+  # scanners.
   security_rule {
     name                       = "allow-vnet-inbound"
     priority                   = 100
@@ -100,7 +120,7 @@ resource "azurerm_network_security_group" "private_endpoints" {
     source_port_range          = "*"
     destination_port_ranges    = ["80", "443"]
     source_address_prefix      = "VirtualNetwork"
-    destination_address_prefix = "*"
+    destination_address_prefix = "VirtualNetwork"
   }
 
   security_rule {
