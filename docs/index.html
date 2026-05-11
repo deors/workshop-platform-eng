@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Platform Engineering — Self-Service Provisioning</title>
+  <style>
+    :root {
+      --bg:        #f7f8fa;
+      --panel:     #ffffff;
+      --border:    #e1e4e8;
+      --text:      #24292f;
+      --muted:     #57606a;
+      --accent:    #0969da;
+      --accent-dk: #0550ae;
+      --success:   #1a7f37;
+      --danger:    #cf222e;
+      --code-bg:   #f6f8fa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.5;
+    }
+    header {
+      background: linear-gradient(135deg, #0969da 0%, #0550ae 100%);
+      color: white;
+      padding: 28px 0;
+    }
+    header .wrap { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+    header h1 { margin: 0 0 6px; font-size: 28px; }
+    header p  { margin: 0; opacity: 0.92; }
+
+    main { max-width: 900px; margin: 24px auto 48px; padding: 0 24px; }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    section h2 { margin: 0 0 12px; font-size: 18px; }
+    section p:first-of-type { margin-top: 0; }
+    section ul { margin: 8px 0; padding-left: 22px; }
+    section li { margin: 4px 0; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px 20px;
+    }
+    @media (max-width: 680px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+    label .req { color: var(--danger); margin-left: 2px; }
+    .hint { display: block; font-size: 12px; color: var(--muted); margin-top: 3px; font-weight: 400; }
+
+    input, select {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 14px;
+      font-family: inherit;
+      color: var(--text);
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(9,105,218,.15); }
+    input.invalid { border-color: var(--danger); }
+    input[readonly], input[disabled] { background: var(--code-bg); color: var(--muted); }
+
+    .field-error { color: var(--danger); font-size: 12px; margin-top: 4px; display: none; }
+    .field-error.visible { display: block; }
+
+    button {
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 9px 18px;
+      border-radius: 6px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+    button.primary { background: var(--accent); color: white; }
+    button.primary:hover:not(:disabled) { background: var(--accent-dk); }
+    button.primary:disabled { background: #94d3a2; cursor: not-allowed; opacity: .7; }
+    button.secondary { background: white; color: var(--text); border-color: var(--border); }
+    button.secondary:hover { background: var(--code-bg); }
+
+    .actions { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+
+    pre.curl, pre.payload {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      font-size: 12.5px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      overflow-x: auto;
+      margin: 8px 0 0;
+      white-space: pre;
+    }
+    .copy-row { display: flex; justify-content: flex-end; }
+    .copy-btn { font-size: 12px; padding: 4px 10px; }
+
+    .result {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      font-size: 14px;
+      display: none;
+    }
+    .result.success { display: block; background: #dafbe1; border: 1px solid #aceebb; color: var(--success); }
+    .result.error   { display: block; background: #ffebe9; border: 1px solid #ffcecb; color: var(--danger); }
+    .result a       { color: inherit; font-weight: 600; }
+
+    code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; font-size: 90%; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Self-Service Provisioning</h1>
+    <p>Trigger the Platform Engineering workflow to provision a new application or update an existing one.</p>
+  </div>
+</header>
+
+<main>
+
+  <section>
+    <h2>What is this?</h2>
+    <p>
+      This form fires the <strong>Provision Infrastructure</strong> GitHub Actions workflow on this repository
+      via the <code>repository_dispatch</code> trigger. The workflow then runs the full pipeline:
+      Terraform plan + apply against Azure, GitHub Environments + variables on the application repo,
+      OIDC federated credentials on the platform service principal, and (on first creation) observation of
+      the application's CI workflow.
+    </p>
+    <p>
+      Everything you fill below maps 1:1 to a workflow input. The page never persists your token; it stays in
+      your browser memory only for the lifetime of the page.
+    </p>
+  </section>
+
+  <section>
+    <h2>What gets provisioned</h2>
+    <p>Per environment requested, Terraform creates:</p>
+    <ul>
+      <li>Resource group <code>rg-&lt;app&gt;-&lt;env&gt;</code></li>
+      <li>Log Analytics workspace + Application Insights</li>
+      <li>VNet, two subnets (integration + private endpoint), two NSGs, private DNS zone &amp; link, VNet flow logs (90-day retention) + dedicated storage account</li>
+      <li>User-assigned managed identity</li>
+      <li>App Service Plan (P0v3 dev / P1v3 staging / P2v3 prod, zone-redundant in prod)</li>
+      <li>Linux Web App (container) with HTTPS-only, TLS 1.3, FTP disabled, end-to-end TLS encryption, health check on <code>/health</code></li>
+      <li>Staging deployment slot (staging + prod environments)</li>
+      <li>Private endpoint for inbound traffic (public endpoint also open in dev only, for runner smoke tests)</li>
+      <li>Autoscale rules (1–3 staging, 3–10 prod)</li>
+      <li>Diagnostic settings on Web App and App Service Plan</li>
+    </ul>
+    <p>And on the app repo side (first run): the repo from the template, environments + variables, the OIDC fed-cred per env, and a tracking issue summarising the run.</p>
+  </section>
+
+  <section>
+    <h2>Configuration applied</h2>
+    <ul>
+      <li><strong>Security:</strong> HTTPS-only, TLS 1.3 minimum, FTP disabled, public network access disabled for staging/prod, end-to-end encryption inside App Service, managed-identity auth for ACR pull.</li>
+      <li><strong>Compliance (Checkov):</strong> all <code>CKV_AZURE_*</code> checks pass; per-env strictness via <code>.checkov.yaml</code> (prod) and <code>.checkov.nonprod.yaml</code> (dev/staging).</li>
+      <li><strong>Resilience:</strong> prod is zone-redundant with a 3-instance worker baseline; staging + prod have deployment slots for zero-downtime swaps.</li>
+      <li><strong>Observability:</strong> diagnostic settings stream all categories to Log Analytics; Application Insights wired via app settings.</li>
+      <li><strong>State:</strong> Terraform state in an Azure Storage Account per app, AAD-only auth (no shared keys), OIDC for the backend.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Request parameters</h2>
+    <form id="provision-form" autocomplete="off">
+
+      <div class="grid-2">
+
+        <div>
+          <label for="environment">Environment <span class="req">*</span></label>
+          <select id="environment" name="environment" required>
+            <option value="">— choose —</option>
+            <option value="dev">dev</option>
+            <option value="staging">staging</option>
+            <option value="prod">prod</option>
+            <option value="all">all (dev + staging + prod)</option>
+          </select>
+          <span class="hint">Which environment(s) to provision/reconcile in this run.</span>
+          <div class="field-error" data-for="environment">Required.</div>
+        </div>
+
+        <div>
+          <label for="app_name">Application name <span class="req">*</span></label>
+          <input type="text" id="app_name" name="app_name" required placeholder="test-webapp"
+                 pattern="^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$" />
+          <span class="hint">3–22 chars, lowercase + digits + hyphens, no leading/trailing hyphen.</span>
+          <div class="field-error" data-for="app_name">Must match <code>^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$</code>.</div>
+        </div>
+
+        <div>
+          <label for="subscription_id">Azure Subscription ID <span class="req">*</span></label>
+          <input type="text" id="subscription_id" name="subscription_id" required
+                 placeholder="00000000-0000-0000-0000-000000000000"
+                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
+          <span class="hint">GUID, 8-4-4-4-12 hex.</span>
+          <div class="field-error" data-for="subscription_id">Must be a GUID.</div>
+        </div>
+
+        <div>
+          <label for="azure_client_id">Azure Client ID (SP) <span class="req">*</span></label>
+          <input type="text" id="azure_client_id" name="azure_client_id" required
+                 placeholder="00000000-0000-0000-0000-000000000000"
+                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
+          <span class="hint">Application (client) ID of the platform service principal.</span>
+          <div class="field-error" data-for="azure_client_id">Must be a GUID.</div>
+        </div>
+
+        <div>
+          <label for="azure_tenant_id">Azure Tenant ID <span class="req">*</span></label>
+          <input type="text" id="azure_tenant_id" name="azure_tenant_id" required
+                 placeholder="11111111-1111-1111-1111-111111111111"
+                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
+          <span class="hint">Entra tenant GUID.</span>
+          <div class="field-error" data-for="azure_tenant_id">Must be a GUID.</div>
+        </div>
+
+        <div>
+          <label for="template_repo">Template repo <span class="req">*</span></label>
+          <input type="text" id="template_repo" name="template_repo" required
+                 placeholder="owner/template-name"
+                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
+          <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
+          <div class="field-error" data-for="template_repo">Format must be <code>owner/name</code>.</div>
+        </div>
+
+        <div>
+          <label for="container_image">Container image <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="container_image" name="container_image"
+                 placeholder="myregistry.azurecr.io/myapp:latest" />
+          <span class="hint">Ignored on reconcile runs. Default placeholder used if blank.</span>
+        </div>
+
+        <div>
+          <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="container_registry_url" name="container_registry_url"
+                 placeholder="myregistry.azurecr.io" />
+          <span class="hint">Leave empty for public images / GHCR.</span>
+        </div>
+
+        <div>
+          <label for="ci_workflow_file">CI workflow file <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="ci_workflow_file" name="ci_workflow_file" placeholder="ci.yml" />
+          <span class="hint">Filename inside the application repo. Default <code>ci.yml</code>.</span>
+        </div>
+
+        <div>
+          <label for="event_type">Event type</label>
+          <select id="event_type" name="event_type">
+            <option value="provision-infrastructure" selected>provision-infrastructure</option>
+            <option value="update-infrastructure">update-infrastructure</option>
+          </select>
+          <span class="hint">Both are accepted by the workflow's <code>repository_dispatch</code> trigger.</span>
+        </div>
+
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
+
+      <div class="grid-2">
+        <div>
+          <label for="platform_repo">Platform repo <span class="req">*</span></label>
+          <input type="text" id="platform_repo" name="platform_repo" required
+                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
+          <span class="hint">This repo (auto-detected from the page URL).</span>
+          <div class="field-error" data-for="platform_repo">Format must be <code>owner/name</code>.</div>
+        </div>
+
+        <div>
+          <label for="token">GitHub token <span class="req">*</span></label>
+          <input type="password" id="token" name="token" required
+                 placeholder="ghp_… (fine-grained PAT)" />
+          <span class="hint">PAT with <em>Actions: write</em> on this repo. Kept in browser memory only.</span>
+          <div class="field-error" data-for="token">Required.</div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="dispatch-btn" class="primary">Dispatch workflow</button>
+        <button type="button" id="reset-btn" class="secondary">Reset form</button>
+      </div>
+
+      <div id="result" class="result" role="status" aria-live="polite"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Preview — equivalent <code>curl</code></h2>
+    <div class="copy-row">
+      <button type="button" id="copy-curl" class="secondary copy-btn">Copy</button>
+    </div>
+    <pre class="curl" id="curl-preview"># Fill the form above to see the curl preview</pre>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  const form    = document.getElementById('provision-form');
+  const result  = document.getElementById('result');
+  const curlEl  = document.getElementById('curl-preview');
+  const btn     = document.getElementById('dispatch-btn');
+
+  // ── Auto-detect platform repo from the GitHub Pages URL.
+  // <user>.github.io/<repo>/  → repo = <user>/<repo>
+  (function detectRepo () {
+    const input = document.getElementById('platform_repo');
+    const host  = window.location.hostname;
+    const path  = window.location.pathname.replace(/\/+$/, '');
+    if (host.endsWith('.github.io')) {
+      const owner = host.split('.github.io')[0];
+      const repo  = path.split('/')[1] || '';
+      if (owner && repo) input.value = `${owner}/${repo}`;
+    }
+  })();
+
+  // ── Field-level validation feedback ────────────────────────────────────────
+  function validateField (el) {
+    const errBox = document.querySelector(`.field-error[data-for="${el.id}"]`);
+    const ok     = el.checkValidity();
+    el.classList.toggle('invalid', !ok);
+    if (errBox) errBox.classList.toggle('visible', !ok);
+    return ok;
+  }
+  form.querySelectorAll('input, select').forEach(el => {
+    el.addEventListener('blur',  () => validateField(el));
+    el.addEventListener('input', () => { if (el.classList.contains('invalid')) validateField(el); });
+    el.addEventListener('input',  updateCurl);
+    el.addEventListener('change', updateCurl);
+  });
+
+  // ── Payload builder (omits empty optional fields) ──────────────────────────
+  function buildPayload () {
+    const v = id => (document.getElementById(id).value || '').trim();
+    const payload = {
+      event_type: v('event_type'),
+      client_payload: {
+        environment:     v('environment'),
+        app_name:        v('app_name'),
+        subscription_id: v('subscription_id'),
+        azure_client_id: v('azure_client_id'),
+        azure_tenant_id: v('azure_tenant_id'),
+        template_repo:   v('template_repo'),
+      }
+    };
+    ['container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {
+      if (v(id)) payload.client_payload[id] = v(id);
+    });
+    return payload;
+  }
+
+  // ── Live curl preview ──────────────────────────────────────────────────────
+  function updateCurl () {
+    const repo    = (document.getElementById('platform_repo').value || '').trim();
+    const payload = buildPayload();
+    const json    = JSON.stringify(payload, null, 2);
+    if (!repo) { curlEl.textContent = '# Fill the form above to see the curl preview'; return; }
+    curlEl.textContent =
+      `curl -X POST \\\n` +
+      `  -H "Authorization: Bearer $GITHUB_TOKEN" \\\n` +
+      `  -H "Accept: application/vnd.github+json" \\\n` +
+      `  -H "Content-Type: application/json" \\\n` +
+      `  https://api.github.com/repos/${repo}/dispatches \\\n` +
+      `  -d '${json.replace(/'/g, "'\\''")}'`;
+  }
+  updateCurl();
+
+  document.getElementById('copy-curl').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(curlEl.textContent);
+      const b = document.getElementById('copy-curl');
+      const orig = b.textContent;
+      b.textContent = 'Copied';
+      setTimeout(() => (b.textContent = orig), 1200);
+    } catch (e) { /* clipboard unavailable */ }
+  });
+
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    form.reset();
+    form.querySelectorAll('.invalid').forEach(el => el.classList.remove('invalid'));
+    form.querySelectorAll('.field-error.visible').forEach(el => el.classList.remove('visible'));
+    result.className = 'result';
+    result.textContent = '';
+    updateCurl();
+  });
+
+  // ── Submit → fetch the dispatch ────────────────────────────────────────────
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    let allOk = true;
+    form.querySelectorAll('input, select').forEach(el => { if (!validateField(el)) allOk = false; });
+    if (!allOk) {
+      result.className = 'result error';
+      result.textContent = 'Please fix the highlighted fields.';
+      return;
+    }
+
+    const repo    = document.getElementById('platform_repo').value.trim();
+    const token   = document.getElementById('token').value.trim();
+    const payload = buildPayload();
+
+    btn.disabled = true;
+    btn.textContent = 'Dispatching…';
+    result.className = 'result';
+    result.textContent = '';
+
+    try {
+      const r = await fetch(`https://api.github.com/repos/${repo}/dispatches`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept':        'application/vnd.github+json',
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      if (r.status === 204) {
+        const url = `https://github.com/${repo}/actions/workflows/provision-infrastructure.yml`;
+        result.className = 'result success';
+        result.innerHTML =
+          `✓ Dispatched. The workflow run will appear shortly at ` +
+          `<a href="${url}" target="_blank" rel="noopener">${url}</a>.`;
+      } else {
+        const txt = await r.text();
+        result.className = 'result error';
+        result.textContent = `HTTP ${r.status}: ${txt || r.statusText}`;
+      }
+    } catch (err) {
+      result.className = 'result error';
+      result.textContent = `Network error: ${err.message}`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Dispatch workflow';
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
