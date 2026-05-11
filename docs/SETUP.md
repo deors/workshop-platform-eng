@@ -365,14 +365,17 @@ exception doesn't fail policy.
 
 #### Deploy validation strategy
 
-Because staging and prod cannot be reached over HTTP from a GitHub-hosted
-runner, the application repo's `deploy.yml` should validate differently per
-env:
+The application repository ships **two top-level workflows** that both
+delegate to a reusable `deploy.yml`:
 
-- **dev** — `azure/login` (OIDC), update the container image on the App
-  Service, then `curl -fsS https://<webapp>.azurewebsites.net/health`.
-- **staging / prod** — `azure/login` (OIDC), update the image, then use
-  control-plane assertions only:
+- **`ci.yml`** — runs on every push to `main`; builds, tests, and calls
+  `deploy.yml` with `environment: dev`. The dev Web App has its public
+  endpoint open, so the deploy step can finish with a real HTTP smoke test
+  (`curl -fsS https://<webapp>.azurewebsites.net/health`).
+- **`release.yml`** — promotes a built image to staging and then to prod.
+  Calls `deploy.yml` with `environment: staging` and (after the prod
+  environment's reviewers approve) `environment: prod`. Because both envs
+  are PE-only, the deploy step uses **control-plane assertions only**:
   ```bash
   az webapp show -g $RG -n $APP --query state -o tsv          # → Running
   az webapp config container show -g $RG -n $APP \
@@ -385,7 +388,7 @@ env:
   the rest.
 
 Operators who need real HTTP smoke tests against PE-only environments
-should run the deploy workflow on a self-hosted runner inside
+should run the deploy/release workflows on a self-hosted runner inside
 `webapp_integration_subnet` (or a peered VNet). Out of scope for the
 workshop baseline.
 
@@ -478,12 +481,15 @@ finalize                             ✓ summary posted as issue comment
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as
 `TFSTATE_STORAGE_ACCOUNT=...`. The plan output (and the binary `tfplan` file)
-is attached as a workflow artifact named
-`tfplan-test-webapp-dev`, retained for 7 days.
+is attached as a workflow artifact named `tfplan-test-webapp-dev`, retained
+for 7 days. The plan is then consumed by the `apply` job, which provisions
+the resources for real, after which `verify` runs control-plane assertions
+against the live infrastructure.
 
-No real infrastructure has been created at this point — only the state
-storage account. The Terraform plan describes what _would_ be created if the
-apply step were enabled.
+The full run also creates the application repository from your template,
+configures its GitHub Environments + variables, registers the per-env
+federated credentials on the platform SP, observes the auto-triggered CI in
+the new repo, and posts a summary comment on the per-run tracking issue.
 
 ---
 
@@ -601,9 +607,24 @@ the rules around skips.
 
 ## What's next
 
-Once the first plan succeeds end-to-end, you're ready for the next milestones
-on the [roadmap](../README.md#roadmap):
+With the first run green end-to-end, the typical follow-up workshop topics are:
 
-- Wire up the `apply` step with environment protection rules.
-- Add repository templating so a brand-new application gets both its
-  infrastructure and its source repo provisioned in one shot.
+- **Iterate on the application** — push to the new repo's `main`; the
+  template's **CI workflow** builds, tests, and (on success) deploys to dev.
+- **Promote to staging / prod** — the template ships a **release workflow**
+  that promotes a built image to staging and then to prod, using the same
+  per-env GitHub Environments + variables this platform configured (so
+  `prod` honours whatever protection rules / reviewers you've added on its
+  environment). Trigger it from the app repo's *Actions → Release → Run
+  workflow*, or via a Git tag if the template wires that path. The release
+  workflow performs control-plane validation only against staging/prod —
+  HTTP smoke tests don't work from a GitHub-hosted runner against PE-only
+  envs (see *Web App network exposure* in step 5 for the rationale).
+- **Try the self-service web UI** — enable GitHub Pages on this repo
+  (`Settings → Pages → Source: Deploy from a branch / main / /docs`), then
+  fire subsequent runs from `https://<owner>.github.io/<repo>/`. The page
+  works for *provision* (new env on an existing app) and *reconcile* runs
+  too, not just first-time bootstrap.
+- **Pick the next item from the roadmap** — destroy/decommission, scheduled
+  drift detection, container console logs in the module, and cost reporting
+  are the most-requested next steps.
