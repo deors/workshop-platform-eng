@@ -32,11 +32,23 @@ remain plain markdown.
 
 ## Token requirements
 
-The operator submitting the form needs a token (fine-grained PAT or GitHub
-App installation token) with **Actions: write** on this repository. That's
-the minimum scope needed to send a `repository_dispatch` event. The token
-needs no Azure or template-repo permissions — once dispatched, the workflow
-itself does everything with the platform's `GH_PAT` and OIDC credentials.
+The operator submitting the form needs a token with permission to call the
+`POST /repos/<owner>/<repo>/dispatches` endpoint:
+
+- **Fine-grained PAT or GitHub App installation token:** *Repository
+  permissions → Contents → Read and write* on this repository.
+- **Classic PAT:** `repo` scope.
+
+That's the only scope needed — the token itself does **not** require any
+Azure or template-repo permissions. Once dispatched, the workflow uses the
+platform's `GH_PAT` (for cross-repo operations) and OIDC federated
+credentials (for Azure) to do everything else.
+
+> **Gotcha:** "Actions: write" sounds like the right permission for
+> triggering workflows but it isn't enough for `repository_dispatch` —
+> GitHub specifically requires Contents:write here. If you see
+> `HTTP 403: Resource not accessible by personal access token`, this is
+> almost always the cause.
 
 ## Auto-detected repo
 
