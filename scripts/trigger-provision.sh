@@ -27,8 +27,10 @@ Required (flag OR env var):
 
 Optional:
   --container-image        <ref>     CONTAINER_IMAGE
-                                       (default: myregistry.azurecr.io/myapp:latest;
-                                        ignored on reconcile runs)
+                                       (default: mcr.microsoft.com/appsvc/staticsite:latest;
+                                        a placeholder that App Service can pull anonymously —
+                                        the template's CI overwrites it within minutes; ignored
+                                        on reconcile runs)
   --container-registry-url <url>     CONTAINER_REGISTRY_URL
                                        (default: empty)
   --ci-workflow-file       <name>    CI_WORKFLOW_FILE

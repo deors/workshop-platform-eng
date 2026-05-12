@@ -177,7 +177,7 @@ curl -X POST \
       "azure_client_id":        "11111111-1111-1111-1111-111111111111",
       "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
       "template_repo":          "your-org/template-app",
-      "container_image":        "myregistry.azurecr.io/myapp:1.0.0",
+      "container_image":        "mcr.microsoft.com/appsvc/staticsite:latest",
       "container_registry_url": "myregistry.azurecr.io"
     }
   }'

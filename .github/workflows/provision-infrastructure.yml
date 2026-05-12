@@ -114,7 +114,7 @@ jobs:
           # on site_config[0].application_stack means whatever CI/deploy
           # put there stays put. Reconcile runs therefore don't need a real
           # image value.
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-myregistry.azurecr.io/myapp:latest}}"
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-mcr.microsoft.com/appsvc/staticsite:latest}}"
           CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
