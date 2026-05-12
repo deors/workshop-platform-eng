@@ -152,10 +152,10 @@ You need **four** credentials because two different subject formats apply:
 
 | Credential | Used by | Subject |
 |------------|---------|---------|
-| Branch-scoped | `bootstrap-tfstate.yml`; the `bootstrap-tfstate` job in `provision-infrastructure.yml` | `repo:<org>/<repo>:ref:refs/heads/main` |
-| Environment `dev` | `plan` job for `dev` | `repo:<org>/<repo>:environment:dev` |
-| Environment `staging` | `plan` job for `staging` | `repo:<org>/<repo>:environment:staging` |
-| Environment `prod` | `plan` job for `prod` | `repo:<org>/<repo>:environment:prod` |
+| Branch-scoped | every job in `provision-infrastructure.yml` **without** an `environment:` key — `resolve-inputs`, `fmt`, `checkov`, `bootstrap-tfstate`, `create-app-repo`, `create-run-issue`, `configure-environments`, `configure-federated-credentials`, `observe-ci`, `finalize`; and the standalone `bootstrap-tfstate.yml` | `repo:<org>/<repo>:ref:refs/heads/main` |
+| Environment `dev` | every job pinned to `environment: dev` — `plan`, `apply`, the `verify-infrastructure.yml` reusable workflow | `repo:<org>/<repo>:environment:dev` |
+| Environment `staging` | same set of jobs, pinned to `environment: staging` | `repo:<org>/<repo>:environment:staging` |
+| Environment `prod` | same set of jobs, pinned to `environment: prod` | `repo:<org>/<repo>:environment:prod` |
 
 Create all four:
 
@@ -463,20 +463,22 @@ provide:
 
 ### What you should observe
 
+Each row below names the job exactly as it appears in the run's UI:
+
 ```
-resolve-inputs           ✓ validated inputs, derived sttftestwebapp<sub8>
-checkov · {dev|staging|prod}  ✓ no findings
-fmt                      ✓ formatting clean
-bootstrap-tfstate        ✓ rg-tfstate-test-webapp + storage account + container
-plan · {env}             ✓ terraform plan generated, artifact uploaded
-apply · {env}            ✓ terraform apply succeeded
-verify · {env}           ✓ control-plane assertions passed
-create-app-repo                      ✓ <owner>/<app_name> created from template (or skipped)
-create-run-issue                     ✓ per-run tracking issue opened
-configure-env · {env}                ✓ GitHub Environment + variables set
-federated-credential · {env}         ✓ AAD subject registered on the SP
-observe-ci                           ✓ template auto-triggered CI watched, build+test+dev-deploy succeeded
-finalize                             ✓ summary posted as issue comment
+Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
+Checkov · {env}                   ✓ no findings
+Terraform fmt check               ✓ formatting clean
+Bootstrap tfstate storage         ✓ rg-tfstate-test-webapp + storage account + container
+Plan · {env}                      ✓ terraform plan generated, artifact uploaded
+Apply · {env}                     ✓ terraform apply succeeded
+Verify · {env}                    ✓ control-plane assertions passed
+Create application repo           ✓ <owner>/<app_name> created from template (or skipped)
+Create run issue                  ✓ per-run tracking issue opened
+Configure env · {env}             ✓ GitHub Environment + variables set
+Federated credential · {env}      ✓ AAD subject registered on the SP
+Observe CI in app repo            ✓ template auto-triggered CI watched, build+test+dev-deploy succeeded
+Summarize and comment             ✓ summary posted as issue comment
 ```
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as
