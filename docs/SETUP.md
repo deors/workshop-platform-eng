@@ -634,11 +634,12 @@ With the first run green end-to-end, the typical follow-up workshop topics are:
   that promotes a built image to staging and then to prod, using the same
   per-env GitHub Environments + variables this platform configured (so
   `prod` honours whatever protection rules / reviewers you've added on its
-  environment). Trigger it from the app repo's *Actions → Release → Run
-  workflow*, or via a Git tag if the template wires that path. The release
-  workflow performs control-plane validation only against staging/prod —
-  HTTP smoke tests don't work from a GitHub-hosted runner against PE-only
-  envs (see *Web App network exposure* in step 5 for the rationale).
+  environment). Trigger it by creating a GitHub Release in the app repo —
+  `vX.Y.Z-RC` deploys to staging, `vX.Y.Z` deploys to prod — or run it
+  manually from *Actions → Release → Run workflow* for ad-hoc promotions.
+  The release workflow performs control-plane validation only against
+  staging/prod — HTTP smoke tests don't work from a GitHub-hosted runner
+  against PE-only envs (see *Web App network exposure* in step 5).
 - **Try the self-service web UI** — enable GitHub Pages on this repo
   (`Settings → Pages → Source: Deploy from a branch / main / /docs`), then
   fire subsequent runs from `https://<owner>.github.io/<repo>/`. The page
