@@ -52,8 +52,13 @@ for env in dev staging prod; do
   (cd terraform/environments/$env && terraform init -backend=false && terraform validate)
 done
 
-# Security scan
-checkov --directory terraform/ --framework terraform --config-file .checkov.yaml
+# Security scan — match the per-env split CI uses.
+# Prod runs against the strict baseline:
+checkov -d terraform/environments/prod --framework terraform --config-file .checkov.yaml
+# Dev and staging run against the relaxed baseline (skips 212, 222, 225):
+for env in dev staging; do
+  checkov -d terraform/environments/$env --framework terraform --config-file .checkov.nonprod.yaml
+done
 ```
 
 If Checkov reports a finding you believe is a false positive or genuinely not
@@ -105,8 +110,13 @@ infrastructure run is required, but explain how you verified the change.
   `@main` or `@master`.
 - Set the smallest `permissions:` block that works. Default to read-only at
   the workflow level and grant write per-job when strictly needed.
-- Don't print secrets. Use `::add-mask::` for any sensitive value that
-  arrives as an input rather than a `secrets.*` reference.
+- Don't print secrets. For genuinely sensitive values arriving as inputs,
+  scope them to the step that consumes them rather than emitting them as
+  job outputs — GitHub blanks any value masked with `::add-mask::` before
+  it crosses a job-output boundary, which silently breaks downstream jobs.
+  Subscription / tenant / client GUIDs are **identifiers, not secrets** in
+  an OIDC flow (the federated credential's subject claim is what
+  authorises) — don't mask them.
 - Prefer OIDC over long-lived credentials.
 
 ### Commit messages
