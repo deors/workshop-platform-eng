@@ -243,6 +243,9 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
 - [x] CI observation + per-run tracking issue + finalize comment
 - [x] Template ships `ci.yml` (dev deploy) and `release.yml` (staging/prod
       promotion via a shared `deploy.yml`)
+- [x] Deployment reuses the image in previous environment, applying a new tag
+      to ensure that what is being tested is what is being promoted across
+      environments (dev tag -> RC tag -> prod/GA tag)
 - [x] Per-env compliance posture (PE-only staging/prod, public dev)
 - [x] VNet flow logs + end-to-end TLS encryption (via azapi)
 - [x] Tightened NSG rules (no protocol/port wildcards)
@@ -284,6 +287,16 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
       staging slot and swap would give zero-downtime promotion
 - [ ] **Operator audit trail** — record who triggered each run (PAT
       ownership, dispatch source) on the tracking issue
+- [ ] **Rollback** - add a rollback mechanism and workflow, e.g., by creating
+      an issue with a special label ('urgent rollback') to trigger it
+- [ ] **Static code analysis** - add static code analysis to the CI workflow
+      as a quality gate
+- [ ] **Software composition analysis** - scan dependencies in libraries and
+      container images for vulnerabilities as a quality gate
+- [ ] **Acceptance/regresion tests** - improve the test harness by adding e2e
+      acceptance/regressions tests (UI tests, API tests) as a quality gate in
+      the release workflow: to deploy to staging e2e tests must pass in dev,
+      and similarly to deploy to prod tests must pass in staging
 
 ## Contributing
 
