@@ -189,9 +189,13 @@ for the `repository_dispatch` endpoint.
 
 ## Conventions
 
-- **Naming.** All resources follow the pattern `<type>-<app>-<env>` (e.g.
-  `app-myapp-dev`, `asp-myapp-prod`). The state storage account uses
-  `sttf<app12><sub8>` to fit Azure's 24-char globally-unique constraint.
+- **Naming.** Most resources follow the pattern `<type>-<app>-<env>` (e.g.
+  `app-myapp-dev`, `asp-myapp-prod`). Two exceptions, both driven by Azure
+  Storage's 24-char globally-unique naming constraint:
+  - **tfstate SA** — `sttf<app12><sub8>` (per-subscription/per-app; lives
+    in `rg-tfstate-<app>`, shared by all envs of that app).
+  - **VNet flow-logs SA** — `stflow<app+env>` capped at 24 chars (per-env;
+    lives inside the per-env RG).
 - **Tags.** Every resource is tagged with `application`, `environment`,
   `managed-by=terraform`, and `platform=platform-engineering`.
 - **Secrets.** No long-lived credentials. GitHub authenticates to Azure via
