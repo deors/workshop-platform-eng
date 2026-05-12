@@ -390,9 +390,8 @@ delegate to a reusable `deploy.yml`:
   Because staging and prod are PE-only, the deploy step uses
   **control-plane assertions only**:
   ```bash
-  az webapp show -g $RG -n $APP --query state -o tsv          # → Running
-  az webapp config container show -g $RG -n $APP \
-    --query linuxFxVersion -o tsv                             # contains the deployed image tag
+  az webapp show        -g $RG -n $APP --query state          -o tsv  # should be 'Running'
+  az webapp config show -g $RG -n $APP --query linuxFxVersion -o tsv  # contains the deployed image tag
   ```
   This proves the platform accepted the new image. App Service's built-in
   health check (configured in this module to hit `/health`) handles the
