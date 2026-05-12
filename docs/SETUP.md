@@ -372,10 +372,23 @@ delegate to a reusable `deploy.yml`:
   `deploy.yml` with `environment: dev`. The dev Web App has its public
   endpoint open, so the deploy step can finish with a real HTTP smoke test
   (`curl -fsS https://<webapp>.azurewebsites.net/health`).
-- **`release.yml`** — promotes a built image to staging and then to prod.
-  Calls `deploy.yml` with `environment: staging` and (after the prod
-  environment's reviewers approve) `environment: prod`. Because both envs
-  are PE-only, the deploy step uses **control-plane assertions only**:
+- **`release.yml`** — promotes an **existing GHCR digest** to staging and
+  then to prod, triggered by a Git release (`vX.Y.Z-RC` → staging,
+  `vX.Y.Z` → prod). It does **not rebuild** the image:
+
+  1. *Identify image* — `az webapp config show` against the source env
+     (`dev` for RC, `staging` for GA) to read the currently-deployed
+     `sha-<short>` tag.
+  2. *Retag* — `docker pull <sha-tag>` then `docker tag` + `docker push`
+     to add the release tag to the same digest in GHCR. The same image
+     ends up with multiple tags: `sha-abc1234`, `1.4.0-RC`, `1.4.0`.
+  3. *Deploy* — calls `deploy.yml` with the target environment
+     (`staging` after `vX.Y.Z-RC`, `prod` after `vX.Y.Z`), pointing
+     App Service at the new tag. The prod environment's reviewers
+     approve before the prod step runs.
+
+  Because staging and prod are PE-only, the deploy step uses
+  **control-plane assertions only**:
   ```bash
   az webapp show -g $RG -n $APP --query state -o tsv          # → Running
   az webapp config container show -g $RG -n $APP \
@@ -386,6 +399,10 @@ delegate to a reusable `deploy.yml`:
   "is it actually serving traffic?" question and marks unhealthy instances
   unavailable automatically — the platform's `verify` job assertions cover
   the rest.
+
+  The retag-not-rebuild model means the exact bits that passed CI are the
+  exact bits in prod — no chance of a release-time rebuild drift, and every
+  released digest is traceable back to its `sha-<short>` and the commit.
 
 Operators who need real HTTP smoke tests against PE-only environments
 should run the deploy/release workflows on a self-hosted runner inside
