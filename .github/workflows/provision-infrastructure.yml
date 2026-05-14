@@ -214,7 +214,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Run Checkov
         id: checkov
@@ -247,7 +247,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
@@ -303,7 +303,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -417,7 +417,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -945,7 +945,7 @@ jobs:
       ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
     steps:
       - name: Checkout (for helper script)
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Watch CI run (build + test + dev deploy)
         id: ci
