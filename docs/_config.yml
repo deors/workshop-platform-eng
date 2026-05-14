@@ -1,0 +1,24 @@
+# Jekyll configuration for the project's GitHub Pages site.
+# Source is the `docs/` folder of the repository; the published site is the
+# project's documentation hub plus the self-service provisioning form.
+
+title:       Workshop · Platform Engineering
+description: Self-service Azure provisioning, driven by GitHub Actions + Terraform.
+theme:       jekyll-theme-cayman
+
+# GitHub Pages whitelist already enables these. Listed explicitly so a local
+# `bundle exec jekyll serve` matches the published build.
+plugins:
+  - jekyll-relative-links     # rewrites *.md links → *.html in the rendered site
+  - jekyll-readme-index       # makes a README.md inside source serve as index
+  - jekyll-default-layout     # applies the theme's default layout to pages
+                              # that don't declare one in front matter
+
+# Convert .md → /path/page.html (matches what jekyll-relative-links produces).
+permalink: pretty
+
+# Don't ship Markdown files we don't want shown as standalone pages.
+exclude:
+  - _config.yml
+  - README.md   # safety: index.md is the canonical home; if someone drops a
+                # README.md inside docs/ we don't want it to clash.

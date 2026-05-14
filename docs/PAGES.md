@@ -1,8 +1,33 @@
-# Self-service web page on GitHub Pages
+---
+title: Pages site
+---
 
-This `docs/` directory contains a single-file static page
-([`index.html`](./index.html)) that lets operators fire the *Provision
-Infrastructure* workflow without leaving the browser. The page:
+[← back to home](.)
+
+# Pages site — structure and setup
+
+This `docs/` directory is published as a **GitHub Pages** site rendered by
+Jekyll. It serves as the platform's public documentation hub and hosts the
+self-service provisioning form.
+
+| URL (relative to the Pages root) | Source | Purpose |
+|----------------------------------|--------|---------|
+| `/` | `index.md` | Homepage — project overview, architecture, quick start, conventions, roadmap. |
+| `/SETUP/` | `SETUP.md` | Full step-by-step setup guide. |
+| `/CONTRIBUTING/` | `CONTRIBUTING.md` | Contribution guidelines (mirror of the repo-root file). |
+| `/PAGES/` | `PAGES.md` | This page. |
+| `/provision.html` | `provision.html` | Self-service provisioning form (static HTML + JS). |
+
+The Jekyll site uses `jekyll-theme-cayman` plus the GitHub-Pages-whitelisted
+plugins `jekyll-relative-links` (rewrites `*.md` links to their rendered URLs
+at build time) and `jekyll-default-layout` (applies the theme's layout to
+pages that don't declare one).
+
+## The self-service provisioning form
+
+[`provision.html`](provision.html) is a single-file static page that lets
+operators fire the *Provision Infrastructure* workflow without leaving the
+browser. The page:
 
 - Explains what the platform does, what resources are provisioned, and what
   configuration is applied per environment.
@@ -17,18 +42,18 @@ lifetime of the tab.
 
 ## Enabling Pages on this repo
 
-1. Push these files to `main` (or your default branch).
+1. Push the contents of `docs/` to `main` (or your default branch).
 2. Repo **Settings → Pages → Build and deployment**:
    - **Source:** *Deploy from a branch*
    - **Branch:** `main`
    - **Folder:** `/docs`
    - Click **Save**.
 3. Wait a minute, then visit
-   `https://<owner>.github.io/<repo>/` — the form should load.
+   `https://<owner>.github.io/<repo>/` — the documentation home should load,
+   and `/provision.html` should serve the form.
 
-The empty `.nojekyll` file alongside `index.html` disables Jekyll
-processing, so the HTML is served verbatim and `SETUP.md` / `PAGES.md`
-remain plain markdown.
+Jekyll picks up `_config.yml` from the `docs/` folder automatically; no
+further configuration is required on the Pages side.
 
 ## Token requirements
 
@@ -52,7 +77,7 @@ credentials (for Azure) to do everything else.
 
 ## Auto-detected repo
 
-The page reads `window.location` to pre-fill the *Platform repo* field as
-`<owner>/<repo>` when served from `<owner>.github.io/<repo>/`. The field is
-still editable, in case the page is served from somewhere else (a fork,
-local file, etc.).
+The provisioning page reads `window.location` to pre-fill the *Platform repo*
+field as `<owner>/<repo>` when served from `<owner>.github.io/<repo>/`. The
+field is still editable, in case the page is served from somewhere else (a
+fork, local file, etc.).

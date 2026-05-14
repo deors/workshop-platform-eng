@@ -1,3 +1,9 @@
+---
+title: Setup Guide
+---
+
+[← back to home](.)
+
 # Setup Guide
 
 End-to-end instructions to wire this platform to a GitHub repository and an
