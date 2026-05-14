@@ -558,11 +558,16 @@ jobs:
           echo "created_at=${CREATED_AT}" >> "$GITHUB_OUTPUT"
 
           echo "Creating ${REPO_FULL} from template ${TEMPLATE}…"
+          # Public repo: keeps the workshop's GHCR packages pullable
+          # anonymously. Switch to `private=true` if your context
+          # requires it — note the template's CI assumes Strategy 1
+          # (public package) by default; private repos need Strategy 2
+          # or 3, see the template README file.
           gh api -X POST "repos/${TEMPLATE}/generate" \
             -f "owner=${OWNER}" \
             -f "name=${APP_NAME}" \
             -f "description=Application repository for ${APP_NAME} (provisioned by platform-eng)" \
-            -F "private=true" \
+            -F "private=false" \
             -F "include_all_branches=false"
 
           # The "generate" endpoint is async — wait for the repo to be queryable.
