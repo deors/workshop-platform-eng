@@ -1,4 +1,4 @@
-name: Delete application resources (all environments + tfstate)
+name: Delete Application Resources (All Environments + tfstate)
 
 on:
   workflow_dispatch:

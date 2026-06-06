@@ -1,4 +1,4 @@
-name: Delete application resources (single environment)
+name: Delete Application Resources (Single Environment)
 
 on:
   workflow_call:
