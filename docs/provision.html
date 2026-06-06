@@ -236,12 +236,21 @@
         </div>
 
         <div>
-          <label for="template_repo">Template repo <span class="req">*</span></label>
-          <input type="text" id="template_repo" name="template_repo" required
+          <label for="app_template_repo">Application template repo <span class="req">*</span></label>
+          <input type="text" id="app_template_repo" name="app_template_repo" required
                  placeholder="owner/template-name"
                  pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
           <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
-          <div class="field-error" data-for="template_repo">Format must be <code>owner/name</code>.</div>
+          <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
+        </div>
+
+        <div>
+          <label for="infra_template_repo">Infrastructure template repo <span class="req">*</span></label>
+          <input type="text" id="infra_template_repo" name="infra_template_repo" required
+                 placeholder="owner/template-terraform-azure-webapp"
+                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
+          <span class="hint">Infrastructure archetype: Terraform modules + Checkov configs. <code>owner/name</code>.</span>
+          <div class="field-error" data-for="infra_template_repo">Format must be <code>owner/name</code>.</div>
         </div>
 
         <div>
@@ -360,7 +369,8 @@
         subscription_id: v('subscription_id'),
         azure_client_id: v('azure_client_id'),
         azure_tenant_id: v('azure_tenant_id'),
-        template_repo:   v('template_repo'),
+        app_template_repo: v('app_template_repo'),
+        infra_template_repo: v('infra_template_repo'),
       }
     };
     ['container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {

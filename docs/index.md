@@ -53,6 +53,45 @@ guidance for security, observability, and connectivity:
 - Staging slot for blue/green swaps in `staging` and `prod`
 - Tightened NSG rules (no `protocol=*` / `port=*` blanket allows)
 
+---
+
+## Architecture: Decoupled App & Infra Templates
+
+The platform now separates **application code** from **infrastructure code**:
+
+| Component | Template | Repo Naming | Role |
+|-----------|----------|-------------|------|
+| **App Code** | `template-helloworld-express` | `{app-name}` | Runtime: Node.js, Python, Java, etc. Owns CI/CD (build, test, deploy) |
+| **Infra** | `template-terraform-azure-webapp` | `{app-name}-infra` | Infrastructure as Code: VNet, App Service, monitoring, etc. Terraform modules. |
+
+When you provision, the platform:
+
+1. Creates `{app-name}` from the **app template** (e.g., Node.js starter) ← app CI/CD logic
+2. Creates `{app-name}-infra` from the **infra template** (Terraform) ← infrastructure provisioning
+3. Runs Terraform against the infra repo to stand up Azure resources
+4. Sets GitHub environment variables and federated credentials on the app repo
+
+This **decoupling** means:
+
+- **App teams** iterate on code without touching infrastructure
+- **Infra teams** maintain reusable architecture templates (archetypes)
+- **Templates are archetypes:** multiple instances (apps) can use the same archetype with different configurations
+
+### Infrastructure Templates (Archetypes)
+
+Each **infra template** is a self-contained Terraform module set covering an infrastructure pattern:
+
+- **`template-terraform-azure-webapp`** (current): App Service with VNet, Private Endpoint, autoscale, observability
+      - Modules: monitoring (Log Analytics), networking (VNet, NSGs, PE), webapp (App Service Plan, Web App, Managed Identity, Autoscale)
+      - Environments: dev (P0v3, public), staging (P1v3, autoscale, PE-only), prod (P2v3, zone-redundant, PE-only)
+      - Checkov baselines: prod-strict (mandatory HA, zone redundancy, PE-only), dev/staging-relaxed (dev allows public access for testing)
+
+- **Future archetypes:** `template-terraform-azure-aks` (Kubernetes), `template-terraform-gcp-cloudrun` (Google Cloud), etc.
+
+When provisioning, you specify which infra template to use as an input parameter to the `provision-infrastructure` workflow.
+
+### State management
+
 State is kept in Azure Storage, with one storage account per
 **subscription + application** so that unrelated apps sharing a subscription
 remain decoupled. The state account is AAD-auth-only — no shared keys.
@@ -66,7 +105,7 @@ test counts.
 
 ## Architecture at a glance
 
-```
+```text
 operator                ┌─────────────────────────────────────────────┐
   ├─ web UI (Pages) ──► │  GitHub Actions: provision-infrastructure   │
   ├─ trigger script ──► │                                             │
@@ -104,7 +143,7 @@ operator                ┌─────────────────�
 
 ## Repository layout
 
-```
+```text
 .
 ├── .checkov.yaml                       # Checkov rules + skips for prod (strict)
 ├── .checkov.nonprod.yaml               # Relaxed skips for dev/staging

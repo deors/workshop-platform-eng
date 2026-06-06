@@ -61,9 +61,49 @@ for env in dev staging; do
 done
 ```
 
+## Creating New Infrastructure Archetypes
+
+To support a new infrastructure pattern (e.g., Kubernetes, managed databases, serverless):
+
+1. **Create a new template repo**
+
+- Name: `template-terraform-{provider}-{archetype}`, e.g., `template-terraform-azure-aks`
+- Structure: Same as `template-terraform-azure-webapp` — `terraform/environments/{dev,staging,prod}` + `terraform/modules/*`
+- Add `.checkov.yaml` (prod baseline) and `.checkov.nonprod.yaml` (dev/staging baseline)
+- Add `README.md` explaining the archetype, modules, and environment-specific settings
+
+1. **Terraform modules**
+
+- Each environment's `main.tf` should be minimal — primarily module calls
+- Modules (`monitoring`, `networking`, `database`, etc.) contain the actual resources
+- Use locals for common naming/tagging conventions
+- Document all variables and outputs
+
+1. **Checkov compliance**
+
+- Start with production-strict baseline in `.checkov.yaml`
+- In `.checkov.nonprod.yaml`, skip checks only when dev/staging genuinely has different requirements
+- Justify skipped checks with comments referencing why (cost, non-applicable to archetype, TODO, etc.)
+
+1. **Make it a public template repo**
+
+- Enable GitHub Pages if you want to document the archetype
+- Ensure all Terraform files work standalone (no dependencies on workshop-platform-eng)
+
+1. **Integration with provision-infrastructure.yml**
+
+- No code changes needed — the workflow accepts `infra_template_repo` as a parameter
+- Just provide the new template repo when triggering a provision
+
+### Documenting Terraform checks
+
 If Checkov reports a finding you believe is a false positive or genuinely not
 applicable, **document the rationale in `.checkov.yaml`** alongside the skip
 entry. Reviewers will reject blanket skips.
+
+Likewise, if new checks are advised for the new archetype, **document the rationale**,
+too. That will help reviewers to understand the reason behind the new check
+enforcement.
 
 ### Testing infrastructure changes
 
