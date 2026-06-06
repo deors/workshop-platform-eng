@@ -24,7 +24,7 @@ skip() { echo "[bootstrap-tfstate] → $*" >&2; }
 # ── Argument parsing ──────────────────────────────────────────────────────────
 
 APP_NAME=""
-SUBSCRIPTION_ID=""
+AZURE_SUBSCRIPTION_ID=""
 LOCATION="westeurope"
 PRINCIPAL_ID=""      # optional: object ID to assign Storage Blob Data Contributor
 
@@ -184,7 +184,7 @@ fi
 # ── RBAC – Storage Blob Data Contributor ─────────────────────────────────────
 
 if [[ -n "$PRINCIPAL_ID" ]]; then
-  SCOPE="/subscriptions/${SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP_NAME}/providers/Microsoft.Storage/storageAccounts/${STORAGE_ACCOUNT_NAME}"
+  SCOPE="/subscriptions/${AZURE_SUBSCRIPTION_ID}/resourceGroups/${RESOURCE_GROUP_NAME}/providers/Microsoft.Storage/storageAccounts/${STORAGE_ACCOUNT_NAME}"
   ROLE="Storage Blob Data Contributor"
 
   log "Checking role assignment '${ROLE}' for principal '${PRINCIPAL_ID}'…"
