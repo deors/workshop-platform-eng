@@ -44,6 +44,10 @@ intent, and give constructive feedback.
 Run the same checks CI runs, before you push:
 
 ```bash
+# Clone the generated infra repo (<app-name>-infra) and run checks there.
+git clone https://github.com/<org>/<app-name>-infra.git
+cd <app-name>-infra
+
 # Format
 terraform fmt -recursive terraform/
 
@@ -175,7 +179,7 @@ not *what* it does — the diff already shows the what.
 
 Before requesting review:
 
-- [ ] `terraform fmt -recursive terraform/` passes
+- [ ] `terraform fmt -recursive terraform/` passes in the infra repo
 - [ ] `terraform validate` passes in every touched environment
 - [ ] Checkov passes (or new skips are documented in `.checkov.yaml`)
 - [ ] The PR description states the motivation and lists user-visible changes

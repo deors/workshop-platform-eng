@@ -163,17 +163,6 @@ operator                ┌─────────────────�
 │   ├── verify-infra.sh                 # Control-plane verification assertions
 │   ├── watch-run.sh                    # Poll a remote workflow run + outputs
 │   └── trigger-provision.sh            # CLI wrapper around repository_dispatch
-└── terraform/
-    ├── modules/
-    │   ├── webapp/                     # Web App + Plan + Identity + PE + slot
-    │   │                               #   + end-to-end TLS via azapi
-    │   ├── networking/                 # VNet, subnets, NSGs, Private DNS,
-    │   │                               #   VNet flow logs (+ logs SA)
-    │   └── monitoring/                 # Log Analytics workspace
-    └── environments/
-        ├── dev/                        # P0v3, no zone redundancy, public on
-        ├── staging/                    # P1v3, autoscale, slot, PE-only
-        └── prod/                       # P2v3, zone-redundant, autoscale, slot, PE-only
 ```
 
 ## Quick start
@@ -273,11 +262,13 @@ for the `repository_dispatch` endpoint.
 
 ## Local development
 
-The Terraform code can be planned locally for inspection — but state writes
-should always go through CI:
+Terraform now lives in the generated `{app-name}-infra` repository (from
+`infra_template_repo`). To inspect it locally, clone that repo and run checks
+there. State writes should always go through CI:
 
 ```bash
-cd terraform/environments/dev
+git clone https://github.com/<org>/<app-name>-infra.git
+cd <app-name>-infra/terraform/environments/dev
 terraform fmt -check -recursive ../..
 terraform init -backend=false                  # local-only, no remote state
 terraform validate
@@ -288,9 +279,9 @@ To run Checkov locally:
 ```bash
 pip install checkov
 # Strict ruleset (matches what CI runs against prod)
-checkov -d terraform/environments/prod --framework terraform --config-file .checkov.yaml
+checkov -d <app-name>-infra/terraform/environments/prod --framework terraform --config-file .checkov.yaml
 # Relaxed ruleset (matches what CI runs against dev/staging)
-checkov -d terraform/environments/dev  --framework terraform --config-file .checkov.nonprod.yaml
+checkov -d <app-name>-infra/terraform/environments/dev  --framework terraform --config-file .checkov.nonprod.yaml
 ```
 
 To verify deployed infrastructure against the expected per-env policy:

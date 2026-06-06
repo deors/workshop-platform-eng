@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # verify-infra.sh
 # Asserts that the deployed Web App stack matches the per-environment expectations
-# defined in terraform/environments/<env>/main.tf. Runs after `terraform apply`.
+# defined in the infra template repository's
+# terraform/environments/<env>/main.tf. Runs after `terraform apply`.
 #
 # Required env: APP_NAME, ENVIRONMENT
 # Exit 0 if all checks pass, 1 if any fail.
