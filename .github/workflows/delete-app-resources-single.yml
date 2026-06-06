@@ -1,0 +1,232 @@
+name: Delete application resources (single environment)
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, staging, prod)
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      confirmation_environment:
+        description: Repeat the exact environment to confirm destructive deletion
+        type: string
+        required: true
+      wait_for_completion:
+        description: Wait until Azure confirms the resource group is fully deleted
+        type: string
+        required: false
+        default: "true"
+    secrets:
+      GH_PAT:
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      confirmation_environment:
+        description: Repeat the exact environment to confirm destructive deletion
+        type: string
+        required: true
+      wait_for_completion:
+        description: Wait until Azure confirms the resource group is fully deleted
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.out.outputs.app_name }}
+      environment: ${{ steps.out.outputs.environment }}
+      wait_for_completion: ${{ steps.out.outputs.wait_for_completion }}
+      resource_group_name: ${{ steps.out.outputs.resource_group_name }}
+      app_repo_full: ${{ steps.out.outputs.app_repo_full }}
+    steps:
+      - name: Validate
+        id: out
+        env:
+          IN_APP:         ${{ inputs.app_name }}
+          WD_APP:         ${{ github.event.inputs.app_name }}
+          IN_ENV:         ${{ inputs.environment }}
+          WD_ENV:         ${{ github.event.inputs.environment }}
+          IN_CONFIRM_APP: ${{ inputs.confirmation_app_name }}
+          WD_CONFIRM_APP: ${{ github.event.inputs.confirmation_app_name }}
+          IN_CONFIRM_ENV: ${{ inputs.confirmation_environment }}
+          WD_CONFIRM_ENV: ${{ github.event.inputs.confirmation_environment }}
+          IN_WAIT:        ${{ inputs.wait_for_completion }}
+          WD_WAIT:        ${{ github.event.inputs.wait_for_completion }}
+        run: |
+          set -euo pipefail
+
+          APP_NAME="${IN_APP:-$WD_APP}"
+          ENVIRONMENT="${IN_ENV:-$WD_ENV}"
+          CONFIRM_APP_NAME="${IN_CONFIRM_APP:-$WD_CONFIRM_APP}"
+          CONFIRM_ENVIRONMENT="${IN_CONFIRM_ENV:-$WD_CONFIRM_ENV}"
+          WAIT_FOR_COMPLETION="${IN_WAIT:-${WD_WAIT:-true}}"
+
+          [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
+          [[ -z "$ENVIRONMENT" ]] && { echo "::error::environment is required"; exit 1; }
+
+          if [[ "$APP_NAME" != "$CONFIRM_APP_NAME" ]]; then
+            echo "::error::confirmation_app_name must exactly match app_name"
+            exit 1
+          fi
+          if [[ "$ENVIRONMENT" != "$CONFIRM_ENVIRONMENT" ]]; then
+            echo "::error::confirmation_environment must exactly match environment"
+            exit 1
+          fi
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3-22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+          if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "staging" && "$ENVIRONMENT" != "prod" ]]; then
+            echo "::error::environment must be one of dev, staging, prod"
+            exit 1
+          fi
+          if [[ "$WAIT_FOR_COMPLETION" != "true" && "$WAIT_FOR_COMPLETION" != "false" ]]; then
+            echo "::error::wait_for_completion must be either true or false"
+            exit 1
+          fi
+
+          RG_NAME="rg-${APP_NAME}-${ENVIRONMENT}"
+          APP_REPO_FULL="${GITHUB_REPOSITORY_OWNER}/${APP_NAME}"
+
+          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT" >> "$GITHUB_OUTPUT"
+          echo "wait_for_completion=$WAIT_FOR_COMPLETION" >> "$GITHUB_OUTPUT"
+          echo "resource_group_name=$RG_NAME" >> "$GITHUB_OUTPUT"
+          echo "app_repo_full=$APP_REPO_FULL" >> "$GITHUB_OUTPUT"
+
+  delete-rg:
+    name: Delete Azure resource group
+    needs: validate
+    uses: ./.github/workflows/delete-resource-group.yml
+    with:
+      resource_group_name:   ${{ needs.validate.outputs.resource_group_name }}
+      azure_tenant_id:       ${{ inputs.azure_tenant_id || github.event.inputs.azure_tenant_id }}
+      azure_subscription_id: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
+      azure_client_id:       ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+      wait_for_completion:   ${{ needs.validate.outputs.wait_for_completion }}
+
+  cleanup-github-and-oidc:
+    name: Cleanup GitHub environment and OIDC
+    needs: [validate, delete-rg]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove GitHub environment variables and environment
+        env:
+          GH_TOKEN:        ${{ secrets.GH_PAT }}
+          APP_REPO_FULL:   ${{ needs.validate.outputs.app_repo_full }}
+          TARGET_ENV:      ${{ needs.validate.outputs.environment }}
+        run: |
+          set -euo pipefail
+
+          if ! gh api "repos/${APP_REPO_FULL}" --silent 2>/dev/null; then
+            echo "Application repo '${APP_REPO_FULL}' not found. Skipping GitHub environment cleanup."
+            echo "github_environment_status=Repo not found" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          VAR_NAMES=$(gh api "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}/variables" --jq '.variables[].name' 2>/dev/null || true)
+          if [[ -n "$VAR_NAMES" ]]; then
+            while IFS= read -r var_name; do
+              [[ -z "$var_name" ]] && continue
+              gh api -X DELETE "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}/variables/${var_name}" --silent || true
+            done <<< "$VAR_NAMES"
+          fi
+
+          gh api -X DELETE "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}" --silent 2>/dev/null || true
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          tenant-id:       ${{ inputs.azure_tenant_id || github.event.inputs.azure_tenant_id }}
+          subscription-id: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
+          client-id:       ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+
+      - name: Remove OIDC federated credential
+        env:
+          APP_ID:        ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+          APP_REPO_FULL: ${{ needs.validate.outputs.app_repo_full }}
+          TARGET_ENV:    ${{ needs.validate.outputs.environment }}
+        run: |
+          set -euo pipefail
+
+          SUBJECT="repo:${APP_REPO_FULL}:environment:${TARGET_ENV}"
+          IDS=$(az ad app federated-credential list --id "$APP_ID" --query "[?subject=='${SUBJECT}'].id" -o tsv 2>/dev/null || true)
+          if [[ -n "$IDS" ]]; then
+            while IFS= read -r fid; do
+              [[ -z "$fid" ]] && continue
+              az ad app federated-credential delete --id "$APP_ID" --federated-credential-id "$fid"
+            done <<< "$IDS"
+          fi
+
+      - name: Summary
+        if: always()
+        env:
+          APP_NAME:        ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT:     ${{ needs.validate.outputs.environment }}
+          RESOURCE_GROUP:  ${{ needs.validate.outputs.resource_group_name }}
+          RG_STATUS:       ${{ needs.delete-rg.outputs.resource_group_status }}
+        run: |
+          {
+            echo "## Delete App Resource Group"
+            echo ""
+            echo "- App name: $APP_NAME"
+            echo "- Environment: $ENVIRONMENT"
+            echo "- Resource group: $RESOURCE_GROUP"
+            echo "- Resource group delete status: ${RG_STATUS:-Unknown}"
+            echo "- GitHub environment cleanup: executed"
+            echo "- OIDC federated credential cleanup: executed"
+          } >> "$GITHUB_STEP_SUMMARY"

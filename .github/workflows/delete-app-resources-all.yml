@@ -1,0 +1,99 @@
+name: Delete application resources (all environments + tfstate)
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name used in resource group names
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      wait_for_completion:
+        description: Wait until Azure confirms all resource groups are fully deleted
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    name: Validate request
+    runs-on: ubuntu-latest
+    outputs:
+      app_name: ${{ steps.validate.outputs.app_name }}
+      wait_for_completion: ${{ steps.validate.outputs.wait_for_completion }}
+    steps:
+      - name: Validate inputs
+        id: validate
+        env:
+          APP_NAME:              ${{ github.event.inputs.app_name }}
+          CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
+          WAIT_FOR_COMPLETION:   ${{ github.event.inputs.wait_for_completion }}
+        run: |
+          set -euo pipefail
+
+          [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
+          if [[ "$APP_NAME" != "$CONFIRMATION_APP_NAME" ]]; then
+            echo "::error::confirmation_app_name must exactly match app_name"
+            exit 1
+          fi
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3-22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+          if [[ "$WAIT_FOR_COMPLETION" != "true" && "$WAIT_FOR_COMPLETION" != "false" ]]; then
+            echo "::error::wait_for_completion must be either true or false"
+            exit 1
+          fi
+
+          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+          echo "wait_for_completion=$WAIT_FOR_COMPLETION" >> "$GITHUB_OUTPUT"
+
+  delete-env-resource-groups:
+    name: "Delete env RG · ${{ matrix.environment }}"
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, staging, prod]
+    uses: ./.github/workflows/delete-app-resources-single.yml
+    with:
+      app_name:                  ${{ needs.validate.outputs.app_name }}
+      environment:               ${{ matrix.environment }}
+      confirmation_app_name:     ${{ needs.validate.outputs.app_name }}
+      confirmation_environment:  ${{ matrix.environment }}
+      azure_tenant_id:           ${{ github.event.inputs.azure_tenant_id }}
+      azure_subscription_id:     ${{ github.event.inputs.azure_subscription_id }}
+      azure_client_id:           ${{ github.event.inputs.azure_client_id }}
+      wait_for_completion:       ${{ needs.validate.outputs.wait_for_completion }}
+    secrets: inherit
+
+  delete-tfstate-resource-group:
+    name: Delete tfstate RG
+    needs: validate
+    uses: ./.github/workflows/delete-resource-group.yml
+    with:
+      resource_group_name:   rg-tfstate-${{ needs.validate.outputs.app_name }}
+      azure_tenant_id:       ${{ github.event.inputs.azure_tenant_id }}
+      azure_subscription_id: ${{ github.event.inputs.azure_subscription_id }}
+      azure_client_id:       ${{ github.event.inputs.azure_client_id }}
+      wait_for_completion:   ${{ needs.validate.outputs.wait_for_completion }}

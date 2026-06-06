@@ -1,0 +1,99 @@
+name: Delete Azure Resource Group
+
+on:
+  workflow_call:
+    inputs:
+      resource_group_name:
+        description: Azure Resource Group name to delete
+        type: string
+        required: true
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      wait_for_completion:
+        description: Wait until Azure confirms the resource group is fully deleted
+        type: string
+        required: false
+        default: "true"
+    outputs:
+      resource_group_status:
+        description: Deletion status for the resource group
+        value: ${{ jobs.delete-resource-group.outputs.resource_group_status }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  delete-resource-group:
+    name: Delete resource group
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group_status: ${{ steps.delete_rg.outputs.resource_group_status }}
+
+    steps:
+      - name: Validate inputs
+        env:
+          RESOURCE_GROUP_NAME:  ${{ inputs.resource_group_name }}
+          WAIT_FOR_COMPLETION:  ${{ inputs.wait_for_completion }}
+        run: |
+          set -euo pipefail
+
+          [[ -z "$RESOURCE_GROUP_NAME" ]] && { echo "::error::resource_group_name is required"; exit 1; }
+          if [[ "$WAIT_FOR_COMPLETION" != "true" && "$WAIT_FOR_COMPLETION" != "false" ]]; then
+            echo "::error::wait_for_completion must be either true or false"
+            exit 1
+          fi
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          subscription-id: ${{ inputs.azure_subscription_id }}
+          tenant-id:       ${{ inputs.azure_tenant_id }}
+          client-id:       ${{ inputs.azure_client_id }}
+
+      - name: Delete resource group
+        id: delete_rg
+        env:
+          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+          WAIT_FOR_COMPLETION: ${{ inputs.wait_for_completion }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$(az group exists --name "$RESOURCE_GROUP_NAME")" != "true" ]]; then
+            STATUS="Not found"
+          else
+            az group delete --name "$RESOURCE_GROUP_NAME" --yes --no-wait
+            if [[ "$WAIT_FOR_COMPLETION" == "true" ]]; then
+              az group wait --name "$RESOURCE_GROUP_NAME" --deleted --interval 15
+              STATUS="Deleted"
+            else
+              STATUS="Delete requested (async)"
+            fi
+          fi
+
+          echo "resource_group_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary
+        if: always()
+        env:
+          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+          STATUS:              ${{ steps.delete_rg.outputs.resource_group_status }}
+          WAIT_FOR_COMPLETION: ${{ inputs.wait_for_completion }}
+        run: |
+          {
+            echo "## Delete Resource Group"
+            echo ""
+            echo "- Resource group: $RESOURCE_GROUP_NAME"
+            echo "- Wait for completion: $WAIT_FOR_COMPLETION"
+            echo "- Result: ${STATUS:-Unknown}"
+          } >> "$GITHUB_STEP_SUMMARY"
