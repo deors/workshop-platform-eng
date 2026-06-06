@@ -308,7 +308,11 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
 - [x] Remote state bootstrap (idempotent, one storage account per app)
 - [x] Terraform apply per environment, with `environment:` protection rules
 - [x] Control-plane verification per environment (reusable workflow)
-- [x] Repository templating — new app repo from a template on first run
+- [x] Application repository templating — new `{app-name}` repo from an app template on first run
+- [x] Infrastructure repository templating — new `{app-name}-infra` repo from an infra template on first run
+- [x] Workflow contract supports independent `infra_template_repo` and `app_template_repo` inputs
+- [x] App repo template owns the CI, testing and deployment workflows
+- [x] Infra repo template owns the Terraform code and Checkov active rules
 - [x] GitHub Environments + variables on the new app repo (per env)
 - [x] OIDC federated credentials registered on the platform SP per env
 - [x] CI observation + per-run tracking issue + finalize comment
@@ -322,15 +326,17 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
 - [x] Tightened NSG rules (no protocol/port wildcards)
 - [x] Self-service web UI on GitHub Pages
 - [x] CLI trigger script (`scripts/trigger-provision.sh`)
+- [x] Destroy/decommission workflow for retiring an app cleanly (delete RG +
+      tfstate blob + GitHub Environments + fed-creds) -- repos are never deleted
 
 ### Next
 
-- [ ] **Lifecycle commands** — destroy/decommission workflow for retiring an
-      app cleanly (delete RG + tfstate blob + GitHub Environments + fed-creds)
 - [ ] **Scheduled drift detection** — cron job that runs `terraform plan` on
       a schedule and posts a comment on the per-run issue if non-zero
 - [ ] **Cost reporting per application** — daily / weekly Azure cost export
       aggregated by `application` tag, surfaced as a comment on the run issue
+- [ ] **Budget alerts** — Azure budget per app/env with action-group
+      notifications wired in
 - [ ] **Container console logs in the module** — add
       `logs.application_logs.file_system_level = "Information"` so degraded
       states surface their cause without manual intervention
@@ -339,8 +345,6 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
       assertions only
 - [ ] **Multi-region readiness** — Front Door / Traffic Manager in front of
       a primary + secondary App Service Plan, with state per region
-- [ ] **Budget alerts** — Azure budget per app/env with action-group
-      notifications wired in
 - [ ] **Optional Key Vault module** — provisioned per env when secrets are
       declared, with the existing `key_vault_secrets` wiring already in the
       webapp module
@@ -351,8 +355,9 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
       exists in the webapp module but isn't surfaced through the workflow
 - [ ] **Custom domain provisioning** — module already supports it, surface
       it as a workflow input (with cert binding)
-- [ ] **Template-repo pinning** — accept a `template_ref` input so a known
-      template tag/commit is used rather than the latest default branch
+- [ ] **Template-repo pinning** — accept `infra_template_ref` and
+      `app_template_ref` inputs so known tags/commits are used rather than
+      the latest default branches
 - [ ] **Slot-swap promotion for prod** — today the template's `release.yml`
       updates the prod container in place; switching it to deploy to the
       staging slot and swap would give zero-downtime promotion
