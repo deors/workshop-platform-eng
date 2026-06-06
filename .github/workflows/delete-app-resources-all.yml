@@ -73,6 +73,7 @@ jobs:
     needs: validate
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         environment: [dev, staging, prod]
     uses: ./.github/workflows/delete-app-resources-single.yml
