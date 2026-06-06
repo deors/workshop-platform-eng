@@ -215,21 +215,21 @@
       <div class="grid-2">
 
         <div>
-          <label for="azure_subscription_id">Azure Subscription ID <span class="req">*</span></label>
-          <input type="text" id="azure_subscription_id" name="azure_subscription_id" required
-                 placeholder="00000000-0000-0000-0000-000000000000"
-                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
-          <span class="hint">GUID, 8-4-4-4-12 hex.</span>
-          <div class="field-error" data-for="azure_subscription_id">Must be a GUID.</div>
-        </div>
-
-        <div>
           <label for="azure_tenant_id">Azure Tenant ID <span class="req">*</span></label>
           <input type="text" id="azure_tenant_id" name="azure_tenant_id" required
                  placeholder="11111111-1111-1111-1111-111111111111"
                  pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
           <span class="hint">Entra tenant GUID.</span>
           <div class="field-error" data-for="azure_tenant_id">Must be a GUID.</div>
+        </div>
+
+        <div>
+          <label for="azure_subscription_id">Azure Subscription ID <span class="req">*</span></label>
+          <input type="text" id="azure_subscription_id" name="azure_subscription_id" required
+                 placeholder="00000000-0000-0000-0000-000000000000"
+                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
+          <span class="hint">GUID, 8-4-4-4-12 hex.</span>
+          <div class="field-error" data-for="azure_subscription_id">Must be a GUID.</div>
         </div>
 
         <div>
