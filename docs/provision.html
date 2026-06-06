@@ -236,21 +236,21 @@
         </div>
 
         <div>
-          <label for="app_template_repo">Application template repo <span class="req">*</span></label>
-          <input type="text" id="app_template_repo" name="app_template_repo" required
-                 placeholder="owner/template-name"
-                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
-          <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
-          <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
-        </div>
-
-        <div>
           <label for="infra_template_repo">Infrastructure template repo <span class="req">*</span></label>
           <input type="text" id="infra_template_repo" name="infra_template_repo" required
                  placeholder="owner/template-terraform-azure-webapp"
                  pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
           <span class="hint">Infrastructure archetype: Terraform modules + Checkov configs. <code>owner/name</code>.</span>
           <div class="field-error" data-for="infra_template_repo">Format must be <code>owner/name</code>.</div>
+        </div>
+
+        <div>
+          <label for="app_template_repo">Application template repo <span class="req">*</span></label>
+          <input type="text" id="app_template_repo" name="app_template_repo" required
+                 placeholder="owner/template-name"
+                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
+          <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
+          <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
         </div>
 
         <div>
@@ -271,15 +271,6 @@
           <label for="ci_workflow_file">CI workflow file <span class="hint" style="display:inline;">(optional)</span></label>
           <input type="text" id="ci_workflow_file" name="ci_workflow_file" placeholder="ci.yml" />
           <span class="hint">Filename inside the application repo. Default <code>ci.yml</code>.</span>
-        </div>
-
-        <div>
-          <label for="event_type">Event type</label>
-          <select id="event_type" name="event_type">
-            <option value="provision-infrastructure" selected>provision-infrastructure</option>
-            <option value="update-infrastructure">update-infrastructure</option>
-          </select>
-          <span class="hint">Both are accepted by the workflow's <code>repository_dispatch</code> trigger.</span>
         </div>
 
       </div>
