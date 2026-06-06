@@ -4,7 +4,7 @@
 # One storage account per subscription + application; one blob per environment inside it.
 #
 # Usage:
-#   bootstrap-tfstate.sh --app-name <name> --subscription-id <id> \
+#   bootstrap-tfstate.sh --app-name <name> --azure-subscription-id <id> \
 #                        [--location <region>] [--principal-id <object-id>]
 #
 # Outputs (stdout, last lines):
@@ -30,35 +30,35 @@ PRINCIPAL_ID=""      # optional: object ID to assign Storage Blob Data Contribut
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --app-name)        APP_NAME="$2";       shift 2 ;;
-    --subscription-id) SUBSCRIPTION_ID="$2"; shift 2 ;;
-    --location)        LOCATION="$2";       shift 2 ;;
-    --principal-id)    PRINCIPAL_ID="$2";   shift 2 ;;
+    --app-name)              APP_NAME="$2";              shift 2 ;;
+    --azure-subscription-id) AZURE_SUBSCRIPTION_ID="$2"; shift 2 ;;
+    --location)              LOCATION="$2";              shift 2 ;;
+    --principal-id)          PRINCIPAL_ID="$2";          shift 2 ;;
     *) err "Unknown argument: $1" ;;
   esac
 done
 
-[[ -z "$APP_NAME"        ]] && err "--app-name is required"
-[[ -z "$SUBSCRIPTION_ID" ]] && err "--subscription-id is required"
+[[ -z "$APP_NAME"              ]] && err "--app-name is required"
+[[ -z "$AZURE_SUBSCRIPTION_ID" ]] && err "--azure-subscription-id is required"
 
 # ── Name derivation ───────────────────────────────────────────────────────────
 # Storage account names: 3-24 chars, lowercase alphanumeric only, globally unique.
 # Formula: sttf + first 12 chars of app_name (no hyphens) + first 8 chars of sub ID (no hyphens)
 # Total: 4 + 12 + 8 = 24 chars exactly.
 
-APP_SHORT=$(echo "$APP_NAME"        | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
-SUB_SHORT=$(echo "$SUBSCRIPTION_ID" | tr -d '-'                               | cut -c1-8)
+APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
 
 STORAGE_ACCOUNT_NAME="sttf${APP_SHORT}${SUB_SHORT}"
 RESOURCE_GROUP_NAME="rg-tfstate-${APP_NAME}"
 CONTAINER_NAME="tfstate"
 
-log "App name      : $APP_NAME"
-log "Subscription  : $SUBSCRIPTION_ID"
-log "Location      : $LOCATION"
-log "Resource group: $RESOURCE_GROUP_NAME"
-log "Storage acct  : $STORAGE_ACCOUNT_NAME"
-log "Container     : $CONTAINER_NAME"
+log "App name            : $APP_NAME"
+log "Azure Subscription  : $AZURE_SUBSCRIPTION_ID"
+log "Location            : $LOCATION"
+log "Resource group      : $RESOURCE_GROUP_NAME"
+log "Storage account     : $STORAGE_ACCOUNT_NAME"
+log "Container           : $CONTAINER_NAME"
 [[ -n "$PRINCIPAL_ID" ]] && log "Principal ID  : $PRINCIPAL_ID"
 
 # ── Prerequisite check ────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ command -v az &>/dev/null || err "Azure CLI not found. Install from https://aka.
 # ── Set active subscription ───────────────────────────────────────────────────
 
 log "Setting active subscription…"
-az account set --subscription "$SUBSCRIPTION_ID"
+az account set --subscription "$AZURE_SUBSCRIPTION_ID"
 ok "Subscription set"
 
 # ── Resource group ────────────────────────────────────────────────────────────

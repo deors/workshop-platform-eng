@@ -127,7 +127,7 @@ SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 # Capture the tenant ID — you'll pass this as `azure_tenant_id`
 TENANT_ID=$(az account show --query tenantId -o tsv)
 
-# Capture the subscription ID — you'll pass this as `subscription_id`
+# Capture the subscription ID — you'll pass this as `azure_subscription_id`
 SUBSCRIPTION_ID=$(az account show --query id -o tsv)
 
 cat <<EOF
@@ -136,7 +136,7 @@ Save these three values — you'll feed them to the workflow as inputs:
 
   azure_client_id : $APP_ID
   azure_tenant_id : $TENANT_ID
-  subscription_id : $SUBSCRIPTION_ID
+  azure_subscription_id : $SUBSCRIPTION_ID
 
   (SP object ID, only used in the next steps: $SP_OBJECT_ID)
 EOF
@@ -473,14 +473,15 @@ provide:
 
 | Input | Value for the first test |
 |-------|--------------------------|
-| `environment` | `dev` |
 | `app_name` | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
-| `subscription_id` | the GUID captured in step 3 |
-| `azure_client_id` | the `appId` captured in step 3 |
+| `environment` | `dev` |
+| `azure_subscription_id` | the GUID captured in step 3 |
 | `azure_tenant_id` | the tenant GUID captured in step 3 |
+| `azure_client_id` | the `appId` captured in step 3 |
+| `infra_template_repo` | the `<owner>/<name>` of the infrastructure template repo |
+| `app_template_repo` | the `<owner>/<name>` of the application template repo |
 | `container_image` | `mcr.microsoft.com/appsvc/staticsite:latest` |
 | `container_registry_url` | _(leave empty — public image)_ |
-| `template_repo` | the `<owner>/<name>` of the application template repo |
 | `ci_workflow_file` | _(leave empty — defaults to `ci.yml`)_ |
 
 ### What you should observe

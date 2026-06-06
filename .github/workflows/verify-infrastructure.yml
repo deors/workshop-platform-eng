@@ -20,16 +20,16 @@ on:
         description: Target environment (dev, staging, prod)
         type: string
         required: true
-      subscription_id:
+      azure_subscription_id:
         description: Azure Subscription ID
-        type: string
-        required: true
-      azure_client_id:
-        description: Client ID for OIDC login
         type: string
         required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID for OIDC login
         type: string
         required: true
 
@@ -45,16 +45,16 @@ on:
         options: [dev, staging, prod]
         required: true
         default: dev
-      subscription_id:
+      azure_subscription_id:
         description: Azure Subscription ID
-        type: string
-        required: true
-      azure_client_id:
-        description: Client ID of the Azure service principal used for OIDC login
         type: string
         required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal used for OIDC login
         type: string
         required: true
 
@@ -85,28 +85,28 @@ jobs:
           # `inputs.*` context).
           IN_APP:       ${{ inputs.app_name }}
           IN_ENV:       ${{ inputs.environment }}
-          IN_SUB:       ${{ inputs.subscription_id }}
-          IN_CLIENT_ID: ${{ inputs.azure_client_id }}
+          IN_SUB_ID:    ${{ inputs.azure_subscription_id }}
           IN_TENANT_ID: ${{ inputs.azure_tenant_id }}
+          IN_CLIENT_ID: ${{ inputs.azure_client_id }}
           # repository_dispatch payload (untyped).
           RD_APP:       ${{ github.event.client_payload.app_name }}
           RD_ENV:       ${{ github.event.client_payload.environment }}
-          RD_SUB:       ${{ github.event.client_payload.subscription_id }}
-          RD_CLIENT_ID: ${{ github.event.client_payload.azure_client_id }}
+          RD_SUB_ID:    ${{ github.event.client_payload.azure_subscription_id }}
           RD_TENANT_ID: ${{ github.event.client_payload.azure_tenant_id }}
+          RD_CLIENT_ID: ${{ github.event.client_payload.azure_client_id }}
         run: |
           APP_NAME="${IN_APP:-$RD_APP}"
           ENVIRONMENT="${IN_ENV:-$RD_ENV}"
-          SUBSCRIPTION_ID="${IN_SUB:-$RD_SUB}"
-          AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
+          AZURE_SUBSCRIPTION_ID="${IN_SUB_ID:-$RD_SUB_ID}"
           AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
+          AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
 
           MISSING=()
-          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
-          [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
-          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
-          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
-          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"           ]] && MISSING+=(environment)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
+          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
@@ -115,18 +115,18 @@ jobs:
           # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
           # mask them — masking blanks values when they pass through step outputs.
 
-          echo "app_name=$APP_NAME"               >> "$GITHUB_OUTPUT"
-          echo "environment=$ENVIRONMENT"         >> "$GITHUB_OUTPUT"
-          echo "subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
-          echo "azure_client_id=$AZURE_CLIENT_ID" >> "$GITHUB_OUTPUT"
-          echo "azure_tenant_id=$AZURE_TENANT_ID" >> "$GITHUB_OUTPUT"
+          echo "app_name=$APP_NAME"                           >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"                     >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID"             >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID"             >> "$GITHUB_OUTPUT"
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          client-id:       ${{ steps.params.outputs.azure_client_id }}
+          subscription-id: ${{ steps.params.outputs.azure_subscription_id }}
           tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
-          subscription-id: ${{ steps.params.outputs.subscription_id }}
+          client-id:       ${{ steps.params.outputs.azure_client_id }}
 
       - name: Verify infrastructure
         env:

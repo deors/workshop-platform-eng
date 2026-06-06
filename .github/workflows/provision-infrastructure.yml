@@ -3,18 +3,34 @@ name: Provision Infrastructure
 on:
   workflow_dispatch:
     inputs:
+      app_name:
+        description: Application name (short, lowercase, no spaces)
+        type: string
+        required: true
       environment:
         description: Target environment
         type: choice
         options: [dev, staging, prod, all]
         required: true
         default: dev
-      app_name:
-        description: Application name (short, lowercase, no spaces)
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
-      subscription_id:
-        description: Azure Subscription ID
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        type: string
+        required: true
+      infra_template_repo:
+        description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-azure-webapp)"
+        type: string
+        required: true
+      app_template_repo:
+        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express)"
         type: string
         required: true
       container_image:
@@ -27,22 +43,6 @@ on:
         type: string
         required: false
         default: ""
-      azure_client_id:
-        description: Client ID of the Azure service principal / managed identity used for OIDC login
-        type: string
-        required: true
-      azure_tenant_id:
-        description: Azure Tenant ID
-        type: string
-        required: true
-      infra_template_repo:
-        description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-azure-webapp)"
-        type: string
-        required: true
-      app_template_repo:
-        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express)"
-        type: string
-        required: true
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -52,7 +52,6 @@ on:
   repository_dispatch:
     types:
       - provision-infrastructure
-      - update-infrastructure
 
 # Permissions required for OIDC login and SARIF upload to Security tab.
 permissions:
@@ -72,19 +71,19 @@ jobs:
     name: Resolve inputs
     runs-on: ubuntu-latest
     outputs:
-      environments:            ${{ steps.matrix.outputs.environments }}
       app_name:                ${{ steps.params.outputs.app_name }}
-      subscription_id:         ${{ steps.params.outputs.subscription_id }}
+      environments:            ${{ steps.matrix.outputs.environments }}
+      azure_subscription_id:   ${{ steps.params.outputs.azure_subscription_id }}
+      azure_tenant_id:         ${{ steps.params.outputs.azure_tenant_id }}
+      azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
+      infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
+      app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
       container_image:         ${{ steps.params.outputs.container_image }}
       container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
-      azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
-      azure_tenant_id:         ${{ steps.params.outputs.azure_tenant_id }}
+      ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
       tfstate_storage_account: ${{ steps.tfstate_names.outputs.storage_account }}
       tfstate_resource_group:  ${{ steps.tfstate_names.outputs.resource_group }}
-      infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       infra_repo_full:         ${{ steps.params.outputs.infra_repo_full }}
-      app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
-      ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
       app_repo_full:           ${{ steps.params.outputs.app_repo_full }}
 
     steps:
@@ -92,31 +91,36 @@ jobs:
         id: params
         env:
           # workflow_dispatch values
-          WD_ENV:            ${{ github.event.inputs.environment }}
           WD_APP:            ${{ github.event.inputs.app_name }}
-          WD_SUB:            ${{ github.event.inputs.subscription_id }}
-          WD_IMAGE:          ${{ github.event.inputs.container_image }}
-          WD_REGISTRY:       ${{ github.event.inputs.container_registry_url }}
-          WD_CLIENT_ID:      ${{ github.event.inputs.azure_client_id }}
+          WD_ENV:            ${{ github.event.inputs.environment }}
+          WD_SUB_ID:         ${{ github.event.inputs.azure_subscription_id }}
           WD_TENANT_ID:      ${{ github.event.inputs.azure_tenant_id }}
+          WD_CLIENT_ID:      ${{ github.event.inputs.azure_client_id }}
           WD_INFRA_TEMPLATE: ${{ github.event.inputs.infra_template_repo }}
           WD_APP_TEMPLATE:   ${{ github.event.inputs.app_template_repo }}
+          WD_IMAGE:          ${{ github.event.inputs.container_image }}
+          WD_REGISTRY:       ${{ github.event.inputs.container_registry_url }}
           WD_CI_FILE:        ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
-          RD_ENV:            ${{ github.event.client_payload.environment }}
           RD_APP:            ${{ github.event.client_payload.app_name }}
-          RD_SUB:            ${{ github.event.client_payload.subscription_id }}
-          RD_IMAGE:          ${{ github.event.client_payload.container_image }}
-          RD_REGISTRY:       ${{ github.event.client_payload.container_registry_url }}
-          RD_CLIENT_ID:      ${{ github.event.client_payload.azure_client_id }}
+          RD_ENV:            ${{ github.event.client_payload.environment }}
+          RD_SUB_ID:         ${{ github.event.client_payload.azure_subscription_id }}
           RD_TENANT_ID:      ${{ github.event.client_payload.azure_tenant_id }}
+          RD_CLIENT_ID:      ${{ github.event.client_payload.azure_client_id }}
           RD_INFRA_TEMPLATE: ${{ github.event.client_payload.infra_template_repo }}
           RD_APP_TEMPLATE:   ${{ github.event.client_payload.app_template_repo }}
+          RD_IMAGE:          ${{ github.event.client_payload.container_image }}
+          RD_REGISTRY:       ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:        ${{ github.event.client_payload.ci_workflow_file }}
           OWNER:             ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
-          SUBSCRIPTION_ID="${WD_SUB:-$RD_SUB}"
+          ENVIRONMENT="${WD_ENV:-$RD_ENV}"
+          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
+          AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
+          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
+          INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
+          APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           # container_image is optional. The placeholder is what Terraform
           # writes on the first apply; thereafter the lifecycle.ignore_changes
           # on site_config[0].application_stack means whatever CI/deploy
@@ -124,21 +128,16 @@ jobs:
           # image value.
           CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-mcr.microsoft.com/appsvc/staticsite:latest}}"
           CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
-          ENVIRONMENT="${WD_ENV:-$RD_ENV}"
-          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
-          AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
-          INFRA_TEMPLATE="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
-          APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
-          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
-          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(subscription_id)
-          [[ -z "$ENVIRONMENT"     ]] && MISSING+=(environment)
-          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
-          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
-          [[ -z "$INFRA_TEMPLATE"  ]] && MISSING+=(infra_template_repo)
-          [[ -z "$APP_TEMPLATE_REPO" ]] && MISSING+=(app_template_repo)
+          [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"           ]] && MISSING+=(environment)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
+          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
+          [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
+          [[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=(app_template_repo)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
@@ -150,22 +149,22 @@ jobs:
             exit 1
           fi
 
-          # Note: subscription_id, azure_client_id, azure_tenant_id are GUIDs that
+          # Note: azure_subscription_id, azure_tenant_id, azure_client_id are GUIDs that
           # identify Azure resources/principals. They are not secrets in an OIDC flow
           # (security comes from the federated credential subject claim). They are
           # NOT masked here because GitHub Actions blanks masked values when they
           # flow through job outputs to downstream jobs.
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
-          echo "subscription_id=$SUBSCRIPTION_ID"               >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
+          echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
+          echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
           echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
-          echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
-          echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
-          echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
-          echo "infra_template_repo=$INFRA_TEMPLATE"            >> "$GITHUB_OUTPUT"
           echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
-          echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
           echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
           echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
 
@@ -173,11 +172,11 @@ jobs:
         id: tfstate_names
         env:
           APP_NAME:        ${{ steps.params.outputs.app_name }}
-          SUBSCRIPTION_ID: ${{ steps.params.outputs.subscription_id }}
+          AZURE_SUBSCRIPTION_ID: ${{ steps.params.outputs.azure_subscription_id }}
         run: |
           # Must match the formula in scripts/bootstrap-tfstate.sh exactly
-          APP_SHORT=$(echo "$APP_NAME"        | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
-          SUB_SHORT=$(echo "$SUBSCRIPTION_ID" | tr -d '-'                               | cut -c1-8)
+          APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+          SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}" >> "$GITHUB_OUTPUT"
           echo "resource_group=rg-tfstate-${APP_NAME}"        >> "$GITHUB_OUTPUT"
 
@@ -202,12 +201,12 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Provision Infrastructure
 
-          | Parameter   | Value         |
-          |-------------|---------------|
-          | Trigger     | \`$TRIGGER\`  |
-          | App name    | \`$APP_NAME\` |
+          | Parameter   | Value            |
+          |-------------|------------------|
+          | Trigger     | \`$TRIGGER\`     |
+          | App name    | \`$APP_NAME\`    |
           | Environment | \`$ENVIRONMENT\` |
-          | Image       | \`$IMAGE\`    |
+          | Image       | \`$IMAGE\`       |
           EOF
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -358,10 +357,10 @@ jobs:
     needs: [resolve-inputs, checkov, fmt]
     uses: ./.github/workflows/bootstrap-tfstate.yml
     with:
-      app_name:        ${{ needs.resolve-inputs.outputs.app_name }}
-      subscription_id: ${{ needs.resolve-inputs.outputs.subscription_id }}
-      azure_client_id: ${{ needs.resolve-inputs.outputs.azure_client_id }}
-      azure_tenant_id: ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      app_name:              ${{ needs.resolve-inputs.outputs.app_name }}
+      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+      azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 6. Terraform plan – one job per target environment, after scan passes
@@ -387,9 +386,9 @@ jobs:
       # without this the backend hits 403 KeyBasedAuthenticationNotPermitted
       # even though the OIDC token itself is valid.
       ARM_USE_AZUREAD:     "true"
-      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
+      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
     steps:
       - name: Checkout infrastructure repo
@@ -402,9 +401,9 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
@@ -416,22 +415,22 @@ jobs:
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
-          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.subscription_id }}
+          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
           # Write tfvars using printf to avoid shell interpolation of HCL syntax
-          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
           printf 'app_name               = "%s"\n' "$APP_NAME"               >> terraform.tfvars
+          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 
       - name: Terraform init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
+          ENVIRONMENT:     ${{ matrix.environment }}
           STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
           RESOURCE_GROUP:  ${{ needs.resolve-inputs.outputs.tfstate_resource_group }}
-          ENVIRONMENT:     ${{ matrix.environment }}
         run: |
           terraform init \
             -input=false \
@@ -505,9 +504,9 @@ jobs:
     env:
       ARM_USE_OIDC:        "true"
       ARM_USE_AZUREAD:     "true"
-      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.subscription_id }}
+      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
     steps:
       - name: Checkout infrastructure repo
@@ -520,9 +519,9 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
@@ -534,7 +533,7 @@ jobs:
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
-          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.subscription_id }}
+          SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
@@ -604,11 +603,11 @@ jobs:
         environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
     uses: ./.github/workflows/verify-infrastructure.yml
     with:
-      app_name:        ${{ needs.resolve-inputs.outputs.app_name }}
-      environment:     ${{ matrix.environment }}
-      subscription_id: ${{ needs.resolve-inputs.outputs.subscription_id }}
-      azure_client_id: ${{ needs.resolve-inputs.outputs.azure_client_id }}
-      azure_tenant_id: ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      app_name:              ${{ needs.resolve-inputs.outputs.app_name }}
+      environment:           ${{ matrix.environment }}
+      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+      azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 9. Application repository – create from template (idempotent).
@@ -945,9 +944,9 @@ jobs:
           REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
           ENV:       ${{ matrix.environment }}
           APP_NAME:  ${{ needs.resolve-inputs.outputs.app_name }}
-          SUB:       ${{ needs.resolve-inputs.outputs.subscription_id }}
-          CID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          SUB:       ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           TID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          CID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
           REGISTRY:  ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
           # 1. Create the environment (PUT is idempotent — 200 if it already exists).
@@ -964,8 +963,8 @@ jobs:
           }
 
           set_var AZURE_SUBSCRIPTION_ID "$SUB"
-          set_var AZURE_CLIENT_ID       "$CID"
           set_var AZURE_TENANT_ID       "$TID"
+          set_var AZURE_CLIENT_ID       "$CID"
           set_var AZURE_RESOURCE_GROUP  "rg-${APP_NAME}-${ENV}"
           set_var AZURE_WEBAPP_NAME     "app-${APP_NAME}-${ENV}"
           [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
@@ -997,9 +996,9 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
-          subscription-id: ${{ needs.resolve-inputs.outputs.subscription_id }}
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Register federated credential
         env:

@@ -18,67 +18,68 @@ Usage:
   scripts/trigger-provision.sh [flags]
 
 Required (flag OR env var):
-  --environment      <dev|staging|prod|all>    ENVIRONMENT
-  --app-name         <name>                    APP_NAME
-  --subscription-id  <guid>                    SUBSCRIPTION_ID
-  --azure-client-id  <guid>                    AZURE_CLIENT_ID
-  --azure-tenant-id  <guid>                    AZURE_TENANT_ID
-  --template-repo    <owner/name>              TEMPLATE_REPO
+  --app-name              <name>                    APP_NAME
+  --environment           <dev|staging|prod|all>    ENVIRONMENT
+  --azure-subscription-id <guid>                    AZURE_SUBSCRIPTION_ID
+  --azure-tenant-id       <guid>                    AZURE_TENANT_ID
+  --azure-client-id       <guid>                    AZURE_CLIENT_ID
+  --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
+  --app-template-repo     <owner/name>              APP_TEMPLATE_REPO
 
 Optional:
-  --container-image        <ref>     CONTAINER_IMAGE
-                                       (default: mcr.microsoft.com/appsvc/staticsite:latest;
-                                        a placeholder that App Service can pull anonymously —
-                                        the template's CI overwrites it within minutes; ignored
-                                        on reconcile runs)
-  --container-registry-url <url>     CONTAINER_REGISTRY_URL
-                                       (default: empty)
-  --ci-workflow-file       <name>    CI_WORKFLOW_FILE
-                                       (default: ci.yml)
-  --event-type             <type>    EVENT_TYPE
-                                       (default: provision-infrastructure;
-                                        also valid: update-infrastructure)
-  --repo                   <owner/name>  PLATFORM_REPO
-                                       (default: auto-detected from git remote)
-  -h, --help                            show this help
+  --container-image        <ref>          CONTAINER_IMAGE
+                                            (default: mcr.microsoft.com/appsvc/staticsite:latest;
+                                             a placeholder that App Service can pull anonymously —
+                                             the template's CI overwrites it within minutes; ignored
+                                             on reconcile runs)
+  --container-registry-url <url>          CONTAINER_REGISTRY_URL
+                                            (default: empty)
+  --ci-workflow-file       <name>         CI_WORKFLOW_FILE
+                                            (default: ci.yml)
+  --repo                   <owner/name>   PLATFORM_REPO
+                                            (default: auto-detected from git remote)
+
+For help:
+  -h, --help
 
 Example:
   scripts/trigger-provision.sh \
-    --environment      dev \
-    --app-name         test-webapp \
-    --subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \
-    --azure-client-id  00000000-0000-0000-0000-000000000000 \
-    --azure-tenant-id  11111111-1111-1111-1111-111111111111 \
-    --template-repo    deors/template-helloworld-express
+    --app-name               test-webapp \
+    --environment            dev \
+    --azure-subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \
+    --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
+    --azure-client-id        00000000-0000-0000-0000-000000000000 \
+    --infra-template-repo    deors/template-terraform-azure-webapp \
+    --app-template-repo      deors/template-helloworld-express
 USAGE
 }
 
 # ── CLI parsing ──────────────────────────────────────────────────────────────
 # Pre-seed each variable from its env var (if set). CLI flags override them.
-ENVIRONMENT="${ENVIRONMENT:-}"
 APP_NAME="${APP_NAME:-}"
-SUBSCRIPTION_ID="${SUBSCRIPTION_ID:-}"
-AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}"
+ENVIRONMENT="${ENVIRONMENT:-}"
+AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
 AZURE_TENANT_ID="${AZURE_TENANT_ID:-}"
-TEMPLATE_REPO="${TEMPLATE_REPO:-}"
+AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}"
+INFRA_TEMPLATE_REPO="${INFRA_TEMPLATE_REPO:-}"
+APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 CONTAINER_REGISTRY_URL="${CONTAINER_REGISTRY_URL:-}"
 CI_WORKFLOW_FILE="${CI_WORKFLOW_FILE:-}"
-EVENT_TYPE="${EVENT_TYPE:-provision-infrastructure}"
 PLATFORM_REPO="${PLATFORM_REPO:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --environment)            ENVIRONMENT="$2";            shift 2 ;;
     --app-name)               APP_NAME="$2";               shift 2 ;;
-    --subscription-id)        SUBSCRIPTION_ID="$2";        shift 2 ;;
-    --azure-client-id)        AZURE_CLIENT_ID="$2";        shift 2 ;;
+    --environment)            ENVIRONMENT="$2";            shift 2 ;;
+    --azure-subscription-id)  AZURE_SUBSCRIPTION_ID="$2";  shift 2 ;;
     --azure-tenant-id)        AZURE_TENANT_ID="$2";        shift 2 ;;
-    --template-repo)          TEMPLATE_REPO="$2";          shift 2 ;;
+    --azure-client-id)        AZURE_CLIENT_ID="$2";        shift 2 ;;
+    --infra-template-repo)    INFRA_TEMPLATE_REPO="$2";    shift 2 ;;
+    --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
     --container-registry-url) CONTAINER_REGISTRY_URL="$2"; shift 2 ;;
     --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
-    --event-type)             EVENT_TYPE="$2";             shift 2 ;;
     --repo)                   PLATFORM_REPO="$2";          shift 2 ;;
     -h|--help)                usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
@@ -87,12 +88,13 @@ done
 
 # ── Required-value check ─────────────────────────────────────────────────────
 MISSING=()
-[[ -z "$ENVIRONMENT"     ]] && MISSING+=("--environment / ENVIRONMENT")
-[[ -z "$APP_NAME"        ]] && MISSING+=("--app-name / APP_NAME")
-[[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=("--subscription-id / SUBSCRIPTION_ID")
-[[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
-[[ -z "$AZURE_TENANT_ID" ]] && MISSING+=("--azure-tenant-id / AZURE_TENANT_ID")
-[[ -z "$TEMPLATE_REPO"   ]] && MISSING+=("--template-repo / TEMPLATE_REPO")
+[[ -z "$APP_NAME"              ]] && MISSING+=("--app-name / APP_NAME")
+[[ -z "$ENVIRONMENT"           ]] && MISSING+=("--environment / ENVIRONMENT")
+[[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=("--azure-subscription-id / AZURE_SUBSCRIPTION_ID")
+[[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=("--azure-tenant-id / AZURE_TENANT_ID")
+[[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
+[[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
+[[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=("--app-template-repo / APP_TEMPLATE_REPO")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: missing required value(s):" >&2
@@ -117,25 +119,26 @@ fi
 
 # ── Build the client_payload (omit empty optional fields) ────────────────────
 PAYLOAD=$(jq -nc \
-  --arg event "$EVENT_TYPE" \
-  --arg env   "$ENVIRONMENT" \
-  --arg app   "$APP_NAME" \
-  --arg sub   "$SUBSCRIPTION_ID" \
-  --arg cid   "$AZURE_CLIENT_ID" \
-  --arg tid   "$AZURE_TENANT_ID" \
-  --arg tmpl  "$TEMPLATE_REPO" \
-  --arg image "$CONTAINER_IMAGE" \
-  --arg reg   "$CONTAINER_REGISTRY_URL" \
-  --arg ci    "$CI_WORKFLOW_FILE" \
+  --arg app        "$APP_NAME" \
+  --arg env        "$ENVIRONMENT" \
+  --arg sub        "$AZURE_SUBSCRIPTION_ID" \
+  --arg tid        "$AZURE_TENANT_ID" \
+  --arg cid        "$AZURE_CLIENT_ID" \
+  --arg infra_tmpl "$INFRA_TEMPLATE_REPO" \
+  --arg app_tmpl   "$APP_TEMPLATE_REPO" \
+  --arg image      "$CONTAINER_IMAGE" \
+  --arg reg        "$CONTAINER_REGISTRY_URL" \
+  --arg ci         "$CI_WORKFLOW_FILE" \
   '{
-    event_type:     $event,
+    event_type:     "provision-infrastructure",
     client_payload: ({
-      environment:     $env,
-      app_name:        $app,
-      subscription_id: $sub,
-      azure_client_id: $cid,
-      azure_tenant_id: $tid,
-      template_repo:   $tmpl
+      app_name:              $app,
+      environment:           $env,
+      azure_subscription_id: $sub,
+      azure_tenant_id:       $tid,
+      azure_client_id:       $cid,
+      infra_template_repo:   $infra_tmpl,
+      app_template_repo:     $app_tmpl
     }
     + (if $image != "" then {container_image:        $image} else {} end)
     + (if $reg   != "" then {container_registry_url: $reg}   else {} end)
@@ -143,7 +146,7 @@ PAYLOAD=$(jq -nc \
   }')
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
-echo "Dispatching '${EVENT_TYPE}' to ${PLATFORM_REPO}…"
+echo "Dispatching 'provision-infrastructure' to ${PLATFORM_REPO}…"
 echo "$PAYLOAD" | gh api \
   --method POST \
   -H "Accept: application/vnd.github+json" \

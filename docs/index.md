@@ -128,7 +128,7 @@ operator                ┌─────────────────�
                              ▼                                ▼
       ┌──────────────────────────────────┐  ┌────────────────────────────────┐
       │ Azure subscription               │  │  GitHub: app repo              │
-      │  ├── rg-tfstate-<app>            │  │   ├── from <template_repo>     │
+      │  ├── rg-tfstate-<app>            │  │   ├── from <app_template_repo> │
       │  │     └── sttf<app><sub>        │  │   ├── envs: dev/staging/prod   │
       │  │           └── tfstate/{env}/  │  │   ├── per-env variables        │
       │  └── rg-<app>-{dev|stg|prod}     │  │   ├── ci.yml — build & test &  │
@@ -210,12 +210,13 @@ the operator needs.
 
 ```bash
 scripts/trigger-provision.sh \
-  --environment      dev \
-  --app-name         myapp \
-  --subscription-id  00000000-0000-0000-0000-000000000000 \
-  --azure-client-id  11111111-1111-1111-1111-111111111111 \
-  --azure-tenant-id  22222222-2222-2222-2222-222222222222 \
-  --template-repo    your-org/template-app
+      --app-name               myapp \
+      --environment            dev \
+      --azure-subscription-id  00000000-0000-0000-0000-000000000000 \
+      --azure-tenant-id        22222222-2222-2222-2222-222222222222 \
+      --azure-client-id        11111111-1111-1111-1111-111111111111 \
+      --infra-template-repo    your-org/template-terraform-azure-webapp \
+      --app-template-repo      your-org/template-helloworld-express
 ```
 
 Flags fall back to upper-case env vars (`ENVIRONMENT`, `APP_NAME`, …) and the
@@ -230,22 +231,23 @@ for the full reference.
 
 ```bash
 curl -X POST \
-  -H "Authorization: Bearer $GH_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  https://api.github.com/repos/<org>/<repo>/dispatches \
-  -d '{
-    "event_type": "provision-infrastructure",
-    "client_payload": {
-      "environment":            "dev",
-      "app_name":               "myapp",
-      "subscription_id":        "00000000-0000-0000-0000-000000000000",
-      "azure_client_id":        "11111111-1111-1111-1111-111111111111",
-      "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
-      "template_repo":          "your-org/template-app",
-      "container_image":        "mcr.microsoft.com/appsvc/staticsite:latest",
-      "container_registry_url": "myregistry.azurecr.io"
-    }
-  }'
+      -H "Authorization: Bearer $GH_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      https://api.github.com/repos/<org>/<repo>/dispatches \
+      -d '{
+            "event_type": "provision-infrastructure",
+            "client_payload": {
+                  "app_name":               "myapp",
+                  "environment":            "dev",
+                  "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
+                  "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
+                  "azure_client_id":        "11111111-1111-1111-1111-111111111111",
+                  "infra_template_repo":    "your-org/template-terraform-azure-webapp",
+                  "app_template_repo":      "your-org/template-helloworld-express",
+                  "container_image":        "mcr.microsoft.com/appsvc/staticsite:latest",
+                  "container_registry_url": "myregistry.azurecr.io"
+            }
+      }'
 ```
 
 The token must have `repo` scope (classic) or `Contents: write` permission

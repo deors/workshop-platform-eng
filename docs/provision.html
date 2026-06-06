@@ -188,6 +188,14 @@
       <div class="grid-2">
 
         <div>
+          <label for="app_name">Application name <span class="req">*</span></label>
+          <input type="text" id="app_name" name="app_name" required placeholder="test-webapp"
+                 pattern="^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$" />
+          <span class="hint">3–22 chars, lowercase + digits + hyphens, no leading/trailing hyphen.</span>
+          <div class="field-error" data-for="app_name">Must match <code>^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$</code>.</div>
+        </div>
+
+        <div>
           <label for="environment">Environment <span class="req">*</span></label>
           <select id="environment" name="environment" required>
             <option value="">— choose —</option>
@@ -200,21 +208,28 @@
           <div class="field-error" data-for="environment">Required.</div>
         </div>
 
-        <div>
-          <label for="app_name">Application name <span class="req">*</span></label>
-          <input type="text" id="app_name" name="app_name" required placeholder="test-webapp"
-                 pattern="^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$" />
-          <span class="hint">3–22 chars, lowercase + digits + hyphens, no leading/trailing hyphen.</span>
-          <div class="field-error" data-for="app_name">Must match <code>^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$</code>.</div>
-        </div>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
+
+      <div class="grid-2">
 
         <div>
-          <label for="subscription_id">Azure Subscription ID <span class="req">*</span></label>
-          <input type="text" id="subscription_id" name="subscription_id" required
+          <label for="azure_subscription_id">Azure Subscription ID <span class="req">*</span></label>
+          <input type="text" id="azure_subscription_id" name="azure_subscription_id" required
                  placeholder="00000000-0000-0000-0000-000000000000"
                  pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
           <span class="hint">GUID, 8-4-4-4-12 hex.</span>
-          <div class="field-error" data-for="subscription_id">Must be a GUID.</div>
+          <div class="field-error" data-for="azure_subscription_id">Must be a GUID.</div>
+        </div>
+
+        <div>
+          <label for="azure_tenant_id">Azure Tenant ID <span class="req">*</span></label>
+          <input type="text" id="azure_tenant_id" name="azure_tenant_id" required
+                 placeholder="11111111-1111-1111-1111-111111111111"
+                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
+          <span class="hint">Entra tenant GUID.</span>
+          <div class="field-error" data-for="azure_tenant_id">Must be a GUID.</div>
         </div>
 
         <div>
@@ -226,14 +241,11 @@
           <div class="field-error" data-for="azure_client_id">Must be a GUID.</div>
         </div>
 
-        <div>
-          <label for="azure_tenant_id">Azure Tenant ID <span class="req">*</span></label>
-          <input type="text" id="azure_tenant_id" name="azure_tenant_id" required
-                 placeholder="11111111-1111-1111-1111-111111111111"
-                 pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
-          <span class="hint">Entra tenant GUID.</span>
-          <div class="field-error" data-for="azure_tenant_id">Must be a GUID.</div>
-        </div>
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
+
+      <div class="grid-2">
 
         <div>
           <label for="infra_template_repo">Infrastructure template repo <span class="req">*</span></label>
@@ -247,7 +259,7 @@
         <div>
           <label for="app_template_repo">Application template repo <span class="req">*</span></label>
           <input type="text" id="app_template_repo" name="app_template_repo" required
-                 placeholder="owner/template-name"
+                 placeholder="owner/template-helloworld-express"
                  pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
           <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
           <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
@@ -278,6 +290,7 @@
       <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
 
       <div class="grid-2">
+
         <div>
           <label for="platform_repo">Platform repo <span class="req">*</span></label>
           <input type="text" id="platform_repo" name="platform_repo" required
@@ -293,6 +306,7 @@
           <span class="hint">Fine-grained PAT with <em>Contents: write</em> on this repo (or classic <em>repo</em> scope). Kept in browser memory only.</span>
           <div class="field-error" data-for="token">Required.</div>
         </div>
+
       </div>
 
       <div class="actions">
@@ -353,15 +367,15 @@
   function buildPayload () {
     const v = id => (document.getElementById(id).value || '').trim();
     const payload = {
-      event_type: v('event_type'),
+      event_type: 'provision-infrastructure',
       client_payload: {
-        environment:     v('environment'),
-        app_name:        v('app_name'),
-        subscription_id: v('subscription_id'),
-        azure_client_id: v('azure_client_id'),
+        app_name: v('app_name'),
+        environment: v('environment'),
+        azure_subscription_id: v('azure_subscription_id'),
         azure_tenant_id: v('azure_tenant_id'),
-        app_template_repo: v('app_template_repo'),
+        azure_client_id: v('azure_client_id'),
         infra_template_repo: v('infra_template_repo'),
+        app_template_repo: v('app_template_repo'),
       }
     };
     ['container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {
