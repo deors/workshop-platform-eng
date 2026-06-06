@@ -1,4 +1,4 @@
-name: Delete Azure Resource Group
+name: Delete App Resource Group (Single environment)
 
 on:
   workflow_dispatch:

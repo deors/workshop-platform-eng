@@ -1,4 +1,4 @@
-name: Delete App Resource Groups
+name: Delete App Resource Groups (All Environments)
 
 on:
   workflow_dispatch:
