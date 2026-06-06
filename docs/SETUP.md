@@ -134,9 +134,9 @@ cat <<EOF
 
 Save these three values — you'll feed them to the workflow as inputs:
 
-  azure_client_id : $APP_ID
-  azure_tenant_id : $TENANT_ID
   azure_subscription_id : $SUBSCRIPTION_ID
+  azure_tenant_id : $TENANT_ID
+  azure_client_id : $APP_ID
 
   (SP object ID, only used in the next steps: $SP_OBJECT_ID)
 EOF
