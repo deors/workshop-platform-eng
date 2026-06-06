@@ -420,8 +420,8 @@ jobs:
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
           # Write tfvars using printf to avoid shell interpolation of HCL syntax
-          printf 'app_name               = "%s"\n' "$APP_NAME"               >> terraform.tfvars
-          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
+          printf 'app_name               = "%s"\n' "$APP_NAME"               > terraform.tfvars
+          printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >> terraform.tfvars
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 
@@ -446,9 +446,9 @@ jobs:
         run: terraform validate
 
       - name: Terraform plan
-        id: plan
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
+          set -o pipefail
           # -no-color: markdown code blocks in the step summary don't render
           # ANSI escapes; without this the captured output is unreadable.
           terraform plan \
@@ -456,7 +456,6 @@ jobs:
             -no-color \
             -out=tfplan \
             2>&1 | tee plan-output.txt
-          echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Write plan summary
         if: always()
@@ -567,6 +566,7 @@ jobs:
       - name: Terraform apply
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
+          set -o pipefail
           terraform apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
 
       - name: Write apply summary
