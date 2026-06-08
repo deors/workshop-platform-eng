@@ -1,7 +1,11 @@
 name: Verify Infrastructure
 
-# Reusable verification of a deployed Web App stack against the per-environment
-# expectations encoded in scripts/verify-infra.sh. Three entry points:
+# Reusable verification of a deployed stack. The verification logic itself is
+# NOT defined here — it lives in the provisioned infrastructure repository at
+# the canonical path scripts/verify.sh (seeded from the infra template). This
+# workflow is template-agnostic: it checks out the infra repo and runs that
+# script, then surfaces the results. Each infra template therefore owns and
+# governs its own assertions. Three entry points:
 #
 #   1. workflow_call      – invoked from provision-infrastructure.yml as a
 #                           matrix job after `apply`.
@@ -32,6 +36,20 @@ on:
         description: Client ID for OIDC login
         type: string
         required: true
+      infra_repo:
+        description: "Provisioned infrastructure repo holding scripts/verify.sh (owner/name). Defaults to <owner>/<app_name>-infra when empty."
+        type: string
+        required: false
+        default: ""
+      verify_script:
+        description: Canonical path to the verification script inside the infra repo
+        type: string
+        required: false
+        default: scripts/verify.sh
+    secrets:
+      gh_pat:
+        description: PAT used to checkout the (possibly private) infrastructure repo. Falls back to the GH_PAT repo secret for standalone runs.
+        required: false
 
   workflow_dispatch:
     inputs:
@@ -57,6 +75,11 @@ on:
         description: Client ID of the Azure service principal used for OIDC login
         type: string
         required: true
+      infra_repo:
+        description: "Provisioned infrastructure repo holding scripts/verify.sh (owner/name). Leave empty to derive <owner>/<app_name>-infra."
+        type: string
+        required: false
+        default: ""
 
   repository_dispatch:
     types:
@@ -75,31 +98,36 @@ jobs:
     environment: ${{ inputs.environment || github.event.client_payload.environment }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
       - name: Resolve inputs
         id: params
         env:
           # Typed inputs (workflow_call & workflow_dispatch share the same
           # `inputs.*` context).
-          IN_APP:       ${{ inputs.app_name }}
-          IN_ENV:       ${{ inputs.environment }}
-          IN_SUB_ID:    ${{ inputs.azure_subscription_id }}
-          IN_TENANT_ID: ${{ inputs.azure_tenant_id }}
-          IN_CLIENT_ID: ${{ inputs.azure_client_id }}
+          IN_APP:        ${{ inputs.app_name }}
+          IN_ENV:        ${{ inputs.environment }}
+          IN_SUB_ID:     ${{ inputs.azure_subscription_id }}
+          IN_TENANT_ID:  ${{ inputs.azure_tenant_id }}
+          IN_CLIENT_ID:  ${{ inputs.azure_client_id }}
+          IN_INFRA_REPO: ${{ inputs.infra_repo }}
+          IN_VERIFY_SCRIPT: ${{ inputs.verify_script }}
           # repository_dispatch payload (untyped).
-          RD_APP:       ${{ github.event.client_payload.app_name }}
-          RD_ENV:       ${{ github.event.client_payload.environment }}
-          RD_SUB_ID:    ${{ github.event.client_payload.azure_subscription_id }}
-          RD_TENANT_ID: ${{ github.event.client_payload.azure_tenant_id }}
-          RD_CLIENT_ID: ${{ github.event.client_payload.azure_client_id }}
+          RD_APP:        ${{ github.event.client_payload.app_name }}
+          RD_ENV:        ${{ github.event.client_payload.environment }}
+          RD_SUB_ID:     ${{ github.event.client_payload.azure_subscription_id }}
+          RD_TENANT_ID:  ${{ github.event.client_payload.azure_tenant_id }}
+          RD_CLIENT_ID:  ${{ github.event.client_payload.azure_client_id }}
+          RD_INFRA_REPO: ${{ github.event.client_payload.infra_repo }}
+          RD_VERIFY_SCRIPT: ${{ github.event.client_payload.verify_script }}
+          OWNER:         ${{ github.repository_owner }}
         run: |
           APP_NAME="${IN_APP:-$RD_APP}"
           ENVIRONMENT="${IN_ENV:-$RD_ENV}"
           AZURE_SUBSCRIPTION_ID="${IN_SUB_ID:-$RD_SUB_ID}"
           AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
           AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
+          INFRA_REPO="${IN_INFRA_REPO:-$RD_INFRA_REPO}"
+          # Canonical path of the verification script inside the infra repo.
+          VERIFY_SCRIPT="${IN_VERIFY_SCRIPT:-${RD_VERIFY_SCRIPT:-scripts/verify.sh}}"
 
           MISSING=()
           [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
@@ -112,6 +140,13 @@ jobs:
             exit 1
           fi
 
+          # Derive the infra repo from the app name for standalone runs that
+          # don't pass it explicitly. Matches the orchestrator's convention
+          # (`<owner>/<app_name>-infra`).
+          if [[ -z "$INFRA_REPO" ]]; then
+            INFRA_REPO="${OWNER}/${APP_NAME}-infra"
+          fi
+
           # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
           # mask them — masking blanks values when they pass through step outputs.
 
@@ -120,6 +155,21 @@ jobs:
           echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"             >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"             >> "$GITHUB_OUTPUT"
+          echo "infra_repo=$INFRA_REPO"                       >> "$GITHUB_OUTPUT"
+          echo "verify_script=$VERIFY_SCRIPT"                 >> "$GITHUB_OUTPUT"
+
+      # Check out the provisioned infrastructure repo so we can run ITS
+      # verification logic. The script lives beside the Terraform that defines
+      # the expectations, keeping this workflow template-agnostic.
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.params.outputs.infra_repo }}
+          path:       infra-repo
+          # Standalone runs have no caller-passed secret; fall back to the
+          # repo-level GH_PAT. Public infra repos check out fine without a
+          # token, but passing one keeps private repos working too.
+          token:      ${{ secrets.gh_pat || secrets.GH_PAT || github.token }}
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
@@ -129,10 +179,17 @@ jobs:
           client-id:       ${{ steps.params.outputs.azure_client_id }}
 
       - name: Verify infrastructure
+        working-directory: infra-repo
         env:
-          APP_NAME:    ${{ steps.params.outputs.app_name }}
-          ENVIRONMENT: ${{ steps.params.outputs.environment }}
-        run: bash scripts/verify-infra.sh
+          APP_NAME:      ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT:   ${{ steps.params.outputs.environment }}
+          VERIFY_SCRIPT: ${{ steps.params.outputs.verify_script }}
+        run: |
+          if [[ ! -f "$VERIFY_SCRIPT" ]]; then
+            echo "::error::Verification script '$VERIFY_SCRIPT' not found in ${{ steps.params.outputs.infra_repo }}. Each infra template must provide its own verification logic at this canonical path."
+            exit 1
+          fi
+          bash "$VERIFY_SCRIPT"
 
       # Always upload, even when verify failed — the script writes the
       # summary file before exiting non-zero, and the calling workflow's

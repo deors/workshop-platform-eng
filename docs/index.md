@@ -149,7 +149,7 @@ operator                ┌─────────────────�
 ├── .checkov.nonprod.yaml               # Relaxed skips for dev/staging
 ├── .github/workflows/
 │   ├── bootstrap-tfstate.yml           # Reusable: create the tfstate storage
-│   ├── verify-infrastructure.yml       # Reusable: control-plane assertions
+│   ├── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
 │   └── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
 ├── docs/                               # GitHub Pages site (Jekyll-rendered)
 │   ├── _config.yml                     # Jekyll config
@@ -160,10 +160,14 @@ operator                ┌─────────────────�
 │   └── provision.html                  # Self-service provisioning form
 ├── scripts/
 │   ├── bootstrap-tfstate.sh            # Idempotent az-cli bootstrap script
-│   ├── verify-infra.sh                 # Control-plane verification assertions
 │   ├── watch-run.sh                    # Poll a remote workflow run + outputs
 │   └── trigger-provision.sh            # CLI wrapper around repository_dispatch
 ```
+
+> Control-plane verification is no longer defined here. It lives in each infra
+> template at the canonical path `scripts/verify.sh`, so the orchestrator stays
+> template-agnostic — `verify-infrastructure.yml` checks out the provisioned
+> infra repo and runs that script.
 
 ## Quick start
 
@@ -284,10 +288,13 @@ checkov -d <app-name>-infra/terraform/environments/prod --framework terraform --
 checkov -d <app-name>-infra/terraform/environments/dev  --framework terraform --config-file .checkov.nonprod.yaml
 ```
 
-To verify deployed infrastructure against the expected per-env policy:
+To verify deployed infrastructure against the expected per-env policy, run the
+verification script that ships with the generated infra repo (an `az login`
+session must be active):
 
 ```bash
-APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify-infra.sh
+cd <app-name>-infra
+APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 ```
 
 ## Roadmap

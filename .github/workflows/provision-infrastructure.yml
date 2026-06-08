@@ -608,6 +608,13 @@ jobs:
       azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      # The verification logic lives in the provisioned infra repo (seeded from
+      # the infra template at scripts/verify.sh), not in this orchestrator.
+      infra_repo:            ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+    secrets:
+      # Needed to check out the (possibly private) infra repo from the reusable
+      # workflow — the default GITHUB_TOKEN can't read other repositories.
+      gh_pat: ${{ secrets.GH_PAT }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 9. Application repository – create from template (idempotent).
@@ -768,7 +775,8 @@ jobs:
           path: plans/prod
 
       # Verify summary artifacts — same per-env pattern as plans. Each contains
-      # a tiny key=value file with passed/failed counts from verify-infra.sh.
+      # a tiny key=value file with passed/failed counts from the infra repo's
+      # verification script (scripts/verify.sh).
       - name: Download verify summary (dev)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
