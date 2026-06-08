@@ -205,8 +205,8 @@ the operator needs.
 scripts/trigger-provision.sh \
       --app-name               myapp \
       --environment            dev \
-      --azure-subscription-id  00000000-0000-0000-0000-000000000000 \
       --azure-tenant-id        22222222-2222-2222-2222-222222222222 \
+      --azure-subscription-id  00000000-0000-0000-0000-000000000000 \
       --azure-client-id        11111111-1111-1111-1111-111111111111 \
       --infra-template-repo    your-org/template-terraform-azure-webapp \
       --app-template-repo      your-org/template-helloworld-express
@@ -232,8 +232,8 @@ curl -X POST \
             "client_payload": {
                   "app_name":               "myapp",
                   "environment":            "dev",
-                  "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
                   "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
+                  "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
                   "azure_client_id":        "11111111-1111-1111-1111-111111111111",
                   "infra_template_repo":    "your-org/template-terraform-azure-webapp",
                   "app_template_repo":      "your-org/template-helloworld-express",

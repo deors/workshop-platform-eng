@@ -13,12 +13,12 @@ on:
         options: [dev, staging, prod, all]
         required: true
         default: dev
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:
@@ -73,8 +73,8 @@ jobs:
     outputs:
       app_name:                ${{ steps.params.outputs.app_name }}
       environments:            ${{ steps.matrix.outputs.environments }}
-      azure_subscription_id:   ${{ steps.params.outputs.azure_subscription_id }}
       azure_tenant_id:         ${{ steps.params.outputs.azure_tenant_id }}
+      azure_subscription_id:   ${{ steps.params.outputs.azure_subscription_id }}
       azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
@@ -93,8 +93,8 @@ jobs:
           # workflow_dispatch values
           WD_APP:            ${{ github.event.inputs.app_name }}
           WD_ENV:            ${{ github.event.inputs.environment }}
-          WD_SUB_ID:         ${{ github.event.inputs.azure_subscription_id }}
           WD_TENANT_ID:      ${{ github.event.inputs.azure_tenant_id }}
+          WD_SUB_ID:         ${{ github.event.inputs.azure_subscription_id }}
           WD_CLIENT_ID:      ${{ github.event.inputs.azure_client_id }}
           WD_INFRA_TEMPLATE: ${{ github.event.inputs.infra_template_repo }}
           WD_APP_TEMPLATE:   ${{ github.event.inputs.app_template_repo }}
@@ -104,8 +104,8 @@ jobs:
           # repository_dispatch values (client_payload)
           RD_APP:            ${{ github.event.client_payload.app_name }}
           RD_ENV:            ${{ github.event.client_payload.environment }}
-          RD_SUB_ID:         ${{ github.event.client_payload.azure_subscription_id }}
           RD_TENANT_ID:      ${{ github.event.client_payload.azure_tenant_id }}
+          RD_SUB_ID:         ${{ github.event.client_payload.azure_subscription_id }}
           RD_CLIENT_ID:      ${{ github.event.client_payload.azure_client_id }}
           RD_INFRA_TEMPLATE: ${{ github.event.client_payload.infra_template_repo }}
           RD_APP_TEMPLATE:   ${{ github.event.client_payload.app_template_repo }}
@@ -116,8 +116,8 @@ jobs:
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
-          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
           AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
+          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
@@ -133,8 +133,8 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
           [[ -z "$ENVIRONMENT"           ]] && MISSING+=(environment)
-          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
           [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
           [[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=(app_template_repo)
@@ -149,7 +149,7 @@ jobs:
             exit 1
           fi
 
-          # Note: azure_subscription_id, azure_tenant_id, azure_client_id are GUIDs that
+          # Note: azure_tenant_id, azure_subscription_id, azure_client_id are GUIDs that
           # identify Azure resources/principals. They are not secrets in an OIDC flow
           # (security comes from the federated credential subject claim). They are
           # NOT masked here because GitHub Actions blanks masked values when they
@@ -157,8 +157,8 @@ jobs:
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
-          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
           echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
           echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
@@ -358,8 +358,8 @@ jobs:
     uses: ./.github/workflows/bootstrap-tfstate.yml
     with:
       app_name:              ${{ needs.resolve-inputs.outputs.app_name }}
-      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -386,8 +386,8 @@ jobs:
       # without this the backend hits 403 KeyBasedAuthenticationNotPermitted
       # even though the OIDC token itself is valid.
       ARM_USE_AZUREAD:     "true"
-      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
     steps:
@@ -401,8 +401,8 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Setup Terraform
@@ -503,8 +503,8 @@ jobs:
     env:
       ARM_USE_OIDC:        "true"
       ARM_USE_AZUREAD:     "true"
-      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
     steps:
@@ -518,8 +518,8 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Setup Terraform
@@ -605,8 +605,8 @@ jobs:
     with:
       app_name:              ${{ needs.resolve-inputs.outputs.app_name }}
       environment:           ${{ matrix.environment }}
-      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
       # The verification logic lives in the provisioned infra repo (seeded from
       # the infra template at scripts/verify.sh), not in this orchestrator.
@@ -952,8 +952,8 @@ jobs:
           REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
           ENV:       ${{ matrix.environment }}
           APP_NAME:  ${{ needs.resolve-inputs.outputs.app_name }}
-          SUB:       ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           TID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          SUB:       ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           CID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
           REGISTRY:  ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
@@ -970,8 +970,8 @@ jobs:
             fi
           }
 
-          set_var AZURE_SUBSCRIPTION_ID "$SUB"
           set_var AZURE_TENANT_ID       "$TID"
+          set_var AZURE_SUBSCRIPTION_ID "$SUB"
           set_var AZURE_CLIENT_ID       "$CID"
           set_var AZURE_RESOURCE_GROUP  "rg-${APP_NAME}-${ENV}"
           set_var AZURE_WEBAPP_NAME     "app-${APP_NAME}-${ENV}"
@@ -1004,8 +1004,8 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
       - name: Register federated credential

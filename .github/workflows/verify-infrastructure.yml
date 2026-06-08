@@ -24,12 +24,12 @@ on:
         description: Target environment (dev, staging, prod)
         type: string
         required: true
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:
@@ -63,12 +63,12 @@ on:
         options: [dev, staging, prod]
         required: true
         default: dev
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:
@@ -105,16 +105,16 @@ jobs:
           # `inputs.*` context).
           IN_APP:        ${{ inputs.app_name }}
           IN_ENV:        ${{ inputs.environment }}
-          IN_SUB_ID:     ${{ inputs.azure_subscription_id }}
           IN_TENANT_ID:  ${{ inputs.azure_tenant_id }}
+          IN_SUB_ID:     ${{ inputs.azure_subscription_id }}
           IN_CLIENT_ID:  ${{ inputs.azure_client_id }}
           IN_INFRA_REPO: ${{ inputs.infra_repo }}
           IN_VERIFY_SCRIPT: ${{ inputs.verify_script }}
           # repository_dispatch payload (untyped).
           RD_APP:        ${{ github.event.client_payload.app_name }}
           RD_ENV:        ${{ github.event.client_payload.environment }}
-          RD_SUB_ID:     ${{ github.event.client_payload.azure_subscription_id }}
           RD_TENANT_ID:  ${{ github.event.client_payload.azure_tenant_id }}
+          RD_SUB_ID:     ${{ github.event.client_payload.azure_subscription_id }}
           RD_CLIENT_ID:  ${{ github.event.client_payload.azure_client_id }}
           RD_INFRA_REPO: ${{ github.event.client_payload.infra_repo }}
           RD_VERIFY_SCRIPT: ${{ github.event.client_payload.verify_script }}
@@ -122,8 +122,8 @@ jobs:
         run: |
           APP_NAME="${IN_APP:-$RD_APP}"
           ENVIRONMENT="${IN_ENV:-$RD_ENV}"
-          AZURE_SUBSCRIPTION_ID="${IN_SUB_ID:-$RD_SUB_ID}"
           AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
+          AZURE_SUBSCRIPTION_ID="${IN_SUB_ID:-$RD_SUB_ID}"
           AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
           INFRA_REPO="${IN_INFRA_REPO:-$RD_INFRA_REPO}"
           # Canonical path of the verification script inside the infra repo.
@@ -132,8 +132,8 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
           [[ -z "$ENVIRONMENT"           ]] && MISSING+=(environment)
-          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
@@ -147,13 +147,13 @@ jobs:
             INFRA_REPO="${OWNER}/${APP_NAME}-infra"
           fi
 
-          # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
+          # GUIDs (tenant/subscription/client) are identifiers, not secrets; do not
           # mask them — masking blanks values when they pass through step outputs.
 
           echo "app_name=$APP_NAME"                           >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT"                     >> "$GITHUB_OUTPUT"
-          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"             >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"             >> "$GITHUB_OUTPUT"
           echo "infra_repo=$INFRA_REPO"                       >> "$GITHUB_OUTPUT"
           echo "verify_script=$VERIFY_SCRIPT"                 >> "$GITHUB_OUTPUT"
@@ -174,8 +174,8 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          subscription-id: ${{ steps.params.outputs.azure_subscription_id }}
           tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
+          subscription-id: ${{ steps.params.outputs.azure_subscription_id }}
           client-id:       ${{ steps.params.outputs.azure_client_id }}
 
       - name: Verify infrastructure

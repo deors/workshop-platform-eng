@@ -134,8 +134,8 @@ cat <<EOF
 
 Save these three values — you'll feed them to the workflow as inputs:
 
-  azure_subscription_id : $SUBSCRIPTION_ID
   azure_tenant_id : $TENANT_ID
+  azure_subscription_id : $SUBSCRIPTION_ID
   azure_client_id : $APP_ID
 
   (SP object ID, only used in the next steps: $SP_OBJECT_ID)
@@ -475,8 +475,8 @@ provide:
 |-------|--------------------------|
 | `app_name` | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
 | `environment` | `dev` |
-| `azure_subscription_id` | the GUID captured in step 3 |
 | `azure_tenant_id` | the tenant GUID captured in step 3 |
+| `azure_subscription_id` | the GUID captured in step 3 |
 | `azure_client_id` | the `appId` captured in step 3 |
 | `infra_template_repo` | the `<owner>/<name>` of the infrastructure template repo |
 | `app_template_repo` | the `<owner>/<name>` of the application template repo |

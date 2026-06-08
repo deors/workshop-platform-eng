@@ -51,12 +51,12 @@ on:
         type: choice
         options: [dev, staging, prod]
         required: true
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:

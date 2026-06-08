@@ -15,12 +15,12 @@ on:
         description: Application name
         type: string
         required: true
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:
@@ -44,12 +44,12 @@ on:
         description: Application name (must match the value used in provision-infrastructure)
         type: string
         required: true
-      azure_subscription_id:
-        description: Azure Subscription ID
-        type: string
-        required: true
       azure_tenant_id:
         description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
         type: string
         required: true
       azure_client_id:
@@ -89,52 +89,52 @@ jobs:
         env:
           # Typed inputs (workflow_call & workflow_dispatch share the same
           # `inputs.*` context).
-          IN_APP:          ${{ inputs.app_name }}
-          IN_SUB:          ${{ inputs.azure_subscription_id }}
-          IN_TENANT_ID:    ${{ inputs.azure_tenant_id }}
-          IN_CLIENT_ID:    ${{ inputs.azure_client_id }}
-          IN_LOCATION:     ${{ inputs.location }}
-          IN_PRINCIPAL_ID: ${{ inputs.principal_id }}
+          IN_APP:             ${{ inputs.app_name }}
+          IN_TENANT_ID:       ${{ inputs.azure_tenant_id }}
+          IN_SUBSCRIPTION_ID: ${{ inputs.azure_subscription_id }}
+          IN_CLIENT_ID:       ${{ inputs.azure_client_id }}
+          IN_LOCATION:        ${{ inputs.location }}
+          IN_PRINCIPAL_ID:    ${{ inputs.principal_id }}
           # repository_dispatch payload (untyped).
-          RD_APP:          ${{ github.event.client_payload.app_name }}
-          RD_SUB:          ${{ github.event.client_payload.azure_subscription_id }}
-          RD_TENANT_ID:    ${{ github.event.client_payload.azure_tenant_id }}
-          RD_CLIENT_ID:    ${{ github.event.client_payload.azure_client_id }}
-          RD_LOCATION:     ${{ github.event.client_payload.location }}
-          RD_PRINCIPAL_ID: ${{ github.event.client_payload.principal_id }}
+          RD_APP:             ${{ github.event.client_payload.app_name }}
+          RD_TENANT_ID:       ${{ github.event.client_payload.azure_tenant_id }}
+          RD_SUBSCRIPTION_ID: ${{ github.event.client_payload.azure_subscription_id }}
+          RD_CLIENT_ID:       ${{ github.event.client_payload.azure_client_id }}
+          RD_LOCATION:        ${{ github.event.client_payload.location }}
+          RD_PRINCIPAL_ID:    ${{ github.event.client_payload.principal_id }}
         run: |
           APP_NAME="${IN_APP:-$RD_APP}"
-          SUBSCRIPTION_ID="${IN_SUB:-$RD_SUB}"
           AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
+          AZURE_SUBSCRIPTION_ID="${IN_SUBSCRIPTION_ID:-$RD_SUBSCRIPTION_ID}"
           AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
           LOCATION="${IN_LOCATION:-${RD_LOCATION:-westeurope}}"
           PRINCIPAL_ID="${IN_PRINCIPAL_ID:-${RD_PRINCIPAL_ID:-}}"
 
           MISSING=()
-          [[ -z "$APP_NAME"        ]] && MISSING+=(app_name)
-          [[ -z "$SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
-          [[ -z "$AZURE_TENANT_ID" ]] && MISSING+=(azure_tenant_id)
-          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING+=(azure_client_id)
+          [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
+          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
+          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
           fi
 
-          # GUIDs (subscription/client/tenant) are identifiers, not secrets; do not
+          # GUIDs (tenant/subscription/client) are identifiers, not secrets; do not
           # mask them — masking blanks values when they pass through step outputs.
 
-          echo "app_name=$APP_NAME"               >> "$GITHUB_OUTPUT"
-          echo "azure_subscription_id=$SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
-          echo "azure_tenant_id=$AZURE_TENANT_ID" >> "$GITHUB_OUTPUT"
-          echo "azure_client_id=$AZURE_CLIENT_ID" >> "$GITHUB_OUTPUT"
-          echo "location=$LOCATION"               >> "$GITHUB_OUTPUT"
-          echo "principal_id=$PRINCIPAL_ID"       >> "$GITHUB_OUTPUT"
+          echo "app_name=$APP_NAME"                           >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID"             >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID"             >> "$GITHUB_OUTPUT"
+          echo "location=$LOCATION"                           >> "$GITHUB_OUTPUT"
+          echo "principal_id=$PRINCIPAL_ID"                   >> "$GITHUB_OUTPUT"
 
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          subscription-id: ${{ steps.params.outputs.azure_subscription_id }}
           tenant-id:       ${{ steps.params.outputs.azure_tenant_id }}
+          subscription-id: ${{ steps.params.outputs.azure_subscription_id }}
           client-id:       ${{ steps.params.outputs.azure_client_id }}
 
       - name: Run bootstrap script
@@ -146,9 +146,9 @@ jobs:
           PRINCIPAL_ID:    ${{ steps.params.outputs.principal_id }}
         run: |
           ARGS=(
-            --app-name        "$APP_NAME"
+            --app-name              "$APP_NAME"
             --azure-subscription-id "$SUBSCRIPTION_ID"
-            --location        "$LOCATION"
+            --location              "$LOCATION"
           )
           [[ -n "$PRINCIPAL_ID" ]] && ARGS+=(--principal-id "$PRINCIPAL_ID")
 
