@@ -251,7 +251,6 @@ jobs:
           SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           {
             echo "infra_repo=${OWNER}/${APP_NAME}-infra"
-            echo "app_repo=${OWNER}/${APP_NAME}"
             echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}"
             echo "resource_group=rg-tfstate-${APP_NAME}"
           } >> "$GITHUB_OUTPUT"
@@ -583,7 +582,6 @@ jobs:
         if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
         env:
           GH_TOKEN:    ${{ secrets.gh_pat || secrets.GH_PAT }}
-          APP_REPO:    ${{ steps.names.outputs.app_repo }}
           APP_NAME:    ${{ matrix.app }}
           INFRA_REPO:  ${{ steps.names.outputs.infra_repo }}
           DRIFTED:     ${{ steps.detect.outputs.drifted_envs }}
@@ -616,7 +614,7 @@ jobs:
             echo "A per-environment breakdown (added / removed / replaced / modified / tag-only) is in the comment below. The raw \`terraform\` plan output, binary plan and plan JSON are attached to the [workflow run](${RUN_URL}) as the \`drift-${APP_NAME}\` artifact."
           } > /tmp/issue-body.md
 
-          ISSUE_URL=$(gh issue create -R "$APP_REPO" \
+          ISSUE_URL=$(gh issue create -R "$INFRA_REPO" \
             --title "$TITLE" \
             --body-file /tmp/issue-body.md)
           ISSUE_NUMBER="${ISSUE_URL##*/}"
@@ -634,7 +632,7 @@ jobs:
             fi
           } > /tmp/issue-comment.md
 
-          gh issue comment "$ISSUE_NUMBER" -R "$APP_REPO" --body-file /tmp/issue-comment.md
+          gh issue comment "$ISSUE_NUMBER" -R "$INFRA_REPO" --body-file /tmp/issue-comment.md
 
           {
             echo
