@@ -452,7 +452,6 @@ Provide a Personal Access Token (or a GitHub App installation token) as a
 |-------|----------|
 | `repo` | Read/write the application repository (creation, issues, comments) |
 | `workflow` | Dispatch the CI workflow in the application repo |
-| `admin:repo_hook` _(optional)_ | Future drift-detection wiring |
 
 Create one at <https://github.com/settings/tokens?type=beta> (fine-grained,
 recommended) with the target organization and `Administration: Read and write`,
@@ -522,9 +521,28 @@ the new repo, and posts a summary comment on the per-run tracking issue.
 
 The `detect-drift.yml` workflow compares the recorded Terraform state against
 the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
-the affected application repo when it finds drift or an error. It has three
-entry points: a nightly `schedule`, manual `workflow_dispatch`, and
-`workflow_call` (so other workflows can reuse it).
+the affected application's **infrastructure repo** (`<app>-infra`) when it finds
+drift or an error. It has three entry points: a nightly `schedule`, manual
+`workflow_dispatch`, and `workflow_call` (so other workflows can reuse it).
+
+For each environment the workflow classifies the result from the
+(managed-state × resource-group) matrix:
+
+| Terraform state | Resource group | Result |
+|-----------------|----------------|--------|
+| empty / missing | absent | ⏭️ **skipped** — never provisioned |
+| empty / missing | present | 🔴 **drift** — unmanaged/orphaned resource group |
+| has resources | absent | 🔴 **drift** — all managed resources missing |
+| has resources | present | refresh-only plan → ✅ no drift, 🔴 drift, or ⚠️ error |
+
+When drift is found the run stays **green** and reports via an issue; the run
+only goes **red** when the check itself errors (init/plan failure, missing
+directory, unreadable state), so a real problem with the sweep is visible and
+any `workflow_call` caller can react. The issue body carries the per-environment
+status, a follow-up comment carries the structured breakdown
+(added / removed / replaced / modified / tag-only), and the raw `terraform`
+plan output, binary plan and plan JSON are uploaded to the run as the
+`drift-<app>` artifact.
 
 Manual and called runs pass their parameters as inputs. The **nightly run
 cannot** — GitHub `schedule` events carry no inputs — so it reads them from
@@ -553,7 +571,8 @@ gh variable set DRIFT_AZURE_CLIENT_ID       -R <org>/<platform-repo> --body "<cl
 The drift job authenticates with the **branch-scoped** federated credential
 (`repo:<org>/<repo>:ref:refs/heads/main`) already configured in step 4 — it is
 read-only and never binds a GitHub Environment, so no extra OIDC subject is
-needed. Issue creation uses the same `GH_PAT` secret from step 7.
+needed. Issue creation in the `<app>-infra` repo uses the same `GH_PAT` secret
+from step 7.
 
 If `DRIFT_APP_NAMES` (or any required GUID variable) is missing, the nightly
 run fails fast with a clear error instead of silently doing nothing.
