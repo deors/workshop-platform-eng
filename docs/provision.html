@@ -141,10 +141,15 @@
     <h2>What is this?</h2>
     <p>
       This form fires the <strong>Provision Infrastructure</strong> GitHub Actions workflow on this repository
-      via the <code>repository_dispatch</code> trigger. The workflow then runs the full pipeline:
-      Terraform plan + apply against Azure, GitHub Environments + variables on the application repo,
-      OIDC federated credentials on the platform service principal, and (on first creation) observation of
-      the application's CI workflow.
+      via the <code>repository_dispatch</code> trigger. The workflow runs the full pipeline:
+      Terraform plan + apply against Azure, and — when an <strong>Application template repo</strong> is
+      provided — GitHub Environments + variables on the application repo, OIDC federated credentials on
+      the platform service principal, and (on first creation) observation of the application's CI workflow.
+    </p>
+    <p>
+      Leave <strong>Application template repo</strong> empty to run in <strong>infra-only mode</strong>:
+      only Azure resources are provisioned; no application repository is created or configured.
+      Useful for Landing Zones and foundational platform components.
     </p>
     <p>
       Everything you fill below maps 1:1 to a workflow input. The page never persists your token; it stays in
@@ -167,7 +172,7 @@
       <li>Autoscale rules (1–3 staging, 3–10 prod)</li>
       <li>Diagnostic settings on Web App and App Service Plan</li>
     </ul>
-    <p>And on the app repo side (first run): the repo from the template, environments + variables, the OIDC fed-cred per env, and a tracking issue summarising the run.</p>
+    <p>When an application template repo is provided: the app repo from the template, GitHub Environments + variables, the OIDC fed-cred per env, and a tracking issue summarising the run. This phase is skipped when no application template is given.</p>
   </section>
 
   <section>
@@ -257,11 +262,11 @@
         </div>
 
         <div>
-          <label for="app_template_repo">Application template repo <span class="req">*</span></label>
-          <input type="text" id="app_template_repo" name="app_template_repo" required
+          <label for="app_template_repo">Application template repo <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="app_template_repo" name="app_template_repo"
                  placeholder="owner/template-helloworld-express"
-                 pattern="^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$" />
-          <span class="hint">Source for the new application repo. <code>owner/name</code>.</span>
+                 pattern="^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)?$" />
+          <span class="hint">Source for the new application repo. <code>owner/name</code>. Leave empty for infra-only provisioning.</span>
           <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
         </div>
 
@@ -375,10 +380,9 @@
         azure_subscription_id: v('azure_subscription_id'),
         azure_client_id: v('azure_client_id'),
         infra_template_repo: v('infra_template_repo'),
-        app_template_repo: v('app_template_repo'),
       }
     };
-    ['container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {
+    ['app_template_repo', 'container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
     });
     return payload;

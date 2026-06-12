@@ -20,11 +20,20 @@ and does not duplicate the content below.
 
 # Workshop · Platform Engineering
 
-A self-service platform that provisions Azure infrastructure for containerised
-web applications, driven by GitHub Actions and Terraform. External systems
-trigger the platform through `repository_dispatch` or `workflow_dispatch` events;
-the platform takes care of standing up secure, observable, production-grade
-environments without the requesting team having to write any infrastructure code.
+A self-service platform that provisions Azure infrastructure, driven by GitHub
+Actions and Terraform. External systems trigger the platform through
+`repository_dispatch` or `workflow_dispatch` events; the platform takes care of
+standing up secure, observable, production-grade environments without the
+requesting team having to write any infrastructure code.
+
+The platform supports two operating modes in a single workflow:
+
+- **Full mode** (infra + app) — provisions Azure resources *and* bootstraps the
+  application repository (GitHub Environments, variables, OIDC federated
+  credentials, CI observation).
+- **Infra-only mode** — provisions Azure resources only (Landing Zones,
+  foundational platform components, shared services). The application repository
+  phase is skipped entirely. Activated by leaving `app_template_repo` empty.
 
 > **Status:** functional end-to-end. Plan → apply → verify, application repo
 > creation from template, GitHub Environments + variables, OIDC federated
@@ -57,24 +66,30 @@ guidance for security, observability, and connectivity:
 
 ## Architecture: Decoupled App & Infra Templates
 
-The platform now separates **application code** from **infrastructure code**:
+The platform separates **application code** from **infrastructure code**, and
+the application phase is entirely optional:
 
-| Component | Template | Repo Naming | Role |
-|-----------|----------|-------------|------|
-| **App Code** | `template-helloworld-express` | `{app-name}` | Runtime: Node.js, Python, Java, etc. Owns CI/CD (build, test, deploy) |
-| **Infra** | `template-terraform-azure-webapp` | `{app-name}-infra` | Infrastructure as Code: VNet, App Service, monitoring, etc. Terraform modules. |
+| Component                 | Template                           | Repo naming         | Role                                                                                           |
+|---------------------------|------------------------------------|---------------------|------------------------------------------------------------------------------------------------|
+| **Infra**                 | `template-terraform-azure-webapp`  | `{app-name}-infra`  | IaC: VNet, App Service, monitoring, etc. Terraform modules. Always runs.                       |
+| **App Code** *(optional)* | `template-helloworld-express`      | `{app-name}`        | Runtime: Node.js, Python, Java, etc. Owns CI/CD. Runs only when `app_template_repo` is set.    |
 
-When you provision, the platform:
+When `app_template_repo` is provided (full mode), the platform:
 
-1. Creates `{app-name}` from the **app template** (e.g., Node.js starter) ← app CI/CD logic
-2. Creates `{app-name}-infra` from the **infra template** (Terraform) ← infrastructure provisioning
-3. Runs Terraform against the infra repo to stand up Azure resources
+1. Creates `{app-name}-infra` from the **infra template** (Terraform) ← infrastructure provisioning
+2. Runs Terraform against the infra repo to stand up Azure resources
+3. Creates `{app-name}` from the **app template** (e.g., Node.js starter) ← app CI/CD logic
 4. Sets GitHub environment variables and federated credentials on the app repo
+
+When `app_template_repo` is omitted (infra-only mode), steps 3 and 4 are
+skipped — useful for Landing Zones, foundational platform components, or any
+scenario where application code is managed separately.
 
 This **decoupling** means:
 
 - **App teams** iterate on code without touching infrastructure
 - **Infra teams** maintain reusable architecture templates (archetypes)
+- **Platform teams** can provision pure infra components without coupling them to an app repo
 - **Templates are archetypes:** multiple instances (apps) can use the same archetype with different configurations
 
 ### Infrastructure Templates (Archetypes)

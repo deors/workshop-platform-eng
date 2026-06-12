@@ -30,9 +30,10 @@ on:
         type: string
         required: true
       app_template_repo:
-        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express)"
+        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express); leave empty to skip the application repository phase"
         type: string
-        required: true
+        required: false
+        default: ""
       container_image:
         description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/deploy)"
         type: string
@@ -78,6 +79,7 @@ jobs:
       azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
+      with_app_repo:           ${{ steps.params.outputs.with_app_repo }}
       container_image:         ${{ steps.params.outputs.container_image }}
       container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
       ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
@@ -137,11 +139,15 @@ jobs:
           [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
           [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
-          [[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=(app_template_repo)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
           fi
+
+          # Presence of app_template_repo controls whether the application
+          # repository phase runs; omitting it provisions infra only.
+          WITH_APP_REPO=false
+          [[ -n "$APP_TEMPLATE_REPO" ]] && WITH_APP_REPO=true
 
           # Validate app_name: lowercase alphanumeric + hyphens only
           if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
@@ -162,6 +168,7 @@ jobs:
           echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
           echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
           echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
+          echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
           echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
           echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
@@ -193,20 +200,22 @@ jobs:
 
       - name: Summary
         env:
-          APP_NAME:    ${{ steps.params.outputs.app_name }}
-          ENVIRONMENT: ${{ steps.params.outputs.environment }}
-          IMAGE:       ${{ steps.params.outputs.container_image }}
-          TRIGGER:     ${{ github.event_name }}
+          APP_NAME:       ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT:    ${{ steps.params.outputs.environment }}
+          IMAGE:          ${{ steps.params.outputs.container_image }}
+          TRIGGER:        ${{ github.event_name }}
+          WITH_APP_REPO:  ${{ steps.params.outputs.with_app_repo }}
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
           ## Provision Infrastructure
 
-          | Parameter   | Value            |
-          |-------------|------------------|
-          | Trigger     | \`$TRIGGER\`     |
-          | App name    | \`$APP_NAME\`    |
-          | Environment | \`$ENVIRONMENT\` |
-          | Image       | \`$IMAGE\`       |
+          | Parameter        | Value               |
+          |------------------|---------------------|
+          | Trigger          | \`$TRIGGER\`        |
+          | App name         | \`$APP_NAME\`       |
+          | Environment      | \`$ENVIRONMENT\`    |
+          | Image            | \`$IMAGE\`          |
+          | App repo phase   | \`$WITH_APP_REPO\`  |
           EOF
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -699,6 +708,7 @@ jobs:
   create-app-repo:
     name: Create application repo
     needs: [resolve-inputs, verify]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
     runs-on: ubuntu-latest
     outputs:
       repo_existed: ${{ steps.create.outputs.repo_existed }}
@@ -800,6 +810,7 @@ jobs:
   create-run-issue:
     name: Create app repo issue
     needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
     runs-on: ubuntu-latest
     outputs:
       issue_number: ${{ steps.issue.outputs.number }}
@@ -1003,6 +1014,7 @@ jobs:
   configure-environments:
     name: "Configure env · ${{ matrix.environment }}"
     needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1058,6 +1070,7 @@ jobs:
   configure-federated-credentials:
     name: "Federated credential · ${{ matrix.environment }}"
     needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1118,7 +1131,7 @@ jobs:
   observe-ci:
     name: Observe CI in app repo
     needs: [resolve-inputs, create-app-repo, configure-environments, configure-federated-credentials]
-    if: needs.create-app-repo.outputs.repo_existed == 'false'
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-app-repo.outputs.repo_existed == 'false'
     runs-on: ubuntu-latest
     outputs:
       ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
@@ -1169,7 +1182,7 @@ jobs:
     name: Comment on app issue
     needs: [resolve-inputs, create-app-repo, create-run-issue, configure-environments, configure-federated-credentials, observe-ci]
     # Always runs regardless of whether observe-ci was skipped (reconcile runs).
-    if: always() && needs.create-run-issue.result == 'success'
+    if: always() && needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Build and post app issue comment
@@ -1237,7 +1250,7 @@ jobs:
   final-summary:
     name: Final summary
     needs: [create-run-issue, create-infra-issue, comment-app-issue, comment-infra-issue]
-    if: always() && needs.create-run-issue.result == 'success'
+    if: always() && needs.comment-infra-issue.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - name: Write step summary

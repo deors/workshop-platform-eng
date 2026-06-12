@@ -436,6 +436,11 @@ If you can't enable it, the upload step will fail. Either:
 
 ## Step 7 — Provide a `GH_PAT` secret for cross-repo operations
 
+> **Infra-only runs:** if you intend to use the platform exclusively for
+> infrastructure-only provisioning (no `app_template_repo`), this step is
+> **not required** — the app-repo phase is skipped entirely and
+> `GH_PAT` is never accessed.
+
 After the infrastructure is provisioned and verified, the workflow continues
 into **application-repo bootstrap**: it creates a new repo from a template,
 opens a tracking issue, configures GitHub Environments + variables, dispatches
@@ -470,22 +475,23 @@ permissions. Save it as the `GH_PAT` secret on this platform repo.
 In the GitHub UI: **Actions → Provision Infrastructure → Run workflow**, and
 provide:
 
-| Input | Value for the first test |
-|-------|--------------------------|
-| `app_name` | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
-| `environment` | `dev` |
-| `azure_tenant_id` | the tenant GUID captured in step 3 |
-| `azure_subscription_id` | the GUID captured in step 3 |
-| `azure_client_id` | the `appId` captured in step 3 |
-| `infra_template_repo` | the `<owner>/<name>` of the infrastructure template repo |
-| `app_template_repo` | the `<owner>/<name>` of the application template repo |
-| `container_image` | `mcr.microsoft.com/appsvc/staticsite:latest` |
-| `container_registry_url` | _(leave empty — public image)_ |
-| `ci_workflow_file` | _(leave empty — defaults to `ci.yml`)_ |
+| Input | Required | Value for the first test |
+| ----- | -------- | ------------------------ |
+| `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
+| `environment` | yes | `dev` |
+| `azure_tenant_id` | yes | the tenant GUID captured in step 3 |
+| `azure_subscription_id` | yes | the GUID captured in step 3 |
+| `azure_client_id` | yes | the `appId` captured in step 3 |
+| `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
+| `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
+| `container_image` | no | `mcr.microsoft.com/appsvc/staticsite:latest` |
+| `container_registry_url` | no | _(leave empty — public image)_ |
+| `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
 
 ### What you should observe
 
-Each row below names the job exactly as it appears in the run's UI:
+Each row below names the job exactly as it appears in the run's UI. Jobs
+marked _(app phase)_ only appear when `app_template_repo` is provided.
 
 ```
 Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
@@ -495,12 +501,14 @@ Bootstrap tfstate storage         ✓ rg-tfstate-test-webapp + storage account +
 Plan · {env}                      ✓ terraform plan generated, artifact uploaded
 Apply · {env}                     ✓ terraform apply succeeded
 Verify · {env}                    ✓ control-plane assertions passed
-Create application repo           ✓ <owner>/<app_name> created from template (or skipped)
-Create run issue                  ✓ per-run tracking issue opened
-Configure env · {env}             ✓ GitHub Environment + variables set
-Federated credential · {env}      ✓ AAD subject registered on the SP
-Observe CI in app repo            ✓ template auto-triggered CI watched, build+test+dev-deploy succeeded
-Summarize and comment             ✓ summary posted as issue comment
+Create application repo           ✓ <owner>/<app_name> created from template   (app phase)
+Create run issue                  ✓ per-run tracking issue opened               (app phase)
+Configure env · {env}             ✓ GitHub Environment + variables set          (app phase)
+Federated credential · {env}      ✓ AAD subject registered on the SP            (app phase)
+Observe CI in app repo            ✓ CI watched, build+test+dev-deploy succeeded (app phase, first run only)
+Comment on app issue              ✓ summary posted as issue comment             (app phase)
+Comment on infra issue            ✓ plan + verify results posted to infra issue
+Final summary                     ✓ consolidated summary with links to issues
 ```
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as
@@ -510,10 +518,12 @@ for 7 days. The plan is then consumed by the `apply` job, which provisions
 the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
 
-The full run also creates the application repository from your template,
-configures its GitHub Environments + variables, registers the per-env
-federated credentials on the platform SP, observes the auto-triggered CI in
-the new repo, and posts a summary comment on the per-run tracking issue.
+When `app_template_repo` is provided, the run also creates the application
+repository from your template, configures its GitHub Environments + variables,
+registers the per-env federated credentials on the platform SP, observes the
+auto-triggered CI in the new repo, and posts a summary comment on the per-run
+tracking issue. When `app_template_repo` is omitted, all of those steps are
+skipped and only the infra issue and final summary are written.
 
 ---
 
