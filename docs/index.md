@@ -150,6 +150,7 @@ operator                ┌─────────────────�
 ├── .github/workflows/
 │   ├── bootstrap-tfstate.yml           # Reusable: create the tfstate storage
 │   ├── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
+│   ├── detect-drift.yml                # Scheduled/callable: refresh-only drift sweep
 │   └── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
 ├── docs/                               # GitHub Pages site (Jekyll-rendered)
 │   ├── _config.yml                     # Jekyll config
@@ -326,11 +327,13 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 - [x] CLI trigger script (`scripts/trigger-provision.sh`)
 - [x] Destroy/decommission workflow for retiring an app cleanly (delete RG +
       tfstate blob + GitHub Environments + fed-creds) -- repos are never deleted
+- [x] Scheduled drift detection — nightly (also on-demand and callable)
+      `terraform plan -refresh-only` sweep that compares recorded state against
+      live Azure resources for one or more apps (matrix) and opens an issue
+      with the per-environment findings when drift or an error is detected
 
 ### Next
 
-- [ ] **Scheduled drift detection** — cron job that runs `terraform plan` on
-      a schedule and posts a comment on the per-run issue if non-zero
 - [ ] **Cost reporting per application** — daily / weekly Azure cost export
       aggregated by `application` tag, surfaced as a comment on the run issue
 - [ ] **Budget alerts** — Azure budget per app/env with action-group

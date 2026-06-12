@@ -1,0 +1,464 @@
+name: Detect Drift
+
+# Scheduled (and on-demand / callable) infrastructure drift detection.
+#
+# "Drift" here means a divergence between what Terraform has recorded in remote
+# state and what actually exists in Azure — i.e. out-of-band changes made by a
+# human in the portal, another tool, or a manual `az` command. We surface it
+# with `terraform plan -refresh-only -detailed-exitcode`, which compares the
+# real resources against the recorded state WITHOUT proposing config-driven
+# changes. Its exit code is the signal:
+#
+#   0 → state matches reality   (no drift)
+#   2 → state differs           (drift detected)
+#   1 → error                   (auth/backend/provider failure)
+#
+# Three entry points:
+#
+#   1. schedule          – nightly cron. `schedule` events cannot carry inputs,
+#                          so the run reads its parameters from repository
+#                          variables (vars.*) — see "Resolve inputs" below.
+#   2. workflow_dispatch – ad-hoc manual run from the GitHub UI.
+#   3. workflow_call     – invoked from another workflow (e.g. a future
+#                          reconcile pipeline). The job FAILS when drift or an
+#                          error is found, so the caller can react.
+#
+# Multiple applications can be checked in one run: `app_names` accepts a
+# comma-separated list and the workflow fans out as a matrix (one job per app).
+# Each app job iterates its environments, and — if any environment drifted or
+# errored — opens a NEW issue in that app's repository and comments on it with
+# the full per-environment findings.
+
+on:
+  schedule:
+    # 03:00 UTC nightly. Parameters come from repository variables on schedule
+    # runs (DRIFT_APP_NAMES, DRIFT_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
+    # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID).
+    - cron: "0 3 * * *"
+
+  workflow_dispatch:
+    inputs:
+      app_names:
+        description: "Application name(s), comma-separated (e.g. myapp,otherapp)"
+        type: string
+        required: true
+      environment:
+        description: Environment(s) to check
+        type: choice
+        options: [all, dev, staging, prod]
+        required: true
+        default: all
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal used for OIDC login
+        type: string
+        required: true
+
+  workflow_call:
+    inputs:
+      app_names:
+        description: "Application name(s), comma-separated (e.g. myapp,otherapp)"
+        type: string
+        required: true
+      environment:
+        description: "Environment(s) to check: all, or a comma-separated subset of dev/staging/prod"
+        type: string
+        required: false
+        default: all
+      azure_tenant_id:
+        description: Azure Tenant ID
+        type: string
+        required: true
+      azure_subscription_id:
+        description: Azure Subscription ID
+        type: string
+        required: true
+      azure_client_id:
+        description: Client ID of the Azure service principal used for OIDC login
+        type: string
+        required: true
+    secrets:
+      gh_pat:
+        description: PAT used to checkout the (possibly private) infra repos and open issues. Falls back to the GH_PAT repo secret.
+        required: false
+
+# id-token for OIDC login to Azure; contents:read to checkout this repo. Issue
+# creation goes through the GH_PAT (the default GITHUB_TOKEN cannot write to
+# other repositories).
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # Never run two drift sweeps concurrently for the same ref — a nightly run
+  # and a manual run would otherwise race on the same tfstate reads.
+  group: detect-drift-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Resolve & validate inputs from whichever trigger fired, then build the
+  #    per-app matrix and the environment list.
+  # ────────────────────────────────────────────────────────────────────────────
+  resolve-inputs:
+    name: Resolve inputs
+    runs-on: ubuntu-latest
+    outputs:
+      apps:                  ${{ steps.params.outputs.apps }}
+      environments:          ${{ steps.params.outputs.environments }}
+      azure_tenant_id:       ${{ steps.params.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ steps.params.outputs.azure_subscription_id }}
+      azure_client_id:       ${{ steps.params.outputs.azure_client_id }}
+
+    steps:
+      - name: Resolve inputs
+        id: params
+        env:
+          # Typed inputs (workflow_dispatch & workflow_call share `inputs.*`).
+          IN_APPS:      ${{ inputs.app_names }}
+          IN_ENV:       ${{ inputs.environment }}
+          IN_TENANT:    ${{ inputs.azure_tenant_id }}
+          IN_SUB:       ${{ inputs.azure_subscription_id }}
+          IN_CLIENT:    ${{ inputs.azure_client_id }}
+          # Schedule fallbacks (no inputs available on cron runs). All
+          # DRIFT_-prefixed so it is unambiguous they exist solely to drive the
+          # automated nightly drift sweep.
+          VAR_APPS:     ${{ vars.DRIFT_APP_NAMES }}
+          VAR_ENV:      ${{ vars.DRIFT_ENVIRONMENTS }}
+          VAR_TENANT:   ${{ vars.DRIFT_AZURE_TENANT_ID }}
+          VAR_SUB:      ${{ vars.DRIFT_AZURE_SUBSCRIPTION_ID }}
+          VAR_CLIENT:   ${{ vars.DRIFT_AZURE_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+
+          APP_NAMES="${IN_APPS:-$VAR_APPS}"
+          ENVIRONMENT="${IN_ENV:-${VAR_ENV:-all}}"
+          AZURE_TENANT_ID="${IN_TENANT:-$VAR_TENANT}"
+          AZURE_SUBSCRIPTION_ID="${IN_SUB:-$VAR_SUB}"
+          AZURE_CLIENT_ID="${IN_CLIENT:-$VAR_CLIENT}"
+
+          MISSING=()
+          [[ -z "$APP_NAMES"            ]] && MISSING+=(app_names)
+          [[ -z "$AZURE_TENANT_ID"      ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
+          [[ -z "$AZURE_CLIENT_ID"      ]] && MISSING+=(azure_client_id)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_APP_NAMES / DRIFT_AZURE_TENANT_ID / DRIFT_AZURE_SUBSCRIPTION_ID / DRIFT_AZURE_CLIENT_ID)"
+            exit 1
+          fi
+
+          # Build a JSON array from a comma-separated list, trimming blanks.
+          to_json_array() {
+            local raw="$1" out="[" first=1 item
+            local IFS=','
+            for item in $raw; do
+              item="$(echo "$item" | xargs)"   # trim leading/trailing space
+              [[ -z "$item" ]] && continue
+              [[ $first -eq 0 ]] && out+=","
+              out+="\"$item\""
+              first=0
+            done
+            out+="]"
+            echo "$out"
+          }
+
+          # Validate every app name with the same rule the provisioner enforces.
+          IFS=',' read -ra APP_ARR <<<"$APP_NAMES"
+          for app in "${APP_ARR[@]}"; do
+            app="$(echo "$app" | xargs)"
+            [[ -z "$app" ]] && continue
+            if ! [[ "$app" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+              echo "::error::app_name '$app' is invalid — must be 3–22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+              exit 1
+            fi
+          done
+
+          APPS_JSON="$(to_json_array "$APP_NAMES")"
+          if [[ "$ENVIRONMENT" == "all" ]]; then
+            ENVS_JSON='["dev","staging","prod"]'
+          else
+            ENVS_JSON="$(to_json_array "$ENVIRONMENT")"
+          fi
+
+          # GUIDs (tenant/subscription/client) are identifiers, not secrets in an
+          # OIDC flow; they are NOT masked because GitHub blanks masked values
+          # when they flow through job outputs to downstream jobs.
+          {
+            echo "apps=$APPS_JSON"
+            echo "environments=$ENVS_JSON"
+            echo "azure_tenant_id=$AZURE_TENANT_ID"
+            echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"
+            echo "azure_client_id=$AZURE_CLIENT_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          APPS: ${{ steps.params.outputs.apps }}
+          ENVS: ${{ steps.params.outputs.environments }}
+        run: |
+          {
+            echo "## Drift detection — sweep parameters"
+            echo
+            echo "| Parameter    | Value |"
+            echo "|--------------|-------|"
+            echo "| Trigger      | \`${{ github.event_name }}\` |"
+            echo "| Applications | \`$APPS\` |"
+            echo "| Environments | \`$ENVS\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Per-application drift check. One job per app (matrix), each iterating its
+  #    environments. We deliberately do NOT bind a GitHub Environment: drift is
+  #    read-only and runs on the default branch, so the branch-scoped federated
+  #    credential (repo:<org>/<repo>:ref:refs/heads/main) authenticates the OIDC
+  #    login for every environment without per-env approval gates.
+  # ────────────────────────────────────────────────────────────────────────────
+  drift:
+    name: "Drift · ${{ matrix.app }}"
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # check every app even if one drifts or errors
+      matrix:
+        app: ${{ fromJson(needs.resolve-inputs.outputs.apps) }}
+
+    # The azurerm backend and provider read ARM_* env vars for OIDC auth.
+    env:
+      ARM_USE_OIDC:        "true"
+      ARM_USE_AZUREAD:     "true"
+      ARM_TENANT_ID:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+      ARM_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+      ARM_CLIENT_ID:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+
+    steps:
+      - name: Derive repo and tfstate names
+        id: names
+        env:
+          APP_NAME:              ${{ matrix.app }}
+          AZURE_SUBSCRIPTION_ID: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          OWNER:                 ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # Must match the formula in scripts/bootstrap-tfstate.sh exactly.
+          APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+          SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
+          {
+            echo "infra_repo=${OWNER}/${APP_NAME}-infra"
+            echo "app_repo=${OWNER}/${APP_NAME}"
+            echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}"
+            echo "resource_group=rg-tfstate-${APP_NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.names.outputs.infra_repo }}
+          path:       infra-repo
+          token:      ${{ secrets.gh_pat || secrets.GH_PAT || github.token }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Detect drift
+        id: detect
+        env:
+          APP_NAME:          ${{ matrix.app }}
+          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
+          SUBSCRIPTION_ID:   ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          STORAGE_ACCOUNT:   ${{ steps.names.outputs.storage_account }}
+          RESOURCE_GROUP:    ${{ steps.names.outputs.resource_group }}
+          REGISTRY:          ${{ vars.CONTAINER_REGISTRY_URL }}
+        run: |
+          set -uo pipefail
+
+          # jq ships on ubuntu-latest; read the env list into a bash array.
+          mapfile -t ENVS < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+
+          SUMMARY=""          # short per-env status lines (issue body)
+          DETAILS=""          # full refresh-only output per env (issue comment)
+          DRIFTED_ENVS=()
+          ERRORED_ENVS=()
+
+          for env in "${ENVS[@]}"; do
+            DIR="infra-repo/terraform/environments/${env}"
+            if [[ ! -d "$DIR" ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ environment directory not found in infra repo"$'\n'
+              ERRORED_ENVS+=("$env")
+              continue
+            fi
+
+            pushd "$DIR" >/dev/null
+
+            # Required vars. For a refresh-only plan the image/registry values
+            # are immaterial (no config changes are proposed), but the providers
+            # still need them to initialise. Use the same placeholder the
+            # provisioner relies on for reconcile runs.
+            printf 'app_name               = "%s"\n' "$APP_NAME"        >  terraform.tfvars
+            printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID" >> terraform.tfvars
+            printf 'container_image        = "%s"\n' "mcr.microsoft.com/appsvc/staticsite:latest" >> terraform.tfvars
+            printf 'container_registry_url = "%s"\n' "${REGISTRY:-}"    >> terraform.tfvars
+
+            terraform init \
+              -input=false \
+              -backend-config="resource_group_name=${RESOURCE_GROUP}" \
+              -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
+              -backend-config="container_name=tfstate" \
+              -backend-config="key=${env}/terraform.tfstate" \
+              -backend-config="use_oidc=true" \
+              -backend-config="use_azuread_auth=true" \
+              > init-output.txt 2>&1
+            INIT_CODE=$?
+
+            if [[ $INIT_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform init failed)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — init error"$'\n\n```\n'"$(cat init-output.txt)"$'\n```\n'
+              popd >/dev/null
+              continue
+            fi
+
+            # -refresh-only: compare recorded state against real Azure resources.
+            # -detailed-exitcode: 0 = no drift, 2 = drift, 1 = error.
+            # -no-color: keep the captured output readable inside markdown blocks.
+            terraform plan \
+              -refresh-only \
+              -detailed-exitcode \
+              -no-color \
+              -input=false \
+              > plan-output.txt 2>&1
+            PLAN_CODE=$?
+
+            popd >/dev/null
+
+            case "$PLAN_CODE" in
+              0)
+                SUMMARY+="- \`${env}\` — ✅ no drift (state matches Azure)"$'\n'
+                ;;
+              2)
+                SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from Azure)"$'\n'
+                DRIFTED_ENVS+=("$env")
+                DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n<details><summary>refresh-only plan output</summary>\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
+                ;;
+              *)
+                SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
+                ERRORED_ENVS+=("$env")
+                DETAILS+=$'\n'"### \`${env}\` — plan error"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n'
+                ;;
+            esac
+          done
+
+          # Persist body fragments for the reporting step (multiline-safe).
+          printf '%s' "$SUMMARY" > /tmp/drift-summary.md
+          printf '%s' "$DETAILS" > /tmp/drift-details.md
+
+          DRIFT_DETECTED=false; [[ ${#DRIFTED_ENVS[@]} -gt 0 ]] && DRIFT_DETECTED=true
+          ERROR_DETECTED=false; [[ ${#ERRORED_ENVS[@]} -gt 0 ]] && ERROR_DETECTED=true
+
+          {
+            echo "drift_detected=$DRIFT_DETECTED"
+            echo "error_detected=$ERROR_DETECTED"
+            echo "drifted_envs=${DRIFTED_ENVS[*]:-}"
+            echo "errored_envs=${ERRORED_ENVS[*]:-}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Always surface the per-app result in the job step summary.
+          {
+            echo "## Drift · \`${APP_NAME}\`"
+            echo
+            cat /tmp/drift-summary.md
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Open a fresh issue (per app) and comment on it with the full findings
+      # whenever this run found drift or an error. No-drift runs stay quiet.
+      - name: Report drift
+        if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
+        env:
+          GH_TOKEN:    ${{ secrets.gh_pat || secrets.GH_PAT }}
+          APP_REPO:    ${{ steps.names.outputs.app_repo }}
+          APP_NAME:    ${{ matrix.app }}
+          INFRA_REPO:  ${{ steps.names.outputs.infra_repo }}
+          DRIFTED:     ${{ steps.detect.outputs.drifted_envs }}
+          ERRORED:     ${{ steps.detect.outputs.errored_envs }}
+          RUN_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          DATE_UTC="$(date -u +%Y-%m-%d)"
+
+          if [[ -n "$DRIFTED" ]]; then
+            TITLE="Infrastructure drift detected — ${APP_NAME} — ${DATE_UTC}"
+          else
+            TITLE="Drift detection error — ${APP_NAME} — ${DATE_UTC}"
+          fi
+
+          # Issue body: high-level summary + per-environment status.
+          {
+            echo "# Drift detection — \`${APP_NAME}\`"
+            echo
+            echo "Detected by drift sweep [#${{ github.run_id }}](${RUN_URL})."
+            echo
+            echo "Compared recorded Terraform state against the live Azure resources"
+            echo "(\`terraform plan -refresh-only\`) for infra repo"
+            echo "[\`${INFRA_REPO}\`](https://github.com/${INFRA_REPO})."
+            echo
+            echo "## Environment status"
+            echo
+            cat /tmp/drift-summary.md
+            echo
+            echo "Full \`refresh-only\` output is attached as a comment below."
+          } > /tmp/issue-body.md
+
+          ISSUE_URL=$(gh issue create -R "$APP_REPO" \
+            --title "$TITLE" \
+            --body-file /tmp/issue-body.md)
+          ISSUE_NUMBER="${ISSUE_URL##*/}"
+          echo "Opened $ISSUE_URL"
+
+          # Comment with the detailed findings (kept out of the body so the
+          # summary stays scannable).
+          {
+            echo "## Detailed findings"
+            echo
+            if [[ -s /tmp/drift-details.md ]]; then
+              cat /tmp/drift-details.md
+            else
+              echo "_No detailed output captured._"
+            fi
+          } > /tmp/issue-comment.md
+
+          gh issue comment "$ISSUE_NUMBER" -R "$APP_REPO" --body-file /tmp/issue-comment.md
+
+          {
+            echo
+            echo "Drift issue opened: $ISSUE_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Make the run visibly red (and signal any caller) when drift or an error
+      # was found. The issue is already created above, so reporting is never
+      # lost to this failure.
+      - name: Conclude
+        if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
+        env:
+          APP_NAME: ${{ matrix.app }}
+          DRIFTED:  ${{ steps.detect.outputs.drifted_envs }}
+          ERRORED:  ${{ steps.detect.outputs.errored_envs }}
+        run: |
+          [[ -n "$DRIFTED" ]] && echo "::error::Drift detected for '${APP_NAME}' in: ${DRIFTED}"
+          [[ -n "$ERRORED" ]] && echo "::error::Drift check errored for '${APP_NAME}' in: ${ERRORED}"
+          exit 1

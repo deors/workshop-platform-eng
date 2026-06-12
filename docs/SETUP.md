@@ -518,6 +518,48 @@ the new repo, and posts a summary comment on the per-run tracking issue.
 
 ---
 
+## Step 9 — Configure scheduled drift detection (optional)
+
+The `detect-drift.yml` workflow compares the recorded Terraform state against
+the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
+the affected application repo when it finds drift or an error. It has three
+entry points: a nightly `schedule`, manual `workflow_dispatch`, and
+`workflow_call` (so other workflows can reuse it).
+
+Manual and called runs pass their parameters as inputs. The **nightly run
+cannot** — GitHub `schedule` events carry no inputs — so it reads them from
+**repository variables**, all `DRIFT_`-prefixed to make clear they exist solely
+to drive the automated sweep:
+
+| Repository variable | Required | Description |
+|---------------------|----------|-------------|
+| `DRIFT_APP_NAMES` | yes | Application name(s) to check, comma-separated (e.g. `myapp,otherapp`). The workflow fans out one matrix job per app. |
+| `DRIFT_ENVIRONMENTS` | no | Environment(s) to check: `all` (default) or a comma-separated subset of `dev`/`staging`/`prod`. |
+| `DRIFT_AZURE_TENANT_ID` | yes | Azure Tenant ID used for the OIDC login. |
+| `DRIFT_AZURE_SUBSCRIPTION_ID` | yes | Azure Subscription ID hosting the apps' resources and tfstate. |
+| `DRIFT_AZURE_CLIENT_ID` | yes | Client ID of the platform App Registration. |
+
+Set them under **Settings → Secrets and variables → Actions → Variables**, or
+via the CLI:
+
+```bash
+gh variable set DRIFT_APP_NAMES             -R <org>/<platform-repo> --body "test-webapp"
+gh variable set DRIFT_ENVIRONMENTS          -R <org>/<platform-repo> --body "all"
+gh variable set DRIFT_AZURE_TENANT_ID       -R <org>/<platform-repo> --body "<tenant-guid>"
+gh variable set DRIFT_AZURE_SUBSCRIPTION_ID -R <org>/<platform-repo> --body "<subscription-guid>"
+gh variable set DRIFT_AZURE_CLIENT_ID       -R <org>/<platform-repo> --body "<client-guid>"
+```
+
+The drift job authenticates with the **branch-scoped** federated credential
+(`repo:<org>/<repo>:ref:refs/heads/main`) already configured in step 4 — it is
+read-only and never binds a GitHub Environment, so no extra OIDC subject is
+needed. Issue creation uses the same `GH_PAT` secret from step 7.
+
+If `DRIFT_APP_NAMES` (or any required GUID variable) is missing, the nightly
+run fails fast with a clear error instead of silently doing nothing.
+
+---
+
 ## Troubleshooting
 
 ### `AADSTS70021: No matching federated identity record found`
