@@ -29,8 +29,18 @@ on:
         description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-azure-webapp)"
         type: string
         required: true
+      infra_template_ref:
+        description: "Git ref (tag, branch, or commit SHA) to pin the infra template; leave empty to use the template's default branch latest commit"
+        type: string
+        required: false
+        default: ""
       app_template_repo:
         description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express); leave empty to skip the application repository phase"
+        type: string
+        required: false
+        default: ""
+      app_template_ref:
+        description: "Git ref (tag, branch, or commit SHA) to pin the app template; leave empty to use the template's default branch latest commit"
         type: string
         required: false
         default: ""
@@ -79,6 +89,8 @@ jobs:
       azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
+      infra_template_ref:      ${{ steps.params.outputs.infra_template_ref }}
+      app_template_ref:        ${{ steps.params.outputs.app_template_ref }}
       with_app_repo:           ${{ steps.params.outputs.with_app_repo }}
       container_image:         ${{ steps.params.outputs.container_image }}
       container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
@@ -93,27 +105,31 @@ jobs:
         id: params
         env:
           # workflow_dispatch values
-          WD_APP:            ${{ github.event.inputs.app_name }}
-          WD_ENV:            ${{ github.event.inputs.environment }}
-          WD_TENANT_ID:      ${{ github.event.inputs.azure_tenant_id }}
-          WD_SUB_ID:         ${{ github.event.inputs.azure_subscription_id }}
-          WD_CLIENT_ID:      ${{ github.event.inputs.azure_client_id }}
-          WD_INFRA_TEMPLATE: ${{ github.event.inputs.infra_template_repo }}
-          WD_APP_TEMPLATE:   ${{ github.event.inputs.app_template_repo }}
-          WD_IMAGE:          ${{ github.event.inputs.container_image }}
-          WD_REGISTRY:       ${{ github.event.inputs.container_registry_url }}
-          WD_CI_FILE:        ${{ github.event.inputs.ci_workflow_file }}
+          WD_APP:                ${{ github.event.inputs.app_name }}
+          WD_ENV:                ${{ github.event.inputs.environment }}
+          WD_TENANT_ID:          ${{ github.event.inputs.azure_tenant_id }}
+          WD_SUB_ID:             ${{ github.event.inputs.azure_subscription_id }}
+          WD_CLIENT_ID:          ${{ github.event.inputs.azure_client_id }}
+          WD_INFRA_TEMPLATE:     ${{ github.event.inputs.infra_template_repo }}
+          WD_INFRA_TEMPLATE_REF: ${{ github.event.inputs.infra_template_ref }}
+          WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
+          WD_APP_TEMPLATE_REF:   ${{ github.event.inputs.app_template_ref }}
+          WD_IMAGE:              ${{ github.event.inputs.container_image }}
+          WD_REGISTRY:           ${{ github.event.inputs.container_registry_url }}
+          WD_CI_FILE:            ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
-          RD_APP:            ${{ github.event.client_payload.app_name }}
-          RD_ENV:            ${{ github.event.client_payload.environment }}
-          RD_TENANT_ID:      ${{ github.event.client_payload.azure_tenant_id }}
-          RD_SUB_ID:         ${{ github.event.client_payload.azure_subscription_id }}
-          RD_CLIENT_ID:      ${{ github.event.client_payload.azure_client_id }}
-          RD_INFRA_TEMPLATE: ${{ github.event.client_payload.infra_template_repo }}
-          RD_APP_TEMPLATE:   ${{ github.event.client_payload.app_template_repo }}
-          RD_IMAGE:          ${{ github.event.client_payload.container_image }}
-          RD_REGISTRY:       ${{ github.event.client_payload.container_registry_url }}
-          RD_CI_FILE:        ${{ github.event.client_payload.ci_workflow_file }}
+          RD_APP:                ${{ github.event.client_payload.app_name }}
+          RD_ENV:                ${{ github.event.client_payload.environment }}
+          RD_TENANT_ID:          ${{ github.event.client_payload.azure_tenant_id }}
+          RD_SUB_ID:             ${{ github.event.client_payload.azure_subscription_id }}
+          RD_CLIENT_ID:          ${{ github.event.client_payload.azure_client_id }}
+          RD_INFRA_TEMPLATE:     ${{ github.event.client_payload.infra_template_repo }}
+          RD_INFRA_TEMPLATE_REF: ${{ github.event.client_payload.infra_template_ref }}
+          RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
+          RD_APP_TEMPLATE_REF:   ${{ github.event.client_payload.app_template_ref }}
+          RD_IMAGE:              ${{ github.event.client_payload.container_image }}
+          RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
+          RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
           OWNER:             ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
@@ -122,7 +138,9 @@ jobs:
           AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
+          INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
+          APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
           # container_image is optional. The placeholder is what Terraform
           # writes on the first apply; thereafter the lifecycle.ignore_changes
           # on site_config[0].application_stack means whatever CI/deploy
@@ -167,7 +185,9 @@ jobs:
           echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
           echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
+          echo "infra_template_ref=$INFRA_TEMPLATE_REF"         >> "$GITHUB_OUTPUT"
           echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
+          echo "app_template_ref=$APP_TEMPLATE_REF"             >> "$GITHUB_OUTPUT"
           echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
           echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
@@ -237,6 +257,7 @@ jobs:
           APP_NAME:      ${{ needs.resolve-inputs.outputs.app_name }}
           REPO_FULL:     ${{ needs.resolve-inputs.outputs.infra_repo_full }}
           TEMPLATE:      ${{ needs.resolve-inputs.outputs.infra_template_repo }}
+          TEMPLATE_REF:  ${{ needs.resolve-inputs.outputs.infra_template_ref }}
         run: |
           if gh api "repos/${REPO_FULL}" --silent 2>/dev/null; then
             echo "Repository ${REPO_FULL} already exists — skipping creation"
@@ -268,6 +289,23 @@ jobs:
           if [[ "$READY" != "true" ]]; then
             echo "::error::Repository ${REPO_FULL} was created but its default branch did not become ready in time"
             exit 1
+          fi
+
+          # Pin the repo contents to a specific template ref if requested.
+          # GitHub's generate endpoint always seeds from the template's default
+          # branch; to honour a pinned tag/branch/SHA we clone the template at
+          # that exact ref and force-push it onto the new repo's default branch.
+          if [[ -n "$TEMPLATE_REF" ]]; then
+            echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
+            git clone \
+              "https://x-access-token:${GH_TOKEN}@github.com/${TEMPLATE}.git" \
+              /tmp/template-infra-pin
+            git -C /tmp/template-infra-pin checkout "${TEMPLATE_REF}"
+            git -C /tmp/template-infra-pin remote add target \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            git -C /tmp/template-infra-pin push --force target \
+              "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
           fi
 
           echo "repo_existed=false" >> "$GITHUB_OUTPUT"
@@ -718,11 +756,12 @@ jobs:
       - name: Create from template
         id: create
         env:
-          GH_TOKEN:  ${{ secrets.GH_PAT }}
-          OWNER:     ${{ github.repository_owner }}
-          APP_NAME:  ${{ needs.resolve-inputs.outputs.app_name }}
-          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
-          TEMPLATE:  ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          GH_TOKEN:     ${{ secrets.GH_PAT }}
+          OWNER:        ${{ github.repository_owner }}
+          APP_NAME:     ${{ needs.resolve-inputs.outputs.app_name }}
+          REPO_FULL:    ${{ needs.resolve-inputs.outputs.app_repo_full }}
+          TEMPLATE:     ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          TEMPLATE_REF: ${{ needs.resolve-inputs.outputs.app_template_ref }}
         run: |
           if gh api "repos/${REPO_FULL}" --silent 2>/dev/null; then
             echo "Repository ${REPO_FULL} already exists — skipping creation"
@@ -765,6 +804,23 @@ jobs:
           if [[ "$READY" != "true" ]]; then
             echo "::error::Repository ${REPO_FULL} was created but its default branch did not become ready in time"
             exit 1
+          fi
+
+          # Pin the repo contents to a specific template ref if requested.
+          # GitHub's generate endpoint always seeds from the template's default
+          # branch; to honour a pinned tag/branch/SHA we clone the template at
+          # that exact ref and force-push it onto the new repo's default branch.
+          if [[ -n "$TEMPLATE_REF" ]]; then
+            echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
+            git clone \
+              "https://x-access-token:${GH_TOKEN}@github.com/${TEMPLATE}.git" \
+              /tmp/template-app-pin
+            git -C /tmp/template-app-pin checkout "${TEMPLATE_REF}"
+            git -C /tmp/template-app-pin remote add target \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            git -C /tmp/template-app-pin push --force target \
+              "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
           fi
 
           echo "repo_existed=false" >> "$GITHUB_OUTPUT"

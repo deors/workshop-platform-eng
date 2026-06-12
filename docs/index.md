@@ -257,7 +257,9 @@ curl -X POST \
                   "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
                   "azure_client_id":        "11111111-1111-1111-1111-111111111111",
                   "infra_template_repo":    "your-org/template-terraform-azure-webapp",
+                  "infra_template_ref":     "v1.2.0",
                   "app_template_repo":      "your-org/template-helloworld-express",
+                  "app_template_ref":       "v2.0.1",
                   "container_image":        "mcr.microsoft.com/appsvc/staticsite:latest",
                   "container_registry_url": "myregistry.azurecr.io"
             }
@@ -422,6 +424,9 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
       Environments, federated credentials, CI observation) so the workflow can
       be used for Landing Zones and foundational platform components with no
       application coupling
+- [x] **Template-repo pinning** — accept `infra_template_ref` and
+      `app_template_ref` inputs so known tags/commits are used rather than
+      the latest default branches
 
 ### Next
 
@@ -447,9 +452,6 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
       exists in the webapp module but isn't surfaced through the workflow
 - [ ] **Custom domain provisioning** — module already supports it, surface
       it as a workflow input (with cert binding)
-- [ ] **Template-repo pinning** — accept `infra_template_ref` and
-      `app_template_ref` inputs so known tags/commits are used rather than
-      the latest default branches
 - [ ] **Slot-swap promotion for prod** — today the template's `release.yml`
       updates the prod container in place; switching it to deploy to the
       staging slot and swap would give zero-downtime promotion

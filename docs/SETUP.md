@@ -483,7 +483,9 @@ provide:
 | `azure_subscription_id` | yes | the GUID captured in step 3 |
 | `azure_client_id` | yes | the `appId` captured in step 3 |
 | `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
+| `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
 | `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
+| `app_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the app template |
 | `container_image` | no | `mcr.microsoft.com/appsvc/staticsite:latest` |
 | `container_registry_url` | no | _(leave empty — public image)_ |
 | `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
