@@ -305,6 +305,60 @@ jobs:
             [[ -n "$env_line" ]] && ENVS+=("$env_line")
           done < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
 
+          # ── Drift summarisers (written inline so the step is self-contained;
+          #    this job checks out only the infra repo, not the platform repo).
+          #    They turn the refresh-only plan JSON (`terraform show -json`) into
+          #    a readable breakdown and a compact count line. Only attribute
+          #    NAMES and resource ADDRESSES are emitted — never values — so the
+          #    rendered summary cannot leak secrets.
+          #
+          #    Refresh-only drift lives under `.resource_drift[]`, each entry an
+          #    action on a resource detected between prior state and reality:
+          #      update            → attributes changed outside Terraform
+          #      delete            → resource removed outside Terraform
+          #      create            → resource appeared (rare for refresh)
+          #      [create,delete]   → replacement
+          #    A "tag-only" update is one whose sole differing top-level
+          #    attribute is `tags`.
+          cat > /tmp/drift.jq <<'JQEOF'
+          def addr_list($items):
+            ($items | map("    - `\(.)`") | join("\n"));
+          [ .resource_drift[]? | select((.change.actions // []) != ["no-op"]) ] as $d
+          | ( [ $d[] | select(.change.actions == ["create"]) | .address ] ) as $created
+          | ( [ $d[] | select(.change.actions == ["delete"]) | .address ] ) as $deleted
+          | ( [ $d[] | select((.change.actions|sort) == ["create","delete"]) | .address ] ) as $replaced
+          | ( [ $d[] | select(.change.actions == ["update"])
+                  | { address: .address,
+                      changed: ( (.change.before // {}) as $b
+                                 | (.change.after  // {}) as $a
+                                 | (($b|keys) + ($a|keys) | unique)
+                                 | map(select($b[.] != $a[.])) ) } ] ) as $upd
+          | ( [ $upd[] | select(.changed == ["tags"]) | .address ] ) as $tagonly
+          | ( [ $upd[] | select(.changed != ["tags"]) ] ) as $modified
+          | ( "**Breakdown:** \($created|length) added · \($deleted|length) removed · \($replaced|length) replaced · \($modified|length) modified · \($tagonly|length) tag-only\n" )
+          + ( if ($created|length) > 0 then "\n- ➕ **Added** (in Azure, absent from state):\n" + addr_list($created) + "\n" else "" end )
+          + ( if ($deleted|length) > 0 then "\n- ➖ **Removed** (in state, absent from Azure):\n" + addr_list($deleted) + "\n" else "" end )
+          + ( if ($replaced|length) > 0 then "\n- 🔁 **Replaced**:\n" + addr_list($replaced) + "\n" else "" end )
+          + ( if ($modified|length) > 0 then "\n- ✏️ **Modified** (non-tag attributes):\n" + ($modified | map("    - `\(.address)` — changed: " + (.changed | join(", "))) | join("\n")) + "\n" else "" end )
+          + ( if ($tagonly|length) > 0 then "\n- 🏷️ **Tag-only changes**:\n" + addr_list($tagonly) + "\n" else "" end )
+          JQEOF
+          cat > /tmp/drift-counts.jq <<'JQEOF'
+          [ .resource_drift[]? | select((.change.actions // []) != ["no-op"]) ] as $d
+          | ( [ $d[] | select(.change.actions == ["create"]) ] | length ) as $created
+          | ( [ $d[] | select(.change.actions == ["delete"]) ] | length ) as $deleted
+          | ( [ $d[] | select((.change.actions|sort) == ["create","delete"]) ] | length ) as $replaced
+          | ( [ $d[] | select(.change.actions == ["update"])
+                  | ( (.change.before // {}) as $b | (.change.after // {}) as $a
+                      | (($b|keys)+($a|keys)|unique) | map(select($b[.] != $a[.])) ) ] ) as $updchanges
+          | ( [ $updchanges[] | select(. == ["tags"]) ] | length ) as $tagonly
+          | ( [ $updchanges[] | select(. != ["tags"]) ] | length ) as $modified
+          | "\($created) \($deleted) \($replaced) \($modified) \($tagonly)"
+          JQEOF
+
+          # Collected terraform/az outputs are uploaded as a workflow artifact.
+          ARTIFACT_ROOT="${GITHUB_WORKSPACE:-$PWD}/drift-artifacts"
+          mkdir -p "$ARTIFACT_ROOT"
+
           SUMMARY=""          # short per-env status lines (issue body)
           DETAILS=""          # full findings per env (issue comment)
           DRIFTED_ENVS=()
@@ -333,6 +387,10 @@ jobs:
             # Resource group provisioned by this env (matches the provisioner's
             # naming convention `rg-<app>-<env>`).
             RG_NAME="rg-${APP_NAME}-${env}"
+
+            # Per-env artifact folder collecting every output below.
+            ENV_ART="${ARTIFACT_ROOT}/${env}"
+            mkdir -p "$ENV_ART"
 
             # 1. Does the environment's resource group exist in Azure?
             #    `az group exists` prints true/false and exits 0; a non-zero exit
@@ -409,37 +467,66 @@ jobs:
               az resource list --resource-group "$RG_NAME" \
                 --query "[].{name:name, type:type, location:location}" \
                 --output table > orphan-${env}.txt 2>&1
-              DETAILS+=$'\n'"### \`${env}\` — unmanaged resources (state empty, RG present)"$'\n\n'"<details><summary>resources in \`${RG_NAME}\`</summary>"$'\n\n```\n'"$(cat orphan-${env}.txt)"$'\n```\n\n</details>\n'
+              cp -f "orphan-${env}.txt" "$ENV_ART/" 2>/dev/null || true
+              DETAILS+=$'\n'"### \`${env}\` — unmanaged resources (state empty, RG present)"$'\n\n'"**Breakdown:** every resource in \`${RG_NAME}\` is unmanaged (exists in Azure, absent from Terraform state)."$'\n\n'"<details><summary>resources in \`${RG_NAME}\`</summary>"$'\n\n```\n'"$(cat orphan-${env}.txt)"$'\n```\n\n</details>\n'
 
             elif [[ "$STATE_PRESENT" == "true" && "$RG_EXISTS" == "false" ]]; then
               # State says this env is provisioned, but the RG is gone — every
               # managed resource is missing.
               SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state has ${STATE_COUNT} resources but resource group \`${RG_NAME}\` is missing)"$'\n'
               DRIFTED_ENVS+=("$env")
-              DETAILS+=$'\n'"### \`${env}\` — all resources missing (state present, RG absent)"$'\n\n<details><summary>managed resources expected to exist</summary>\n\n```\n'"$(cat "${DIR}/state-list.txt")"$'\n```\n\n</details>\n'
+              cp -f "${DIR}/state-list.txt" "$ENV_ART/" 2>/dev/null || true
+              DETAILS+=$'\n'"### \`${env}\` — all resources missing (state present, RG absent)"$'\n\n'"**Breakdown:** all ${STATE_COUNT} managed resources are missing (resource group \`${RG_NAME}\` does not exist)."$'\n\n'"<details><summary>managed resources expected to exist</summary>"$'\n\n```\n'"$(cat "${DIR}/state-list.txt")"$'\n```\n\n</details>\n'
 
             else
               # Both present: classic Terraform refresh-only drift detection.
-              # -refresh-only: compare recorded state against real resources.
-              # -detailed-exitcode: 0 = no drift, 2 = drift, 1 = error.
-              # -no-color: keep the captured output readable inside markdown.
+              # Save a binary plan so we can render it as JSON and parse a
+              # structured breakdown. -detailed-exitcode: 0 = no drift, 2 =
+              # drift, 1 = error. -no-color keeps the raw log readable.
               pushd "$DIR" >/dev/null
               terraform plan \
                 -refresh-only \
                 -detailed-exitcode \
                 -no-color \
                 -input=false \
+                -out=tfplan.bin \
                 > plan-output.txt 2>&1
               PLAN_CODE=$?
+              # Render JSON for parsing (only meaningful when a plan was saved).
+              if [[ -f tfplan.bin ]]; then
+                terraform show -json tfplan.bin > plan.json 2> show-err.txt || true
+              fi
               popd >/dev/null
+
+              # Always archive whatever terraform produced for this env.
+              cp -f "${DIR}/plan-output.txt" "$ENV_ART/" 2>/dev/null || true
+              cp -f "${DIR}/tfplan.bin"      "$ENV_ART/" 2>/dev/null || true
+              cp -f "${DIR}/plan.json"       "$ENV_ART/" 2>/dev/null || true
+
               case "$PLAN_CODE" in
                 0)
                   SUMMARY+="- \`${env}\` — ✅ no drift (state matches Azure)"$'\n'
                   ;;
                 2)
-                  SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from Azure)"$'\n'
+                  # Build the structured breakdown from the plan JSON. Fall back
+                  # to the raw log if the JSON is missing or cannot be parsed.
+                  DRIFT_MD=""
+                  COUNTS=""
+                  if [[ -s "${DIR}/plan.json" ]]; then
+                    DRIFT_MD=$(jq -r -f /tmp/drift.jq "${DIR}/plan.json" 2>/dev/null)
+                    COUNTS=$(jq -r -f /tmp/drift-counts.jq "${DIR}/plan.json" 2>/dev/null)
+                  fi
+                  if [[ -n "$COUNTS" ]]; then
+                    read -r C_ADD C_DEL C_REP C_MOD C_TAG <<<"$COUNTS"
+                    SUMMARY+="- \`${env}\` — 🔴 **drift detected** (${C_ADD} added, ${C_DEL} removed, ${C_REP} replaced, ${C_MOD} modified, ${C_TAG} tag-only)"$'\n'
+                  else
+                    SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from Azure)"$'\n'
+                  fi
+                  if [[ -z "$DRIFT_MD" ]]; then
+                    DRIFT_MD="_Could not parse plan JSON; see the raw output below and the workflow artifact._"
+                  fi
                   DRIFTED_ENVS+=("$env")
-                  DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n<details><summary>refresh-only plan output</summary>\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
+                  DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n'"${DRIFT_MD}"$'\n\n'"<details><summary>raw refresh-only plan output</summary>"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
                   ;;
                 *)
                   SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
@@ -465,12 +552,30 @@ jobs:
             echo "skipped_envs=${SKIPPED_ENVS[*]:-}"
           } >> "$GITHUB_OUTPUT"
 
-          # Always surface the per-app result in the job step summary.
+          # Always surface the per-app result in the job step summary: the
+          # short status lines first, then the full structured breakdown.
           {
             echo "## Drift · \`${APP_NAME}\`"
             echo
             cat /tmp/drift-summary.md
+            if [[ -s /tmp/drift-details.md ]]; then
+              echo
+              echo "### Details"
+              cat /tmp/drift-details.md
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Archive the raw terraform/az outputs (plan log, binary plan, plan JSON,
+      # state list, orphan resource listing) so operators can inspect the full
+      # drift offline. Runs always() so error runs upload their logs too.
+      - name: Upload drift artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              drift-${{ matrix.app }}
+          path:              drift-artifacts/
+          retention-days:    14
+          if-no-files-found: ignore
 
       # Open a fresh issue (per app) and comment on it with the full findings
       # whenever this run found drift or an error. No-drift runs stay quiet.
@@ -508,7 +613,7 @@ jobs:
             echo
             cat /tmp/drift-summary.md
             echo
-            echo "Full \`refresh-only\` output is attached as a comment below."
+            echo "A per-environment breakdown (added / removed / replaced / modified / tag-only) is in the comment below. The raw \`terraform\` plan output, binary plan and plan JSON are attached to the [workflow run](${RUN_URL}) as the \`drift-${APP_NAME}\` artifact."
           } > /tmp/issue-body.md
 
           ISSUE_URL=$(gh issue create -R "$APP_REPO" \
