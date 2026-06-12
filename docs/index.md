@@ -417,6 +417,11 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 - [x] Compliance tagging workflow — manually triggered `tag-app-resources.yml`
       merges an arbitrary JSON tag set onto every resource group and resource
       belonging to an app (env RGs + tfstate RG), with dry-run preview support
+- [x] Infra-only mode — application repository phase is fully optional; omitting
+      `app_template_repo` skips all app-repo jobs (repo creation, GitHub
+      Environments, federated credentials, CI observation) so the workflow can
+      be used for Landing Zones and foundational platform components with no
+      application coupling
 
 ### Next
 
