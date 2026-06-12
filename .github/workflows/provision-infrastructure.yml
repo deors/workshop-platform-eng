@@ -319,6 +319,8 @@ jobs:
             echo
             echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
             echo
+            echo "## Infrastructure repository"
+            echo
             echo "${REPO_LINE}"
             echo
             echo "Environments in scope: ${ENV_LIST}."
