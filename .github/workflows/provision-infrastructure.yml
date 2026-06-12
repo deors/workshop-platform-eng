@@ -916,7 +916,7 @@ jobs:
           find verify -maxdepth 3 -print | head -50
           echo "::endgroup::"
 
-      - name: Build and post infra summary comment
+      - name: Build and post infra issue comment
         env:
           GH_TOKEN:           ${{ secrets.GH_PAT }}
           ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
@@ -965,25 +965,30 @@ jobs:
           done
 
           if [[ "$INFRA_REPO_EXISTED" == "false" ]]; then
-            RUN_TYPE="Provision"
+            HEADING="Provision run summary"
+            CLOSING="Infrastructure provisioned and verified. The infra repo is the canonical source of truth — any changes committed there will be applied on the next provision run."
           else
-            RUN_TYPE="Reconcile"
+            HEADING="Reconcile run summary"
+            CLOSING="Infrastructure reconciled against the current canonical contents of the infra repo. Resources were adjusted as needed; the deployed application image is preserved across reconcile runs."
           fi
 
           {
-            echo "## ${RUN_TYPE} summary"
+            echo "## ${HEADING}"
             echo
             echo "| Stage | Result |"
             echo "|---|---|"
-            echo "| Provisioning run | [#${{ github.run_id }}]($PROVISION_URL) |"
+            echo "| Provisioning | [#${{ github.run_id }}]($PROVISION_URL) |"
             echo "| Resources changed | + ${TOTAL_ADD} · ~ ${TOTAL_CHANGE} · - ${TOTAL_DESTROY} |"
             echo "| Verification tests | passed ${TOTAL_PASS} · failed ${TOTAL_FAIL} |"
             echo
             echo "## Environment status"
             echo
             printf '%s' "${STATUSES}"
+            echo
+            echo "${CLOSING}"
           } > /tmp/infra-comment.md
 
+          # Comment on the per-run issue in the infra repo
           if [[ -n "$INFRA_ISSUE_NUMBER" ]]; then
             gh issue comment "$INFRA_ISSUE_NUMBER" -R "$INFRA_REPO_FULL" --body-file /tmp/infra-comment.md
           fi
@@ -1152,33 +1157,31 @@ jobs:
           echo "CI run #${CI_RUN_ID} succeeded: ${CI_RUN_URL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 16. Final summary + comment on the app repo issue. Covers app-specific
-  #     outcomes: env config result, federated credentials, CI/CD run.
-  #     Waits for configure-environments and configure-federated-credentials
-  #     so their results are available even on reconcile runs (where observe-ci
-  #     is skipped and would not transitively hold for those jobs).
+  # 16. Comment on the app repo issue with the app-specific run summary:
+  #     env config result, federated credentials, CI/CD run. Waits for
+  #     configure-environments and configure-federated-credentials so their
+  #     results are available even on reconcile runs (where observe-ci is
+  #     skipped and would not transitively hold for those jobs).
   # ────────────────────────────────────────────────────────────────────────────
-  finalize:
-    name: Summarize and comment
-    needs: [resolve-inputs, create-app-repo, create-run-issue, create-infra-issue, configure-environments, configure-federated-credentials, observe-ci]
+  comment-app-issue:
+    name: Comment on app issue
+    needs: [resolve-inputs, create-app-repo, create-run-issue, configure-environments, configure-federated-credentials, observe-ci]
     # Always runs regardless of whether observe-ci was skipped (reconcile runs).
     if: always() && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - name: Build summary and post issue comment
+      - name: Build and post app issue comment
         env:
-          GH_TOKEN:        ${{ secrets.GH_PAT }}
-          REPO_FULL:       ${{ needs.create-app-repo.outputs.repo_full }}
-          REPO_EXISTED:    ${{ needs.create-app-repo.outputs.repo_existed }}
-          ISSUE_NUMBER:    ${{ needs.create-run-issue.outputs.issue_number }}
-          ISSUE_URL:       ${{ needs.create-run-issue.outputs.issue_url }}
-          INFRA_ISSUE_URL: ${{ needs.create-infra-issue.outputs.infra_issue_url }}
-          PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CI_RUN_ID:       ${{ needs.observe-ci.outputs.ci_run_id }}
-          CI_RUN_URL:      ${{ needs.observe-ci.outputs.ci_run_url }}
-          CI_CONCLUSION:   ${{ needs.observe-ci.outputs.ci_conclusion }}
-          ENV_RESULT:      ${{ needs.configure-environments.result }}
-          CRED_RESULT:     ${{ needs.configure-federated-credentials.result }}
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:  ${{ needs.create-app-repo.outputs.repo_existed }}
+          ISSUE_NUMBER:  ${{ needs.create-run-issue.outputs.issue_number }}
+          PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_RUN_ID:     ${{ needs.observe-ci.outputs.ci_run_id }}
+          CI_RUN_URL:    ${{ needs.observe-ci.outputs.ci_run_url }}
+          CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
+          ENV_RESULT:    ${{ needs.configure-environments.result }}
+          CRED_RESULT:   ${{ needs.configure-federated-credentials.result }}
         run: |
           fmt() {
             local url="$1" status="$2"
@@ -1219,13 +1222,34 @@ jobs:
             echo "${CLOSING}"
           } > /tmp/app-comment.md
 
-          # Step summary on the platform side
-          cat /tmp/app-comment.md >> "$GITHUB_STEP_SUMMARY"
-          echo ""                 >> "$GITHUB_STEP_SUMMARY"
-          [[ -n "$ISSUE_URL" ]]       && echo "App repo issue: $ISSUE_URL"         >> "$GITHUB_STEP_SUMMARY"
-          [[ -n "$INFRA_ISSUE_URL" ]] && echo "Infra repo issue: $INFRA_ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
-
           # Comment on the per-run issue in the app repo
           if [[ -n "$ISSUE_NUMBER" ]]; then
             gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body-file /tmp/app-comment.md
           fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 17. Write the consolidated platform-side step summary once both issue
+  #     comments have been posted. Links out to the per-repo issues where the
+  #     full run details live.
+  # ────────────────────────────────────────────────────────────────────────────
+  final-summary:
+    name: Final summary
+    needs: [create-run-issue, create-infra-issue, comment-app-issue, comment-infra-issue]
+    if: always() && needs.create-run-issue.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write step summary
+        env:
+          PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          APP_ISSUE_URL:   ${{ needs.create-run-issue.outputs.issue_url }}
+          INFRA_ISSUE_URL: ${{ needs.create-infra-issue.outputs.infra_issue_url }}
+        run: |
+          {
+            echo "## Provision Infrastructure — run complete"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Provisioning run | [#${{ github.run_id }}]($PROVISION_URL) |"
+            [[ -n "$APP_ISSUE_URL" ]]   && echo "| App repo issue   | $APP_ISSUE_URL |"
+            [[ -n "$INFRA_ISSUE_URL" ]] && echo "| Infra repo issue | $INFRA_ISSUE_URL |"
+          } >> "$GITHUB_STEP_SUMMARY"
