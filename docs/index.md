@@ -145,24 +145,29 @@ operator                ┌─────────────────�
 
 ```text
 .
-├── .checkov.yaml                       # Checkov rules + skips for prod (strict)
 ├── .checkov.nonprod.yaml               # Relaxed skips for dev/staging
+├── .checkov.yaml                       # Checkov rules + skips for prod (strict)
 ├── .github/workflows/
 │   ├── bootstrap-tfstate.yml           # Reusable: create the tfstate storage
-│   ├── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
-│   ├── detect-drift.yml                # Scheduled/callable: refresh-only drift sweep
-│   └── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
+│   ├── delete-app-resources-all.yml    # Manual: delete all env RGs + tfstate for an app
+│   ├── delete-app-resources-single.yml # Manual/callable: delete one env RG for an app
+│   ├── delete-resource-group.yml       # Reusable: delete a single Azure resource group
+│   ├── detect-drift.yml                # Scheduled/callable: read-only drift sweep
+│   ├── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
+│   ├── tag-app-resources.yml           # Manual: merge compliance tags onto all app resources
+│   └── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
 ├── docs/                               # GitHub Pages site (Jekyll-rendered)
 │   ├── _config.yml                     # Jekyll config
-│   ├── index.md                        # Pages homepage (this file)
-│   ├── SETUP.md                        # Full setup guide
 │   ├── CONTRIBUTING.md                 # Contribution guidelines (Pages mirror)
+│   ├── index.md                        # Pages homepage (this file)
 │   ├── PAGES.md                        # Pages site info & how to enable
-│   └── provision.html                  # Self-service provisioning form
+│   ├── provision.html                  # Self-service provisioning form
+│   └── SETUP.md                        # Full setup guide
 ├── scripts/
 │   ├── bootstrap-tfstate.sh            # Idempotent az-cli bootstrap script
-│   ├── watch-run.sh                    # Poll a remote workflow run + outputs
-│   └── trigger-provision.sh            # CLI wrapper around repository_dispatch
+│   ├── tag-app-resources.sh            # Merge an arbitrary tag set onto all app resources
+│   ├── trigger-provision.sh            # CLI wrapper around repository_dispatch
+│   └── watch-run.sh                    # Poll a remote workflow run + outputs
 ```
 
 > Control-plane verification is no longer defined here. It lives in each infra
@@ -248,6 +253,69 @@ The token must have `repo` scope (classic) or `Contents: write` permission
 (fine-grained) on the platform repository. `Actions: write` is *not* enough
 for the `repository_dispatch` endpoint.
 
+## Compliance tagging
+
+The `tag-app-resources.yml` workflow merges an arbitrary set of tags onto every
+Azure resource that belongs to an app. It is a **day-2 operation** — run it any
+time after resources exist to back-fill governance metadata, adopt a new tagging
+standard, or correct values without reprovisioning.
+
+### What it tags
+
+The workflow discovers all resource groups for the app and tags each group and
+every resource inside it:
+
+| Resource group pattern | Purpose |
+| --- | --- |
+| `rg-<app_name>-dev` / `staging` / `prod` | Per-environment application resources |
+| `rg-tfstate-<app_name>` | Terraform state storage |
+
+Tags are **merged** — existing tags not present in `tags_json` are left
+unchanged. Re-running the workflow with updated values is safe.
+
+### Inputs
+
+| Input | Required | Description |
+| --- | --- | --- |
+| `app_name` | Yes | Application name — used to discover resource groups |
+| `azure_tenant_id` | Yes | Azure Tenant ID |
+| `azure_subscription_id` | Yes | Azure Subscription ID |
+| `azure_client_id` | Yes | Client ID of the OIDC service principal |
+| `tags_json` | Yes | JSON object whose keys/values become the tags, e.g. `{"airid":"309005","Application":"myapp","CreatedBy":"user"}` |
+| `dry_run` | No (default: `false`) | When `true`, discovers and lists all resources that would be tagged without writing anything |
+
+### How to run
+
+`Actions → Tag Application Resources → Run workflow`, fill the form, and paste
+the JSON tags object. Use `dry_run: true` first to preview the full scope — the
+step summary shows the tag list and the run log shows every resource that would
+be tagged.
+
+The workflow authenticates to Azure via OIDC (same service principal used by
+`provision-infrastructure`) — no client secret is required.
+
+### Running locally
+
+The underlying script (`scripts/tag-app-resources.sh`) can also be run directly
+against an active `az login` session:
+
+```bash
+az login --tenant <AZURE_TENANT_ID>
+az account set --subscription <AZURE_SUBSCRIPTION_ID>
+
+scripts/tag-app-resources.sh \
+  --app-name               myapp \
+  --azure-tenant-id        <tenant-guid> \
+  --azure-subscription-id  <sub-guid> \
+  --azure-client-id        <client-guid> \
+  --tags-json              '{"airid":"309005","Application":"myapp","CreatedBy":"user"}' \
+  --dry-run
+```
+
+Remove `--dry-run` to apply. Requires `az` and `jq`.
+
+---
+
 ## Conventions
 
 - **Naming.** Most resources follow the pattern `<type>-<app>-<env>` (e.g.
@@ -331,6 +399,9 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
       `terraform plan -refresh-only` sweep that compares recorded state against
       live Azure resources for one or more apps (matrix) and opens an issue
       with the per-environment findings when drift or an error is detected
+- [x] Compliance tagging workflow — manually triggered `tag-app-resources.yml`
+      merges an arbitrary JSON tag set onto every resource group and resource
+      belonging to an app (env RGs + tfstate RG), with dry-run preview support
 
 ### Next
 
