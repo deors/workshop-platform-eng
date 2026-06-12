@@ -280,7 +280,70 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 3. Checkov – security and compliance scan, per target environment
+  # 3. Open a per-run tracking issue in the infrastructure repository.
+  #     Created right after the infra repo is available (new or existing). A
+  #     follow-up comment with the full infrastructure summary (plan results,
+  #     verify counts) is posted by comment-infra-issue after apply + verify.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-infra-issue:
+    name: Create infra repo issue
+    needs: [resolve-inputs, create-infra-repo]
+    runs-on: ubuntu-latest
+    outputs:
+      infra_issue_number: ${{ steps.issue.outputs.number }}
+      infra_issue_url:    ${{ steps.issue.outputs.url }}
+    steps:
+      - name: Build issue body
+        id: body
+        env:
+          ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
+          APP_NAME:           ${{ needs.resolve-inputs.outputs.app_name }}
+          INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          INFRA_TEMPLATE:     ${{ needs.resolve-inputs.outputs.infra_template_repo }}
+          INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
+          PROVISION_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+          ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
+
+          if [[ "$INFRA_REPO_EXISTED" == "false" ]]; then
+            TITLE_PREFIX="Provision run"
+            REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) created from template [\`${INFRA_TEMPLATE}\`](https://github.com/${INFRA_TEMPLATE})."
+          else
+            TITLE_PREFIX="Reconcile run"
+            REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) already existed — Terraform will reconcile Azure against the repo's current canonical contents."
+          fi
+
+          {
+            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo
+            echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
+            echo
+            echo "${REPO_LINE}"
+            echo
+            echo "Environments in scope: ${ENV_LIST}."
+            echo
+            echo "_Infrastructure apply and verify results will be added in a follow-up comment._"
+          } > /tmp/infra-issue-body.md
+
+          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue
+        id: issue
+        env:
+          GH_TOKEN:        ${{ secrets.GH_PAT }}
+          INFRA_REPO_FULL: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          TITLE:           ${{ steps.body.outputs.title }}
+        run: |
+          URL=$(gh issue create -R "$INFRA_REPO_FULL" \
+            --title "$TITLE" \
+            --body-file /tmp/infra-issue-body.md)
+          NUMBER="${URL##*/}"
+          echo "url=$URL"        >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 4. Checkov – security and compliance scan, per target environment
   #    Per-env scoping lets us keep prod-strict baselines (zone redundancy, min
   #    instance count) while allowing dev/staging to run lighter footprints.
   # ────────────────────────────────────────────────────────────────────────────
@@ -323,7 +386,7 @@ jobs:
           category:        checkov-terraform-${{ matrix.environment }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 4. Terraform format check (once, not per-environment)
+  # 5. Terraform format check (once, not per-environment)
   # ────────────────────────────────────────────────────────────────────────────
   fmt:
     name: Terraform fmt check
@@ -348,7 +411,7 @@ jobs:
         run: terraform fmt -check -recursive infra-repo/terraform/
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 5. Bootstrap remote state storage (idempotent – safe to run every time).
+  # 6. Bootstrap remote state storage (idempotent – safe to run every time).
   #    Delegates to the reusable bootstrap-tfstate.yml workflow so the same
   #    logic can be triggered standalone.
   # ────────────────────────────────────────────────────────────────────────────
@@ -363,7 +426,7 @@ jobs:
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 6. Terraform plan – one job per target environment, after scan passes
+  # 7. Terraform plan – one job per target environment, after scan passes
   # ────────────────────────────────────────────────────────────────────────────
   plan:
     name: "Plan · ${{ matrix.environment }}"
@@ -488,7 +551,7 @@ jobs:
             infra-repo/terraform/environments/${{ matrix.environment }}/plan-output.txt
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 7. Terraform apply – consume the plan artifact and provision per environment
+  # 8. Terraform apply – consume the plan artifact and provision per environment
   # ────────────────────────────────────────────────────────────────────────────
   apply:
     name: "Apply · ${{ matrix.environment }}"
@@ -589,7 +652,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 8. Verify – delegates to the reusable verify-infrastructure.yml workflow.
+  # 9. Verify – delegates to the reusable verify-infrastructure.yml workflow.
   #    The reusable workflow owns the GitHub Environment binding and the
   #    OIDC login, so federated credential matching stays consistent whether
   #    verify runs from here or is triggered standalone.
@@ -617,7 +680,7 @@ jobs:
       gh_pat: ${{ secrets.GH_PAT }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 9. Application repository – create from template (idempotent).
+  # 10. Application repository – create from template (idempotent).
   #
   #    The workflow can be re-invoked any number of times — typically once per
   #    environment as it is rolled out. On re-runs the repo already exists and
@@ -727,32 +790,81 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 10. Per-run tracking issue. Opened on every invocation (not just first
-  #    creation) — each run gets its own issue describing which environments
-  #    were touched and whether they were created or refreshed (parsed from
-  #    the plan artifact). On first creation the body also mentions the
-  #    auto-triggered CI run; subsequent runs omit that section.
+  # 11. Per-run tracking issue in the application repository. Covers only
+  #     app-specific outcomes: whether the repo was created or already existed,
+  #     and (via a follow-up comment from finalize) env config and CI/CD results.
+  #     Infrastructure details are tracked separately in the infra repo issue.
   # ────────────────────────────────────────────────────────────────────────────
   create-run-issue:
-    name: Create run issue
-    needs: [resolve-inputs, create-infra-repo, create-app-repo, apply, verify]
+    name: Create app repo issue
+    needs: [resolve-inputs, create-app-repo]
     runs-on: ubuntu-latest
     outputs:
-      issue_number:    ${{ steps.issue.outputs.number }}
-      issue_url:       ${{ steps.issue.outputs.url }}
-      total_added:     ${{ steps.body.outputs.total_added }}
-      total_changed:   ${{ steps.body.outputs.total_changed }}
-      total_destroyed: ${{ steps.body.outputs.total_destroyed }}
-      total_passed:    ${{ steps.body.outputs.total_passed }}
-      total_failed:    ${{ steps.body.outputs.total_failed }}
+      issue_number: ${{ steps.issue.outputs.number }}
+      issue_url:    ${{ steps.issue.outputs.url }}
     steps:
-      # One download step per env, gated by membership in the resolved matrix.
-      # Using `name:` (not `pattern:`) gives deterministic placement: contents
-      # of each artifact land directly under `path:`, so plan-output.txt is
-      # always at plans/<env>/plan-output.txt regardless of how many envs are
-      # in this run. This sidesteps the v8 quirk where `pattern:` with a
-      # single match flattens contents instead of creating an artifact-name
-      # subdirectory.
+      - name: Build issue body
+        id: body
+        env:
+          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
+          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
+          APP_TEMPLATE:      ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          APP_REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:      ${{ needs.create-app-repo.outputs.repo_existed }}
+          PROVISION_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+          ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
+
+          if [[ "$REPO_EXISTED" == "false" ]]; then
+            TITLE_PREFIX="Bootstrap run"
+            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) created from template [\`${APP_TEMPLATE}\`](https://github.com/${APP_TEMPLATE})."
+          else
+            TITLE_PREFIX="Reconcile run"
+            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) already exists — environment configuration will be reconciled."
+          fi
+
+          {
+            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo
+            echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
+            echo
+            echo "## Application repository"
+            echo
+            echo "${APP_REPO_LINE}"
+            echo
+            echo "Environments in scope: ${ENV_LIST}."
+            echo
+            echo "_Environment settings, CI/CD details, and a run summary will be added in a follow-up comment._"
+          } > /tmp/app-issue-body.md
+
+          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue
+        id: issue
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
+          TITLE:     ${{ steps.body.outputs.title }}
+        run: |
+          URL=$(gh issue create -R "$REPO_FULL" \
+            --title "$TITLE" \
+            --body-file /tmp/app-issue-body.md)
+          NUMBER="${URL##*/}"
+          echo "url=$URL"        >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 12. Comment on the infra repo issue with the full infrastructure summary:
+  #      per-env terraform plan results, verification test counts, and whether
+  #      this run was a provision or reconcile. Runs after apply + verify.
+  # ────────────────────────────────────────────────────────────────────────────
+  comment-infra-issue:
+    name: Comment on infra issue
+    needs: [resolve-inputs, create-infra-repo, create-infra-issue, apply, verify]
+    runs-on: ubuntu-latest
+    steps:
+      # One download step per env — same artifact naming pattern as plan/verify.
       - name: Download plan artifact (dev)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
@@ -774,9 +886,6 @@ jobs:
           name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-prod
           path: plans/prod
 
-      # Verify summary artifacts — same per-env pattern as plans. Each contains
-      # a tiny key=value file with passed/failed counts from the infra repo's
-      # verification script (scripts/verify.sh).
       - name: Download verify summary (dev)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
@@ -807,28 +916,17 @@ jobs:
           find verify -maxdepth 3 -print | head -50
           echo "::endgroup::"
 
-      - name: Build issue body
-        id: body
+      - name: Build and post infra summary comment
         env:
-          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
-          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
-          INFRA_TEMPLATE:    ${{ needs.resolve-inputs.outputs.infra_template_repo }}
-          INFRA_REPO_FULL:   ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          GH_TOKEN:           ${{ secrets.GH_PAT }}
+          ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
+          INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
           INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
-          APP_TEMPLATE:      ${{ needs.resolve-inputs.outputs.app_template_repo }}
-          APP_REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
-          REPO_EXISTED:      ${{ needs.create-app-repo.outputs.repo_existed }}
-          PROVISION_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          INFRA_ISSUE_NUMBER: ${{ needs.create-infra-issue.outputs.infra_issue_number }}
+          PROVISION_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
 
-          # Render comma-joined env list for the title and intro.
-          ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
-
-          # Per-env plan parsing + cross-env aggregation. The download steps
-          # above put files at predictable paths:
-          #   plans/<env>/plan-output.txt
-          #   verify/<env>/verify-summary.txt
           STATUSES=""
           TOTAL_ADD=0; TOTAL_CHANGE=0; TOTAL_DESTROY=0
           TOTAL_PASS=0; TOTAL_FAIL=0
@@ -857,8 +955,6 @@ jobs:
               fi
             fi
 
-            # Verify summary (passed=N\nfailed=N). Missing file → counts stay
-            # at zero for that env, which surfaces as 0/0 in the totals row.
             VERIFY_FILE="verify/${env}/verify-summary.txt"
             if [[ -f "$VERIFY_FILE" ]]; then
               ENV_PASS=$(grep -oE '^passed=[0-9]+' "$VERIFY_FILE" | cut -d= -f2 || echo 0)
@@ -868,72 +964,32 @@ jobs:
             fi
           done
 
-          # Surface aggregates as job outputs for finalize to render.
-          {
-            echo "total_added=$TOTAL_ADD"
-            echo "total_changed=$TOTAL_CHANGE"
-            echo "total_destroyed=$TOTAL_DESTROY"
-            echo "total_passed=$TOTAL_PASS"
-            echo "total_failed=$TOTAL_FAIL"
-          } >> "$GITHUB_OUTPUT"
-
-          # The issue title/body depends only on whether the application repo
-          # was created in this run. The workflow is otherwise idempotent.
-          if [[ "$REPO_EXISTED" == "false" ]]; then
-            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) created from template [\`${APP_TEMPLATE}\`](https://github.com/${APP_TEMPLATE})."
-            TITLE_PREFIX="Bootstrap run"
+          if [[ "$INFRA_REPO_EXISTED" == "false" ]]; then
+            RUN_TYPE="Provision"
           else
-            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) already exists — this run reconciled the requested environment(s) against the current canonical infrastructure definition."
-            TITLE_PREFIX="Reconcile run"
-          fi
-
-          if [[ "$INFRA_REPO_EXISTED" == "true" ]]; then
-            INFRA_REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) already existed. Terraform reconciled Azure against the repo's current canonical contents, so infra changes made between runs are applied even though app and infra evolve independently."
-          else
-            INFRA_REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) created from template [\`${INFRA_TEMPLATE}\`](https://github.com/${INFRA_TEMPLATE}) and used as the canonical Terraform source for this run."
+            RUN_TYPE="Reconcile"
           fi
 
           {
-            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo "## ${RUN_TYPE} summary"
             echo
-            echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
-            echo
-            echo "## Repository"
-            echo
-            echo "${APP_REPO_LINE}"
-            echo
-            echo "${INFRA_REPO_LINE}"
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Provisioning run | [#${{ github.run_id }}]($PROVISION_URL) |"
+            echo "| Resources changed | + ${TOTAL_ADD} · ~ ${TOTAL_CHANGE} · - ${TOTAL_DESTROY} |"
+            echo "| Verification tests | passed ${TOTAL_PASS} · failed ${TOTAL_FAIL} |"
             echo
             echo "## Environment status"
             echo
             printf '%s' "${STATUSES}"
-            if [[ "$REPO_EXISTED" == "false" ]]; then
-              echo
-              echo "## Application CI"
-              echo
-              echo "Template generation auto-triggered the CI workflow on the new repo. It builds, tests, and (if the dev environment is in this run) deploys to dev. A summary comment will be appended once that run finishes."
-            fi
-          } > /tmp/issue-body.md
+          } > /tmp/infra-comment.md
 
-          # Title for downstream jobs.
-          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
-
-      - name: Open issue
-        id: issue
-        env:
-          GH_TOKEN:  ${{ secrets.GH_PAT }}
-          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
-          TITLE:     ${{ steps.body.outputs.title }}
-        run: |
-          URL=$(gh issue create -R "$REPO_FULL" \
-            --title "$TITLE" \
-            --body-file /tmp/issue-body.md)
-          NUMBER="${URL##*/}"
-          echo "url=$URL"        >> "$GITHUB_OUTPUT"
-          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+          if [[ -n "$INFRA_ISSUE_NUMBER" ]]; then
+            gh issue comment "$INFRA_ISSUE_NUMBER" -R "$INFRA_REPO_FULL" --body-file /tmp/infra-comment.md
+          fi
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 11. Configure GitHub Environments and variables — one job per environment.
+  # 13. Configure GitHub Environments and variables — one job per environment.
   #     Always runs (idempotent: PUT for the env, PATCH→POST for each variable)
   #     so re-invocations can roll out additional envs to an existing app repo.
   # ────────────────────────────────────────────────────────────────────────────
@@ -980,7 +1036,7 @@ jobs:
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 12. Register federated credentials on the platform-eng App Registration so
+  # 14. Register federated credentials on the platform-eng App Registration so
   #      OIDC tokens issued for the new app repo are accepted by Entra ID.
   #      Without these, deploy.yml in the new repo fails on `azure/login` with
   #      AADSTS70021 ("No matching federated identity record found").
@@ -1039,7 +1095,7 @@ jobs:
           echo "Registered federated credential '${NAME}' for subject '${SUBJECT}'"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 13. Observe the CI run that template-generation auto-triggered.
+  # 15. Observe the CI run that template-generation auto-triggered.
   #
   #     When a repo is created from a template, GitHub pushes the initial
   #     commit to `main` and any `on: push` workflows fire automatically. So
@@ -1096,33 +1152,33 @@ jobs:
           echo "CI run #${CI_RUN_ID} succeeded: ${CI_RUN_URL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 14. Final summary + comment on the bootstrap issue.
+  # 16. Final summary + comment on the app repo issue. Covers app-specific
+  #     outcomes: env config result, federated credentials, CI/CD run.
+  #     Waits for configure-environments and configure-federated-credentials
+  #     so their results are available even on reconcile runs (where observe-ci
+  #     is skipped and would not transitively hold for those jobs).
   # ────────────────────────────────────────────────────────────────────────────
   finalize:
     name: Summarize and comment
-    needs: [resolve-inputs, create-app-repo, create-run-issue, observe-ci]
-    # Always runs (with always()), regardless of whether observe-ci was
-    # skipped because the repo already existed. Reconcile runs still need
-    # their own summary comment on the per-run issue.
+    needs: [resolve-inputs, create-app-repo, create-run-issue, create-infra-issue, configure-environments, configure-federated-credentials, observe-ci]
+    # Always runs regardless of whether observe-ci was skipped (reconcile runs).
     if: always() && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Build summary and post issue comment
         env:
-          GH_TOKEN:      ${{ secrets.GH_PAT }}
-          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
-          REPO_EXISTED:  ${{ needs.create-app-repo.outputs.repo_existed }}
-          ISSUE_NUMBER:  ${{ needs.create-run-issue.outputs.issue_number }}
-          ISSUE_URL:     ${{ needs.create-run-issue.outputs.issue_url }}
-          PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          CI_RUN_ID:     ${{ needs.observe-ci.outputs.ci_run_id }}
-          CI_RUN_URL:    ${{ needs.observe-ci.outputs.ci_run_url }}
-          CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
-          ADD:           ${{ needs.create-run-issue.outputs.total_added }}
-          CHANGE:        ${{ needs.create-run-issue.outputs.total_changed }}
-          DESTROY:       ${{ needs.create-run-issue.outputs.total_destroyed }}
-          PASSED:        ${{ needs.create-run-issue.outputs.total_passed }}
-          FAILED:        ${{ needs.create-run-issue.outputs.total_failed }}
+          GH_TOKEN:        ${{ secrets.GH_PAT }}
+          REPO_FULL:       ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:    ${{ needs.create-app-repo.outputs.repo_existed }}
+          ISSUE_NUMBER:    ${{ needs.create-run-issue.outputs.issue_number }}
+          ISSUE_URL:       ${{ needs.create-run-issue.outputs.issue_url }}
+          INFRA_ISSUE_URL: ${{ needs.create-infra-issue.outputs.infra_issue_url }}
+          PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_RUN_ID:       ${{ needs.observe-ci.outputs.ci_run_id }}
+          CI_RUN_URL:      ${{ needs.observe-ci.outputs.ci_run_url }}
+          CI_CONCLUSION:   ${{ needs.observe-ci.outputs.ci_conclusion }}
+          ENV_RESULT:      ${{ needs.configure-environments.result }}
+          CRED_RESULT:     ${{ needs.configure-federated-credentials.result }}
         run: |
           fmt() {
             local url="$1" status="$2"
@@ -1133,20 +1189,14 @@ jobs:
             fi
           }
 
-          # The summary depends only on whether the app repo was created in
-          # this run. The workflow is otherwise idempotent and reconciliatory.
-          # Single-line strings: hard line breaks become literal newlines in
-          # the rendered Markdown and cause mid-sentence wrapping.
-          PROV_ROW="| Provisioning                     | [#${{ github.run_id }}]($PROVISION_URL) |"
-          RES_ROW="| Resources changed                | + ${ADD:-0} · ~ ${CHANGE:-0} · - ${DESTROY:-0} |"
-          TEST_ROW="| Verification tests               | passed ${PASSED:-0} · failed ${FAILED:-0} |"
+          PROV_ROW="| Provisioning | [#${{ github.run_id }}]($PROVISION_URL) |"
+          ENV_ROW="| Environment settings/secrets | \`${ENV_RESULT:-unknown}\` |"
+          CRED_ROW="| Federated credentials | \`${CRED_RESULT:-unknown}\` |"
 
           if [[ "$REPO_EXISTED" == "false" ]]; then
             HEADING="Bootstrap run summary"
-            # Append the CI run id so the issue links straight to the source of
-            # truth (the app repo's Actions run) for the build/test/deploy.
-            CI_ROW="| CI + dev deploy (app repo)       | $(fmt "$CI_RUN_URL" "${CI_CONCLUSION:-skipped}")${CI_RUN_ID:+ (run #${CI_RUN_ID})} |"
-            ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$CI_ROW" "$RES_ROW" "$TEST_ROW")
+            CI_ROW="| CI + dev deploy (app repo) | $(fmt "$CI_RUN_URL" "${CI_CONCLUSION:-skipped}")${CI_RUN_ID:+ (run #${CI_RUN_ID})} |"
+            ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$ENV_ROW" "$CRED_ROW" "$CI_ROW")
             if [[ "$CI_CONCLUSION" == "success" ]]; then
               CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
             else
@@ -1155,27 +1205,27 @@ jobs:
             fi
           else
             HEADING="Reconcile run summary"
-            ROWS=$(printf '%s\n%s\n%s' "$PROV_ROW" "$RES_ROW" "$TEST_ROW")
-            CLOSING="Requested environment(s) reconciled against the current canonical contents of the infrastructure repo. This may add, update, or remove resources when the infra definition evolves between runs, while preserving the deployed application image (Terraform ignores App Service container changes after the initial create). If you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
+            ROWS=$(printf '%s\n%s\n%s' "$PROV_ROW" "$ENV_ROW" "$CRED_ROW")
+            CLOSING="Requested environment(s) reconciled. Environment settings and federated credentials have been updated. If you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
           fi
 
-          BODY=$(cat <<MARKDOWN
-          ## ${HEADING}
-
-          | Stage                            | Result |
-          |----------------------------------|--------|
-          ${ROWS}
-
-          ${CLOSING}
-          MARKDOWN
-          )
+          {
+            echo "## ${HEADING}"
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            printf '%s\n' "${ROWS}"
+            echo
+            echo "${CLOSING}"
+          } > /tmp/app-comment.md
 
           # Step summary on the platform side
-          echo "$BODY" >> "$GITHUB_STEP_SUMMARY"
-          echo ""      >> "$GITHUB_STEP_SUMMARY"
-          [[ -n "$ISSUE_URL" ]] && echo "Run issue: $ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/app-comment.md >> "$GITHUB_STEP_SUMMARY"
+          echo ""                 >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$ISSUE_URL" ]]       && echo "App repo issue: $ISSUE_URL"         >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$INFRA_ISSUE_URL" ]] && echo "Infra repo issue: $INFRA_ISSUE_URL" >> "$GITHUB_STEP_SUMMARY"
 
           # Comment on the per-run issue in the app repo
           if [[ -n "$ISSUE_NUMBER" ]]; then
-            gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body "$BODY"
+            gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body-file /tmp/app-comment.md
           fi
