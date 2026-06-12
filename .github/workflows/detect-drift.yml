@@ -286,10 +286,24 @@ jobs:
           RESOURCE_GROUP:    ${{ steps.names.outputs.resource_group }}
           REGISTRY:          ${{ vars.CONTAINER_REGISTRY_URL }}
         run: |
-          set -uo pipefail
+          # GitHub invokes `run:` steps as `bash --noprofile --norc -e -o
+          # pipefail {0}`, so errexit (-e) is ON by default. This step
+          # DELIBERATELY inspects terraform's own exit codes — in particular
+          # `terraform plan -refresh-only -detailed-exitcode` returns 2 when it
+          # finds drift, which is a SUCCESS for us, not a failure. With errexit
+          # on, that 2 would abort the step before we capture it (the symptom:
+          # "Process completed with exit code 2" and no further output, because
+          # terraform's stdout/stderr is redirected to a file). So disable
+          # errexit here and keep nounset + pipefail.
+          set +e -u -o pipefail
 
-          # jq ships on ubuntu-latest; read the env list into a bash array.
-          mapfile -t ENVS < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+          # Read the env list into an array WITHOUT mapfile (keeps the step
+          # portable to older bash and easy to validate locally). jq ships on
+          # ubuntu-latest.
+          ENVS=()
+          while IFS= read -r env_line; do
+            [[ -n "$env_line" ]] && ENVS+=("$env_line")
+          done < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
 
           SUMMARY=""          # short per-env status lines (issue body)
           DETAILS=""          # full refresh-only output per env (issue comment)
@@ -449,9 +463,11 @@ jobs:
             echo "Drift issue opened: $ISSUE_URL"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # Make the run visibly red (and signal any caller) when drift or an error
-      # was found. The issue is already created above, so reporting is never
-      # lost to this failure.
+      # Drift is an expected, reportable condition — NOT a workflow failure.
+      # When drift is found we open the issue (above) and leave the run green.
+      # The run only goes red when the check itself could not run (errored
+      # env: init/plan failure, missing directory), so a real problem with the
+      # drift sweep is visible and any workflow_call caller can react.
       - name: Conclude
         if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
         env:
@@ -459,6 +475,8 @@ jobs:
           DRIFTED:  ${{ steps.detect.outputs.drifted_envs }}
           ERRORED:  ${{ steps.detect.outputs.errored_envs }}
         run: |
-          [[ -n "$DRIFTED" ]] && echo "::error::Drift detected for '${APP_NAME}' in: ${DRIFTED}"
-          [[ -n "$ERRORED" ]] && echo "::error::Drift check errored for '${APP_NAME}' in: ${ERRORED}"
-          exit 1
+          [[ -n "$DRIFTED" ]] && echo "::notice::Drift detected for '${APP_NAME}' in: ${DRIFTED} (reported via issue; run not failed)"
+          if [[ -n "$ERRORED" ]]; then
+            echo "::error::Drift check errored for '${APP_NAME}' in: ${ERRORED}"
+            exit 1
+          fi
