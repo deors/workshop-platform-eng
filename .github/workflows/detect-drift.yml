@@ -306,10 +306,22 @@ jobs:
           done < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
 
           SUMMARY=""          # short per-env status lines (issue body)
-          DETAILS=""          # full refresh-only output per env (issue comment)
+          DETAILS=""          # full findings per env (issue comment)
           DRIFTED_ENVS=()
           ERRORED_ENVS=()
+          SKIPPED_ENVS=()     # envs genuinely never provisioned (no managed
+                              # state AND no resource group) — not an error.
 
+          # Drift is decided by the (managed state × resource group) matrix:
+          #
+          #   state \ RG     RG absent                 RG present
+          #   ───────────────────────────────────────────────────────────────
+          #   no state       skip (never provisioned)  DRIFT (unmanaged RG)
+          #   has state      DRIFT (all missing)        refresh-only plan
+          #
+          # "managed state" = terraform state list reports ≥1 resource (covers
+          # both a missing state blob and an empty one). The bottom-right cell
+          # is the classic case and uses `plan -refresh-only -detailed-exitcode`.
           for env in "${ENVS[@]}"; do
             DIR="infra-repo/terraform/environments/${env}"
             if [[ ! -d "$DIR" ]]; then
@@ -318,6 +330,26 @@ jobs:
               continue
             fi
 
+            # Resource group provisioned by this env (matches the provisioner's
+            # naming convention `rg-<app>-<env>`).
+            RG_NAME="rg-${APP_NAME}-${env}"
+
+            # 1. Does the environment's resource group exist in Azure?
+            #    `az group exists` prints true/false and exits 0; a non-zero exit
+            #    means we could not determine it — a real error.
+            RG_EXISTS=$(az group exists --name "$RG_NAME" 2> rg-check-${env}.txt)
+            RG_CODE=$?
+            if [[ $RG_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not query resource group \`${RG_NAME}\`)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — resource group query error"$'\n\n```\n'"$(cat rg-check-${env}.txt)"$'\n```\n'
+              continue
+            fi
+
+            # 2. Initialise Terraform and read how many resources the recorded
+            #    state manages. `init` only touches the tfstate storage account,
+            #    never the environment RG, so it is safe even when the RG is
+            #    absent. A missing or empty state blob yields zero resources.
             pushd "$DIR" >/dev/null
 
             # Required vars. For a refresh-only plan the image/registry values
@@ -339,7 +371,6 @@ jobs:
               -backend-config="use_azuread_auth=true" \
               > init-output.txt 2>&1
             INIT_CODE=$?
-
             if [[ $INIT_CODE -ne 0 ]]; then
               SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform init failed)"$'\n'
               ERRORED_ENVS+=("$env")
@@ -348,34 +379,75 @@ jobs:
               continue
             fi
 
-            # -refresh-only: compare recorded state against real Azure resources.
-            # -detailed-exitcode: 0 = no drift, 2 = drift, 1 = error.
-            # -no-color: keep the captured output readable inside markdown blocks.
-            terraform plan \
-              -refresh-only \
-              -detailed-exitcode \
-              -no-color \
-              -input=false \
-              > plan-output.txt 2>&1
-            PLAN_CODE=$?
-
+            # stdout = resource addresses (counted); stderr kept separate so a
+            # warning can't inflate the count.
+            terraform state list > state-list.txt 2> state-err.txt
+            STATE_CODE=$?
+            if [[ $STATE_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not read terraform state)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — state read error"$'\n\n```\n'"$(cat state-err.txt)"$'\n```\n'
+              popd >/dev/null
+              continue
+            fi
+            STATE_COUNT=$(grep -c . state-list.txt)
             popd >/dev/null
 
-            case "$PLAN_CODE" in
-              0)
-                SUMMARY+="- \`${env}\` — ✅ no drift (state matches Azure)"$'\n'
-                ;;
-              2)
-                SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from Azure)"$'\n'
-                DRIFTED_ENVS+=("$env")
-                DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n<details><summary>refresh-only plan output</summary>\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
-                ;;
-              *)
-                SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
-                ERRORED_ENVS+=("$env")
-                DETAILS+=$'\n'"### \`${env}\` — plan error"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n'
-                ;;
-            esac
+            STATE_PRESENT=false; [[ "$STATE_COUNT" -gt 0 ]] && STATE_PRESENT=true
+
+            # 3. Classify using the (state × resource-group) matrix.
+            if [[ "$STATE_PRESENT" == "false" && "$RG_EXISTS" == "false" ]]; then
+              # Neither managed state nor a resource group: genuinely never
+              # provisioned. Not drift, not an error.
+              SUMMARY+="- \`${env}\` — ⏭️ skipped (not provisioned — no state, no resource group)"$'\n'
+              SKIPPED_ENVS+=("$env")
+
+            elif [[ "$STATE_PRESENT" == "false" && "$RG_EXISTS" == "true" ]]; then
+              # Resources exist that Terraform doesn't manage — an orphaned RG.
+              SUMMARY+="- \`${env}\` — 🔴 **drift detected** (resource group \`${RG_NAME}\` exists but is unmanaged — state is empty)"$'\n'
+              DRIFTED_ENVS+=("$env")
+              az resource list --resource-group "$RG_NAME" \
+                --query "[].{name:name, type:type, location:location}" \
+                --output table > orphan-${env}.txt 2>&1
+              DETAILS+=$'\n'"### \`${env}\` — unmanaged resources (state empty, RG present)"$'\n\n'"<details><summary>resources in \`${RG_NAME}\`</summary>"$'\n\n```\n'"$(cat orphan-${env}.txt)"$'\n```\n\n</details>\n'
+
+            elif [[ "$STATE_PRESENT" == "true" && "$RG_EXISTS" == "false" ]]; then
+              # State says this env is provisioned, but the RG is gone — every
+              # managed resource is missing.
+              SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state has ${STATE_COUNT} resources but resource group \`${RG_NAME}\` is missing)"$'\n'
+              DRIFTED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — all resources missing (state present, RG absent)"$'\n\n<details><summary>managed resources expected to exist</summary>\n\n```\n'"$(cat "${DIR}/state-list.txt")"$'\n```\n\n</details>\n'
+
+            else
+              # Both present: classic Terraform refresh-only drift detection.
+              # -refresh-only: compare recorded state against real resources.
+              # -detailed-exitcode: 0 = no drift, 2 = drift, 1 = error.
+              # -no-color: keep the captured output readable inside markdown.
+              pushd "$DIR" >/dev/null
+              terraform plan \
+                -refresh-only \
+                -detailed-exitcode \
+                -no-color \
+                -input=false \
+                > plan-output.txt 2>&1
+              PLAN_CODE=$?
+              popd >/dev/null
+              case "$PLAN_CODE" in
+                0)
+                  SUMMARY+="- \`${env}\` — ✅ no drift (state matches Azure)"$'\n'
+                  ;;
+                2)
+                  SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from Azure)"$'\n'
+                  DRIFTED_ENVS+=("$env")
+                  DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n<details><summary>refresh-only plan output</summary>\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
+                  ;;
+                *)
+                  SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
+                  ERRORED_ENVS+=("$env")
+                  DETAILS+=$'\n'"### \`${env}\` — plan error"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n'
+                  ;;
+              esac
+            fi
           done
 
           # Persist body fragments for the reporting step (multiline-safe).
@@ -390,6 +462,7 @@ jobs:
             echo "error_detected=$ERROR_DETECTED"
             echo "drifted_envs=${DRIFTED_ENVS[*]:-}"
             echo "errored_envs=${ERRORED_ENVS[*]:-}"
+            echo "skipped_envs=${SKIPPED_ENVS[*]:-}"
           } >> "$GITHUB_OUTPUT"
 
           # Always surface the per-app result in the job step summary.
