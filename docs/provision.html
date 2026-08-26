@@ -246,6 +246,15 @@
           <div class="field-error" data-for="azure_client_id">Must be a GUID.</div>
         </div>
 
+        <div>
+          <label for="location">Azure region <span class="req">*</span></label>
+          <input type="text" id="location" name="location" required
+                 placeholder="westeurope"
+                 pattern="^[a-z][a-z0-9]+$" />
+          <span class="hint">Region for the Terraform state storage account. No default — must be set explicitly.</span>
+          <div class="field-error" data-for="location">Lowercase letters and digits, e.g. <code>westeurope</code>.</div>
+        </div>
+
       </div>
 
       <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
@@ -379,6 +388,7 @@
         azure_tenant_id: v('azure_tenant_id'),
         azure_subscription_id: v('azure_subscription_id'),
         azure_client_id: v('azure_client_id'),
+        location: v('location'),
         infra_template_repo: v('infra_template_repo'),
       }
     };

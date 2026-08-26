@@ -30,8 +30,7 @@ on:
       location:
         description: Azure region for the tfstate storage account
         type: string
-        required: false
-        default: westeurope
+        required: true
       principal_id:
         description: "Object ID to assign Storage Blob Data Contributor (optional)"
         type: string
@@ -57,10 +56,9 @@ on:
         type: string
         required: true
       location:
-        description: Azure region for the tfstate storage account
+        description: Azure region for the tfstate storage account (e.g. westeurope)
         type: string
-        required: false
-        default: westeurope
+        required: true
       principal_id:
         description: "Object ID to assign Storage Blob Data Contributor (optional — leave empty to skip RBAC)"
         type: string
@@ -107,7 +105,7 @@ jobs:
           AZURE_TENANT_ID="${IN_TENANT_ID:-$RD_TENANT_ID}"
           AZURE_SUBSCRIPTION_ID="${IN_SUBSCRIPTION_ID:-$RD_SUBSCRIPTION_ID}"
           AZURE_CLIENT_ID="${IN_CLIENT_ID:-$RD_CLIENT_ID}"
-          LOCATION="${IN_LOCATION:-${RD_LOCATION:-westeurope}}"
+          LOCATION="${IN_LOCATION:-$RD_LOCATION}"
           PRINCIPAL_ID="${IN_PRINCIPAL_ID:-${RD_PRINCIPAL_ID:-}}"
 
           MISSING=()
@@ -115,6 +113,7 @@ jobs:
           [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
           [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
+          [[ -z "$LOCATION"              ]] && MISSING+=(location)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1

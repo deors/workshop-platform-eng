@@ -25,6 +25,10 @@ on:
         description: Client ID of the Azure service principal / managed identity used for OIDC login
         type: string
         required: true
+      location:
+        description: Azure region for all the resources (e.g. westeurope)
+        type: string
+        required: true
       infra_template_repo:
         description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-azure-webapp)"
         type: string
@@ -87,6 +91,7 @@ jobs:
       azure_tenant_id:         ${{ steps.params.outputs.azure_tenant_id }}
       azure_subscription_id:   ${{ steps.params.outputs.azure_subscription_id }}
       azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
+      location:                ${{ steps.params.outputs.location }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
       infra_template_ref:      ${{ steps.params.outputs.infra_template_ref }}
@@ -110,6 +115,7 @@ jobs:
           WD_TENANT_ID:          ${{ github.event.inputs.azure_tenant_id }}
           WD_SUB_ID:             ${{ github.event.inputs.azure_subscription_id }}
           WD_CLIENT_ID:          ${{ github.event.inputs.azure_client_id }}
+          WD_LOCATION:           ${{ github.event.inputs.location }}
           WD_INFRA_TEMPLATE:     ${{ github.event.inputs.infra_template_repo }}
           WD_INFRA_TEMPLATE_REF: ${{ github.event.inputs.infra_template_ref }}
           WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
@@ -123,6 +129,7 @@ jobs:
           RD_TENANT_ID:          ${{ github.event.client_payload.azure_tenant_id }}
           RD_SUB_ID:             ${{ github.event.client_payload.azure_subscription_id }}
           RD_CLIENT_ID:          ${{ github.event.client_payload.azure_client_id }}
+          RD_LOCATION:           ${{ github.event.client_payload.location }}
           RD_INFRA_TEMPLATE:     ${{ github.event.client_payload.infra_template_repo }}
           RD_INFRA_TEMPLATE_REF: ${{ github.event.client_payload.infra_template_ref }}
           RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
@@ -137,6 +144,7 @@ jobs:
           AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
           AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
+          LOCATION="${WD_LOCATION:-$RD_LOCATION}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
@@ -156,6 +164,7 @@ jobs:
           [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
           [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
+          [[ -z "$LOCATION"              ]] && MISSING+=(location)
           [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
@@ -180,6 +189,7 @@ jobs:
           # flow through job outputs to downstream jobs.
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
+          echo "location=$LOCATION"                             >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
           echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
@@ -473,6 +483,7 @@ jobs:
       azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
       azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+      location:              ${{ needs.resolve-inputs.outputs.location }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 7. Terraform plan – one job per target environment, after scan passes
@@ -528,12 +539,14 @@ jobs:
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
           SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          LOCATION:               ${{ needs.resolve-inputs.outputs.location }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
-          # Write tfvars using printf to avoid shell interpolation of HCL syntax
+          # Write tfvars using printf to avoid shell interpolation of HCL syntax.
           printf 'app_name               = "%s"\n' "$APP_NAME"               > terraform.tfvars
           printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >> terraform.tfvars
+          printf 'location               = "%s"\n' "$LOCATION"               >> terraform.tfvars
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 
@@ -645,11 +658,15 @@ jobs:
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
           SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          LOCATION:               ${{ needs.resolve-inputs.outputs.location }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
+          # Must match the plan job's tfvars exactly — a `location` that differs
+          # between plan and apply would move every resource to another region.
           printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID"        >  terraform.tfvars
           printf 'app_name               = "%s"\n' "$APP_NAME"               >> terraform.tfvars
+          printf 'location               = "%s"\n' "$LOCATION"               >> terraform.tfvars
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 

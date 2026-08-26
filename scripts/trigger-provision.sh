@@ -23,6 +23,7 @@ Required (flag OR env var):
   --azure-tenant-id       <guid>                    AZURE_TENANT_ID
   --azure-subscription-id <guid>                    AZURE_SUBSCRIPTION_ID
   --azure-client-id       <guid>                    AZURE_CLIENT_ID
+  --location              <region>                  LOCATION
   --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
   --app-template-repo     <owner/name>              APP_TEMPLATE_REPO
 
@@ -49,6 +50,7 @@ Example:
     --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
     --azure-subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \
     --azure-client-id        00000000-0000-0000-0000-000000000000 \
+    --location               westeurope \
     --infra-template-repo    deors/template-terraform-azure-webapp \
     --app-template-repo      deors/template-helloworld-express
 USAGE
@@ -61,6 +63,7 @@ ENVIRONMENT="${ENVIRONMENT:-}"
 AZURE_TENANT_ID="${AZURE_TENANT_ID:-}"
 AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
 AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}"
+LOCATION="${LOCATION:-}"
 INFRA_TEMPLATE_REPO="${INFRA_TEMPLATE_REPO:-}"
 APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
@@ -75,6 +78,7 @@ while [[ $# -gt 0 ]]; do
     --azure-tenant-id)        AZURE_TENANT_ID="$2";        shift 2 ;;
     --azure-subscription-id)  AZURE_SUBSCRIPTION_ID="$2";  shift 2 ;;
     --azure-client-id)        AZURE_CLIENT_ID="$2";        shift 2 ;;
+    --location)               LOCATION="$2";               shift 2 ;;
     --infra-template-repo)    INFRA_TEMPLATE_REPO="$2";    shift 2 ;;
     --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
@@ -93,6 +97,7 @@ MISSING=()
 [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=("--azure-tenant-id / AZURE_TENANT_ID")
 [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=("--azure-subscription-id / AZURE_SUBSCRIPTION_ID")
 [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
+[[ -z "$LOCATION"              ]] && MISSING+=("--location / LOCATION")
 [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
 [[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=("--app-template-repo / APP_TEMPLATE_REPO")
 
@@ -124,6 +129,7 @@ PAYLOAD=$(jq -nc \
   --arg tid        "$AZURE_TENANT_ID" \
   --arg sub        "$AZURE_SUBSCRIPTION_ID" \
   --arg cid        "$AZURE_CLIENT_ID" \
+  --arg loc        "$LOCATION" \
   --arg infra_tmpl "$INFRA_TEMPLATE_REPO" \
   --arg app_tmpl   "$APP_TEMPLATE_REPO" \
   --arg image      "$CONTAINER_IMAGE" \
@@ -137,6 +143,7 @@ PAYLOAD=$(jq -nc \
       azure_tenant_id:       $tid,
       azure_subscription_id: $sub,
       azure_client_id:       $cid,
+      location:              $loc,
       infra_template_repo:   $infra_tmpl,
       app_template_repo:     $app_tmpl
     }

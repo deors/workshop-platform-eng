@@ -45,7 +45,8 @@ on:
     #
     # Every OTHER parameter comes from repository variables on schedule runs
     # (DRIFT_APP_NAMES, DRIFT_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
-    # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID).
+    # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID,
+    # DRIFT_AZURE_LOCATION).
     - cron: "0 6 * * 1"
 
   workflow_dispatch:
@@ -72,6 +73,10 @@ on:
         description: Client ID of the Azure service principal used for OIDC login
         type: string
         required: true
+      location:
+        description: Azure region of the resources under check (e.g. westeurope)
+        type: string
+        required: true
 
   workflow_call:
     inputs:
@@ -94,6 +99,10 @@ on:
         required: true
       azure_client_id:
         description: Client ID of the Azure service principal used for OIDC login
+        type: string
+        required: true
+      location:
+        description: Azure region of the resources under check
         type: string
         required: true
     secrets:
@@ -128,6 +137,7 @@ jobs:
       azure_tenant_id:       ${{ steps.params.outputs.azure_tenant_id }}
       azure_subscription_id: ${{ steps.params.outputs.azure_subscription_id }}
       azure_client_id:       ${{ steps.params.outputs.azure_client_id }}
+      location:              ${{ steps.params.outputs.location }}
 
     steps:
       - name: Resolve inputs
@@ -139,6 +149,7 @@ jobs:
           IN_TENANT:    ${{ inputs.azure_tenant_id }}
           IN_SUB:       ${{ inputs.azure_subscription_id }}
           IN_CLIENT:    ${{ inputs.azure_client_id }}
+          IN_LOCATION:  ${{ inputs.location }}
           # Schedule fallbacks (no inputs available on cron runs). All
           # DRIFT_-prefixed so it is unambiguous they exist solely to drive the
           # automated weekly drift sweep.
@@ -147,6 +158,7 @@ jobs:
           VAR_TENANT:   ${{ vars.DRIFT_AZURE_TENANT_ID }}
           VAR_SUB:      ${{ vars.DRIFT_AZURE_SUBSCRIPTION_ID }}
           VAR_CLIENT:   ${{ vars.DRIFT_AZURE_CLIENT_ID }}
+          VAR_LOCATION: ${{ vars.DRIFT_AZURE_LOCATION }}
         run: |
           set -euo pipefail
 
@@ -155,14 +167,16 @@ jobs:
           AZURE_TENANT_ID="${IN_TENANT:-$VAR_TENANT}"
           AZURE_SUBSCRIPTION_ID="${IN_SUB:-$VAR_SUB}"
           AZURE_CLIENT_ID="${IN_CLIENT:-$VAR_CLIENT}"
+          LOCATION="${IN_LOCATION:-$VAR_LOCATION}"
 
           MISSING=()
           [[ -z "$APP_NAMES"            ]] && MISSING+=(app_names)
           [[ -z "$AZURE_TENANT_ID"      ]] && MISSING+=(azure_tenant_id)
           [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"      ]] && MISSING+=(azure_client_id)
+          [[ -z "$LOCATION"             ]] && MISSING+=(location)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
-            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_APP_NAMES / DRIFT_AZURE_TENANT_ID / DRIFT_AZURE_SUBSCRIPTION_ID / DRIFT_AZURE_CLIENT_ID)"
+            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_APP_NAMES / DRIFT_AZURE_TENANT_ID / DRIFT_AZURE_SUBSCRIPTION_ID / DRIFT_AZURE_CLIENT_ID / DRIFT_AZURE_LOCATION)"
             exit 1
           fi
 
@@ -208,12 +222,14 @@ jobs:
             echo "azure_tenant_id=$AZURE_TENANT_ID"
             echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"
             echo "azure_client_id=$AZURE_CLIENT_ID"
+            echo "location=$LOCATION"
           } >> "$GITHUB_OUTPUT"
 
       - name: Summary
         env:
           APPS: ${{ steps.params.outputs.apps }}
           ENVS: ${{ steps.params.outputs.environments }}
+          LOC:  ${{ steps.params.outputs.location }}
         run: |
           {
             echo "## Drift detection — sweep parameters"
@@ -223,6 +239,7 @@ jobs:
             echo "| Trigger      | \`${{ github.event_name }}\` |"
             echo "| Applications | \`$APPS\` |"
             echo "| Environments | \`$ENVS\` |"
+            echo "| Location     | \`$LOC\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -295,6 +312,7 @@ jobs:
           SUBSCRIPTION_ID:   ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           STORAGE_ACCOUNT:   ${{ steps.names.outputs.storage_account }}
           RESOURCE_GROUP:    ${{ steps.names.outputs.resource_group }}
+          LOCATION:          ${{ needs.resolve-inputs.outputs.location }}
           REGISTRY:          ${{ vars.CONTAINER_REGISTRY_URL }}
         run: |
           # GitHub invokes `run:` steps as `bash --noprofile --norc -e -o
@@ -421,12 +439,14 @@ jobs:
             #    absent. A missing or empty state blob yields zero resources.
             pushd "$DIR" >/dev/null
 
-            # Required vars. For a refresh-only plan the image/registry values
-            # are immaterial (no config changes are proposed), but the providers
-            # still need them to initialise. Use the same placeholder the
-            # provisioner relies on for reconcile runs.
+            # Required vars. For a refresh-only plan the image/registry/location
+            # values are immaterial (the comparison is prior state against
+            # reality, never config against state), but the providers still need
+            # every required variable to initialise. Use the same placeholder
+            # the provisioner relies on for reconcile runs.
             printf 'app_name               = "%s"\n' "$APP_NAME"        >  terraform.tfvars
             printf 'subscription_id        = "%s"\n' "$SUBSCRIPTION_ID" >> terraform.tfvars
+            printf 'location               = "%s"\n' "$LOCATION"        >> terraform.tfvars
             printf 'container_image        = "%s"\n' "mcr.microsoft.com/appsvc/staticsite:latest" >> terraform.tfvars
             printf 'container_registry_url = "%s"\n' "${REGISTRY:-}"    >> terraform.tfvars
 

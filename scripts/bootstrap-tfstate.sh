@@ -5,7 +5,10 @@
 #
 # Usage:
 #   bootstrap-tfstate.sh --app-name <name> --azure-subscription-id <id> \
-#                        [--location <region>] [--principal-id <object-id>]
+#                        --location <region> [--principal-id <object-id>]
+#
+# --app-name, --azure-subscription-id and --location are all required; there is
+# no default location.
 #
 # Outputs (stdout, last lines):
 #   TFSTATE_RESOURCE_GROUP=rg-<app>-tfstate
@@ -25,7 +28,7 @@ skip() { echo "[bootstrap-tfstate] → $*" >&2; }
 
 APP_NAME=""
 AZURE_SUBSCRIPTION_ID=""
-LOCATION="westeurope"
+LOCATION=""           # required — no default, see the check below
 PRINCIPAL_ID=""      # optional: object ID to assign Storage Blob Data Contributor
 
 while [[ $# -gt 0 ]]; do
@@ -40,6 +43,9 @@ done
 
 [[ -z "$APP_NAME"              ]] && err "--app-name is required"
 [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && err "--azure-subscription-id is required"
+# No default location: the storage account is created wherever this points, and
+# a silently-defaulted region puts the state backend somewhere nobody expects.
+[[ -z "$LOCATION"              ]] && err "--location is required"
 
 # ── Name derivation ───────────────────────────────────────────────────────────
 # Storage account names: 3-24 chars, lowercase alphanumeric only, globally unique.
