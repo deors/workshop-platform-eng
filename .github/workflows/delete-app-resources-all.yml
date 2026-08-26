@@ -93,7 +93,7 @@ jobs:
     needs: validate
     uses: ./.github/workflows/delete-resource-group.yml
     with:
-      resource_group_name:   rg-tfstate-${{ needs.validate.outputs.app_name }}
+      resource_group_name:   rg-${{ needs.validate.outputs.app_name }}-tfstate
       azure_tenant_id:       ${{ github.event.inputs.azure_tenant_id }}
       azure_subscription_id: ${{ github.event.inputs.azure_subscription_id }}
       azure_client_id:       ${{ github.event.inputs.azure_client_id }}

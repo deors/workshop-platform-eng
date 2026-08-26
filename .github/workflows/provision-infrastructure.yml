@@ -205,7 +205,7 @@ jobs:
           APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
           SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}" >> "$GITHUB_OUTPUT"
-          echo "resource_group=rg-tfstate-${APP_NAME}"        >> "$GITHUB_OUTPUT"
+          echo "resource_group=rg-${APP_NAME}-tfstate"        >> "$GITHUB_OUTPUT"
 
       - name: Build environment matrix
         id: matrix

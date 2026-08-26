@@ -143,7 +143,7 @@ operator                ┌─────────────────�
                              ▼                                ▼
       ┌──────────────────────────────────┐  ┌────────────────────────────────┐
       │ Azure subscription               │  │  GitHub: app repo              │
-      │  ├── rg-tfstate-<app>            │  │   ├── from <app_template_repo> │
+      │  ├── rg-<app>-tfstate            │  │   ├── from <app_template_repo> │
       │  │     └── sttf<app><sub>        │  │   ├── envs: dev/staging/prod   │
       │  │           └── tfstate/{env}/  │  │   ├── per-env variables        │
       │  └── rg-<app>-{dev|stg|prod}     │  │   ├── ci.yml — build & test &  │
@@ -285,7 +285,7 @@ every resource inside it:
 | Resource group pattern | Purpose |
 | --- | --- |
 | `rg-<app_name>-dev` / `staging` / `prod` | Per-environment application resources |
-| `rg-tfstate-<app_name>` | Terraform state storage |
+| `rg-<app_name>-tfstate` | Terraform state storage |
 
 Tags are **merged** — existing tags not present in `tags_json` are left
 unchanged. Re-running the workflow with updated values is safe.
@@ -339,7 +339,7 @@ Remove `--dry-run` to apply. Requires `az` and `jq`.
   `app-myapp-dev`, `asp-myapp-prod`). Two exceptions, both driven by Azure
   Storage's 24-char globally-unique naming constraint:
   - **tfstate SA** — `sttf<app12><sub8>` (per-subscription/per-app; lives
-    in `rg-tfstate-<app>`, shared by all envs of that app).
+    in `rg-<app>-tfstate`, shared by all envs of that app).
   - **VNet flow-logs SA** — `stflow<app+env>` capped at 24 chars (per-env;
     lives inside the per-env RG).
 - **Tags.** Every resource is tagged with `application`, `environment`,
@@ -412,7 +412,7 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 - [x] CLI trigger script (`scripts/trigger-provision.sh`)
 - [x] Destroy/decommission workflow for retiring an app cleanly (delete RG +
       tfstate blob + GitHub Environments + fed-creds) -- repos are never deleted
-- [x] Scheduled drift detection — nightly (also on-demand and callable)
+- [x] Scheduled drift detection — weekly (also on-demand and callable)
       `terraform plan -refresh-only` sweep that compares recorded state against
       live Azure resources for one or more apps (matrix) and opens an issue
       with the per-environment findings when drift or an error is detected

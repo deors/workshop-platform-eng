@@ -8,7 +8,7 @@
 #                        [--location <region>] [--principal-id <object-id>]
 #
 # Outputs (stdout, last lines):
-#   TFSTATE_RESOURCE_GROUP=rg-tfstate-<app>
+#   TFSTATE_RESOURCE_GROUP=rg-<app>-tfstate
 #   TFSTATE_STORAGE_ACCOUNT=sttf<app12><sub8>
 #   TFSTATE_CONTAINER=tfstate
 
@@ -50,7 +50,7 @@ APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:
 SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
 
 STORAGE_ACCOUNT_NAME="sttf${APP_SHORT}${SUB_SHORT}"
-RESOURCE_GROUP_NAME="rg-tfstate-${APP_NAME}"
+RESOURCE_GROUP_NAME="rg-${APP_NAME}-tfstate"
 CONTAINER_NAME="tfstate"
 
 log "App name            : $APP_NAME"

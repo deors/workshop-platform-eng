@@ -15,7 +15,7 @@ name: Detect Drift
 #
 # Three entry points:
 #
-#   1. schedule          – nightly cron. `schedule` events cannot carry inputs,
+#   1. schedule          – weekly cron. `schedule` events cannot carry inputs,
 #                          so the run reads its parameters from repository
 #                          variables (vars.*) — see "Resolve inputs" below.
 #   2. workflow_dispatch – ad-hoc manual run from the GitHub UI.
@@ -31,10 +31,22 @@ name: Detect Drift
 
 on:
   schedule:
-    # 03:00 UTC nightly. Parameters come from repository variables on schedule
-    # runs (DRIFT_APP_NAMES, DRIFT_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
+    # Weekly, Mondays at 06:00 UTC.
+    #
+    # To change the cadence, edit the `cron` expression below. It CANNOT be
+    # driven by a repository variable or environment variable: GitHub does not
+    # evaluate `${{ }}` expressions anywhere in the `on:` block, so a templated
+    # value is parsed as a literal (malformed) cron and the schedule silently
+    # never fires. The expression must be a hard-coded string in this file.
+    #
+    # Note that GitHub delays scheduled runs under load — often by minutes,
+    # occasionally by more than an hour — and disables them entirely on repos
+    # with 60 days of no activity. Treat the time below as "no earlier than".
+    #
+    # Every OTHER parameter comes from repository variables on schedule runs
+    # (DRIFT_APP_NAMES, DRIFT_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
     # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID).
-    - cron: "0 3 * * *"
+    - cron: "0 6 * * 1"
 
   workflow_dispatch:
     inputs:
@@ -97,7 +109,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Never run two drift sweeps concurrently for the same ref — a nightly run
+  # Never run two drift sweeps concurrently for the same ref — a scheduled run
   # and a manual run would otherwise race on the same tfstate reads.
   group: detect-drift-${{ github.ref }}
   cancel-in-progress: false
@@ -129,7 +141,7 @@ jobs:
           IN_CLIENT:    ${{ inputs.azure_client_id }}
           # Schedule fallbacks (no inputs available on cron runs). All
           # DRIFT_-prefixed so it is unambiguous they exist solely to drive the
-          # automated nightly drift sweep.
+          # automated weekly drift sweep.
           VAR_APPS:     ${{ vars.DRIFT_APP_NAMES }}
           VAR_ENV:      ${{ vars.DRIFT_ENVIRONMENTS }}
           VAR_TENANT:   ${{ vars.DRIFT_AZURE_TENANT_ID }}
@@ -252,7 +264,7 @@ jobs:
           {
             echo "infra_repo=${OWNER}/${APP_NAME}-infra"
             echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}"
-            echo "resource_group=rg-tfstate-${APP_NAME}"
+            echo "resource_group=rg-${APP_NAME}-tfstate"
           } >> "$GITHUB_OUTPUT"
 
       - name: Checkout infrastructure repo

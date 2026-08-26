@@ -499,7 +499,7 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
 Checkov · {env}                   ✓ no findings
 Terraform fmt check               ✓ formatting clean
-Bootstrap tfstate storage         ✓ rg-tfstate-test-webapp + storage account + container
+Bootstrap tfstate storage         ✓ rg-test-webapp-tfstate + storage account + container
 Plan · {env}                      ✓ terraform plan generated, artifact uploaded
 Apply · {env}                     ✓ terraform apply succeeded
 Verify · {env}                    ✓ control-plane assertions passed
@@ -534,8 +534,15 @@ skipped and only the infra issue and final summary are written.
 The `detect-drift.yml` workflow compares the recorded Terraform state against
 the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
 the affected application's **infrastructure repo** (`<app>-infra`) when it finds
-drift or an error. It has three entry points: a nightly `schedule`, manual
-`workflow_dispatch`, and `workflow_call` (so other workflows can reuse it).
+drift or an error. It has three entry points: a weekly `schedule` (Mondays at
+06:00 UTC), manual `workflow_dispatch`, and `workflow_call` (so other workflows
+can reuse it).
+
+To change the cadence, edit the `cron` expression in `detect-drift.yml`. It
+cannot be moved to a repository variable — GitHub does not evaluate `${{ }}`
+expressions in the `on:` block, so a templated cron never fires. Scheduled runs
+are also best-effort: GitHub delays them under load and disables them after 60
+days of repository inactivity.
 
 For each environment the workflow classifies the result from the
 (managed-state × resource-group) matrix:
@@ -556,7 +563,7 @@ status, a follow-up comment carries the structured breakdown
 plan output, binary plan and plan JSON are uploaded to the run as the
 `drift-<app>` artifact.
 
-Manual and called runs pass their parameters as inputs. The **nightly run
+Manual and called runs pass their parameters as inputs. The **scheduled run
 cannot** — GitHub `schedule` events carry no inputs — so it reads them from
 **repository variables**, all `DRIFT_`-prefixed to make clear they exist solely
 to drive the automated sweep:
@@ -586,7 +593,7 @@ read-only and never binds a GitHub Environment, so no extra OIDC subject is
 needed. Issue creation in the `<app>-infra` repo uses the same `GH_PAT` secret
 from step 7.
 
-If `DRIFT_APP_NAMES` (or any required GUID variable) is missing, the nightly
+If `DRIFT_APP_NAMES` (or any required GUID variable) is missing, the scheduled
 run fails fast with a clear error instead of silently doing nothing.
 
 ---

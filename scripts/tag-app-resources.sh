@@ -2,8 +2,8 @@
 # tag-app-resources.sh
 # Merge an arbitrary set of tags onto every Azure resource that belongs to an
 # app. Resource groups are discovered by the naming conventions:
-#   rg-<app_name>-<env>   (per-environment groups)
-#   rg-tfstate-<app_name> (Terraform state backend)
+#   rg-<app_name>-<env>     (per-environment groups)
+#   rg-<app_name>-tfstate   (Terraform state backend)
 # Uses `az tag update --operation Merge` so existing tags are preserved.
 #
 # Requires: az (Azure CLI), jq.
@@ -22,7 +22,7 @@ Required (flag OR env var):
   --azure-client-id       <guid>    AZURE_CLIENT_ID
   --tags-json             <json>    TAGS_JSON
     A JSON object whose keys and values become the tags applied to every
-    resource. Example: '{"airid":"309005","Application":"myapp","CreatedBy":"user"}'
+    resource. Example: '{"AppId":"12345","Application":"myapp","CreatedBy":"user"}'
 
 Optional (flag OR env var):
   --azure-client-secret   <secret>  AZURE_CLIENT_SECRET
@@ -41,7 +41,7 @@ Example:
     --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
     --azure-subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \
     --azure-client-id        00000000-0000-0000-0000-000000000000 \
-    --tags-json              '{"airid":"309005","Application":"myapp","CreatedBy":"user"}'
+    --tags-json              '{"AppId":"12345","Application":"myapp","CreatedBy":"user"}'
 USAGE
 }
 
@@ -153,11 +153,11 @@ RGS=()
 while IFS= read -r rg; do
   [[ -n "$rg" ]] && RGS+=("$rg")
 done < <(az group list \
-  --query "[?starts_with(name, 'rg-${APP_NAME}-') || name == 'rg-tfstate-${APP_NAME}'].name" \
+  --query "[?starts_with(name, 'rg-${APP_NAME}-')].name" \
   --output tsv | sort)
 
 if [[ ${#RGS[@]} -eq 0 ]]; then
-  echo "No resource groups found matching 'rg-${APP_NAME}-*' or 'rg-tfstate-${APP_NAME}'. Nothing to do."
+  echo "No resource groups found matching 'rg-${APP_NAME}-*'. Nothing to do."
   exit 0
 fi
 
