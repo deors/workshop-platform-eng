@@ -195,6 +195,67 @@ jobs:
           subscription-id: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
           client-id:       ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
 
+      # Deleting the resource group removes the resources but leaves this
+      # environment's state blob fully populated, describing resources that no
+      # longer exist. A later re-provision would then start from a state full of
+      # ghosts. Removing the blob keeps state and reality in step.
+      #
+      # This runs AFTER delete-rg (see `needs`) so the state is only discarded
+      # once the resources it tracked are actually gone.
+      #
+      # The blob is SOFT-deleted: bootstrap-tfstate.sh enables versioning and a
+      # 30-day delete-retention on the account, so this stays recoverable for 30
+      # days rather than being destroyed outright. That safety net is
+      # deliberate — do not purge versions here.
+      - name: Delete Terraform state blob
+        id: state_blob
+        env:
+          APP_NAME:        ${{ needs.validate.outputs.app_name }}
+          TARGET_ENV:      ${{ needs.validate.outputs.environment }}
+          SUBSCRIPTION_ID: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
+        run: |
+          set -euo pipefail
+
+          # Must match the formula in scripts/bootstrap-tfstate.sh exactly.
+          APP_SHORT=$(echo "$APP_NAME"        | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
+          SUB_SHORT=$(echo "$SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
+          STORAGE_ACCOUNT="sttf${APP_SHORT}${SUB_SHORT}"
+          BLOB="${TARGET_ENV}/terraform.tfstate"
+          echo "State blob: ${STORAGE_ACCOUNT}/tfstate/${BLOB}"
+
+          # Capture and classify rather than treating every failure as "absent":
+          # a missing account is a normal outcome (the tfstate RG may already be
+          # gone), but an auth or permission error must not masquerade as one.
+          if ! EXISTS=$(az storage blob exists \
+                          --account-name    "$STORAGE_ACCOUNT" \
+                          --container-name  tfstate \
+                          --name            "$BLOB" \
+                          --auth-mode       login \
+                          --query exists --output tsv 2>/tmp/blob-err.txt); then
+            if grep -qiE "ResourceNotFound|StorageAccountNotFound|ContainerNotFound|does not exist|not found" /tmp/blob-err.txt; then
+              STATUS="Skipped (state container not found)"
+              echo "$STATUS"
+            else
+              STATUS="Error (see log)"
+              echo "::warning::Could not query the state blob; it may need manual cleanup:"
+              cat /tmp/blob-err.txt >&2
+            fi
+          elif [[ "$EXISTS" == "true" ]]; then
+            az storage blob delete \
+              --account-name   "$STORAGE_ACCOUNT" \
+              --container-name tfstate \
+              --name           "$BLOB" \
+              --auth-mode      login \
+              --output none
+            STATUS="Deleted (soft-deleted, recoverable for 30 days)"
+            echo "$STATUS"
+          else
+            STATUS="Not found"
+            echo "$STATUS"
+          fi
+
+          echo "state_blob_status=$STATUS" >> "$GITHUB_OUTPUT"
+
       - name: Remove OIDC federated credential
         env:
           APP_ID:        ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
@@ -219,6 +280,7 @@ jobs:
           ENVIRONMENT:     ${{ needs.validate.outputs.environment }}
           RESOURCE_GROUP:  ${{ needs.validate.outputs.resource_group_name }}
           RG_STATUS:       ${{ needs.delete-rg.outputs.resource_group_status }}
+          BLOB_STATUS:     ${{ steps.state_blob.outputs.state_blob_status }}
         run: |
           {
             echo "## Delete App Resource Group"
@@ -227,6 +289,7 @@ jobs:
             echo "- Environment: $ENVIRONMENT"
             echo "- Resource group: $RESOURCE_GROUP"
             echo "- Resource group delete status: ${RG_STATUS:-Unknown}"
+            echo "- Terraform state blob (\`$ENVIRONMENT/terraform.tfstate\`): ${BLOB_STATUS:-Unknown}"
             echo "- GitHub environment cleanup: executed"
             echo "- OIDC federated credential cleanup: executed"
           } >> "$GITHUB_STEP_SUMMARY"
