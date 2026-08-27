@@ -1338,6 +1338,6 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Provisioning run | [#${{ github.run_id }}]($PROVISION_URL) |"
-            [[ -n "$APP_ISSUE_URL" ]]   && echo "| App repo issue   | $APP_ISSUE_URL |"
-            [[ -n "$INFRA_ISSUE_URL" ]] && echo "| Infra repo issue | $INFRA_ISSUE_URL |"
+            if [[ -n "$APP_ISSUE_URL" ]];   then echo "| App repo issue   | $APP_ISSUE_URL |";   fi
+            if [[ -n "$INFRA_ISSUE_URL" ]]; then echo "| Infra repo issue | $INFRA_ISSUE_URL |"; fi
           } >> "$GITHUB_STEP_SUMMARY"
