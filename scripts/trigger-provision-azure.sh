@@ -25,9 +25,16 @@ Required (flag OR env var):
   --azure-client-id       <guid>                    AZURE_CLIENT_ID
   --location              <region>                  LOCATION
   --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
-  --app-template-repo     <owner/name>              APP_TEMPLATE_REPO
 
 Optional:
+  --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
+                                            (default: empty — provisions
+                                             infrastructure only, no app repo)
+  --infra-template-ref     <ref>         INFRA_TEMPLATE_REF
+                                            (tag, branch or SHA pinning the infra
+                                             template; default: its default branch)
+  --app-template-ref       <ref>         APP_TEMPLATE_REF
+                                            (same, for the app template)
   --container-image        <ref>          CONTAINER_IMAGE
                                             (default: mcr.microsoft.com/appsvc/staticsite:latest;
                                              a placeholder that App Service can pull anonymously —
@@ -65,7 +72,9 @@ AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
 AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}"
 LOCATION="${LOCATION:-}"
 INFRA_TEMPLATE_REPO="${INFRA_TEMPLATE_REPO:-}"
+INFRA_TEMPLATE_REF="${INFRA_TEMPLATE_REF:-}"
 APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
+APP_TEMPLATE_REF="${APP_TEMPLATE_REF:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 CONTAINER_REGISTRY_URL="${CONTAINER_REGISTRY_URL:-}"
 CI_WORKFLOW_FILE="${CI_WORKFLOW_FILE:-}"
@@ -80,7 +89,9 @@ while [[ $# -gt 0 ]]; do
     --azure-client-id)        AZURE_CLIENT_ID="$2";        shift 2 ;;
     --location)               LOCATION="$2";               shift 2 ;;
     --infra-template-repo)    INFRA_TEMPLATE_REPO="$2";    shift 2 ;;
+    --infra-template-ref)     INFRA_TEMPLATE_REF="$2";     shift 2 ;;
     --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
+    --app-template-ref)       APP_TEMPLATE_REF="$2";       shift 2 ;;
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
     --container-registry-url) CONTAINER_REGISTRY_URL="$2"; shift 2 ;;
     --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
@@ -91,6 +102,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Required-value check ─────────────────────────────────────────────────────
+# app_template_repo is NOT required: omitting it provisions infrastructure only,
+# matching the workflow's `with_app_repo` behaviour.
 MISSING=()
 [[ -z "$APP_NAME"              ]] && MISSING+=("--app-name / APP_NAME")
 [[ -z "$ENVIRONMENT"           ]] && MISSING+=("--environment / ENVIRONMENT")
@@ -99,7 +112,6 @@ MISSING=()
 [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
 [[ -z "$LOCATION"              ]] && MISSING+=("--location / LOCATION")
 [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
-[[ -z "$APP_TEMPLATE_REPO"     ]] && MISSING+=("--app-template-repo / APP_TEMPLATE_REPO")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: missing required value(s):" >&2
@@ -123,6 +135,8 @@ if [[ -z "$PLATFORM_REPO" ]]; then
 fi
 
 # ── Build the client_payload (omit empty optional fields) ────────────────────
+# Omitted keys let the workflow apply its own defaults; sending them as empty
+# strings would instead override those defaults with nothing.
 PAYLOAD=$(jq -nc \
   --arg app        "$APP_NAME" \
   --arg env        "$ENVIRONMENT" \
@@ -131,7 +145,9 @@ PAYLOAD=$(jq -nc \
   --arg cid        "$AZURE_CLIENT_ID" \
   --arg loc        "$LOCATION" \
   --arg infra_tmpl "$INFRA_TEMPLATE_REPO" \
+  --arg infra_ref  "$INFRA_TEMPLATE_REF" \
   --arg app_tmpl   "$APP_TEMPLATE_REPO" \
+  --arg app_ref    "$APP_TEMPLATE_REF" \
   --arg image      "$CONTAINER_IMAGE" \
   --arg reg        "$CONTAINER_REGISTRY_URL" \
   --arg ci         "$CI_WORKFLOW_FILE" \
@@ -144,16 +160,21 @@ PAYLOAD=$(jq -nc \
       azure_subscription_id: $sub,
       azure_client_id:       $cid,
       location:              $loc,
-      infra_template_repo:   $infra_tmpl,
-      app_template_repo:     $app_tmpl
+      infra_template_repo:   $infra_tmpl
     }
-    + (if $image != "" then {container_image:        $image} else {} end)
-    + (if $reg   != "" then {container_registry_url: $reg}   else {} end)
-    + (if $ci    != "" then {ci_workflow_file:       $ci}    else {} end))
+    + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
+    + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
+    + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)
+    + (if $image     != "" then {container_image:        $image}     else {} end)
+    + (if $reg       != "" then {container_registry_url: $reg}       else {} end)
+    + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
   }')
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 echo "Dispatching 'azure-provision-infrastructure' to ${PLATFORM_REPO}…"
+if [[ -z "$APP_TEMPLATE_REPO" ]]; then
+  echo "  (no --app-template-repo: provisioning infrastructure only)"
+fi
 echo "$PAYLOAD" | gh api \
   --method POST \
   -H "Accept: application/vnd.github+json" \
