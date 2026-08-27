@@ -566,7 +566,7 @@ above. If RBAC is correct, double-check that the workflow is using
 
 Either fix the finding or, if you've judged it a false positive or
 not-applicable, add a justified entry to `.checkov.yaml` documenting why the
-check is skipped. See [`CONTRIBUTING.md`](../CONTRIBUTING.md#terraform) for
+check is skipped. See [`CONTRIBUTING.md`](CONTRIBUTING.md#terraform) for
 the rules around skips.
 
 ---
