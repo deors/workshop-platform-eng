@@ -84,6 +84,13 @@ emit run_url "$URL"
 
 # ── Wait for completion ───────────────────────────────────────────────────────
 gh run watch "$RUN_ID" -R "$REPO" --exit-status >/dev/null 2>&1 || true
-CONCLUSION=$(gh run view "$RUN_ID" -R "$REPO" --json conclusion --jq '.conclusion // "unknown"')
+
+# The `// "unknown"` jq fallback only covers a run with a null conclusion. If the
+# call itself fails — transient API error, revoked token, deleted run — the
+# substitution yields an EMPTY string, and `conclusion` would be emitted as ""
+# instead of one of the documented values. Callers translate that field into a
+# pass/fail decision, so an empty value has no defined meaning. Default it.
+CONCLUSION=$(gh run view "$RUN_ID" -R "$REPO" --json conclusion --jq '.conclusion // "unknown"' 2>/dev/null) || CONCLUSION=""
+CONCLUSION="${CONCLUSION:-unknown}"
 echo "Conclusion: ${CONCLUSION}"
 emit conclusion "$CONCLUSION"

@@ -1,6 +1,6 @@
 ---
 title:       Workshop · Platform Engineering
-description: Self-service Azure provisioning, driven by GitHub Actions + Terraform.
+description: Self-service provisioning & reconciling application resources, multi-cloud, driven by GitHub Actions + Terraform.
 ---
 
 <!--
@@ -11,27 +11,29 @@ and does not duplicate the content below.
 
 **📚 Documentation:**
 [Self-service provisioning ➜](provision.html) ·
-[Setup guide](SETUP.md) ·
+[Setup: GitHub](setup-github.md) ·
+[Setup: Azure](setup-azure.md) ·
 [Contributing](CONTRIBUTING.md) ·
-[Pages info](PAGES.md) ·
+[Pages info](pages.md) ·
 [Source on GitHub]({{ site.github.repository_url }})
 
 ---
 
 # Workshop · Platform Engineering
 
-A self-service platform that provisions Azure infrastructure, driven by GitHub
-Actions and Terraform. External systems trigger the platform through
-`repository_dispatch` or `workflow_dispatch` events; the platform takes care of
-standing up secure, observable, production-grade environments without the
-requesting team having to write any infrastructure code.
+A self-service platform that provisions and reconciles application resources
+across Azure, AWS and other clouds, driven by GitHub Actions and Terraform.
+External systems trigger the platform through `repository_dispatch` or
+`workflow_dispatch` events; the platform takes care of standing up secure,
+observable, production-grade environments without the requesting team having to
+write any infrastructure code.
 
 The platform supports two operating modes in a single workflow:
 
-- **Full mode** (infra + app) — provisions Azure resources *and* bootstraps the
-  application repository (GitHub Environments, variables, OIDC federated
-  credentials, CI observation).
-- **Infra-only mode** — provisions Azure resources only (Landing Zones,
+- **Full mode** (infra + app) — provisions cloud resources *and* bootstraps the
+  application repository (GitHub Environments, variables, OIDC trust,
+  CI observation).
+- **Infra-only mode** — provisions cloud resources only (Landing Zones,
   foundational platform components, shared services). The application repository
   phase is skipped entirely. Activated by leaving `app_template_repo` empty.
 
@@ -44,23 +46,34 @@ The platform supports two operating modes in a single workflow:
 
 ## What this platform does
 
-Given an existing Azure subscription, the platform provisions an opinionated
-**Azure App Service (Linux, container)** stack for an application across three
-environments — `dev`, `staging`, `prod` — following Microsoft's well-architected
-guidance for security, observability, and connectivity:
+Given an existing cloud account, the platform provisions an opinionated
+container stack for an application across three environments — `dev`,
+`staging`, `prod` — following each cloud's well-architected guidance for
+security, observability and connectivity.
 
-- VNet integration for outbound traffic, Private Endpoint for inbound
-- Per-env network exposure: dev is publicly reachable for HTTP smoke tests;
-  staging and prod are PE-only
-- User-assigned Managed Identity (no credentials in app settings)
-- Key Vault references for secrets
-- Application Insights + Log Analytics with full diagnostic categories
-- VNet flow logs (90-day retention) for network observability
-- HTTPS-only, TLS 1.3, FTP disabled, **end-to-end TLS encryption** between
-  the App Service front end and the worker (via `azapi_update_resource`)
-- Zone-redundant deployment and autoscale in production
-- Staging slot for blue/green swaps in `staging` and `prod`
-- Tightened NSG rules (no `protocol=*` / `port=*` blanket allows)
+Whatever the target, every environment comes out with the same properties:
+
+- **Private by default** — public reachability is a per-environment decision,
+  with `dev` open for smoke tests and `staging`/`prod` locked down
+- **No long-lived credentials** — a platform identity federated to GitHub via
+  OIDC, and a workload identity for the app itself
+- **Observability wired in** — centralised logs, metrics and traces, with
+  network-level flow logs retained for auditing
+- **HTTPS-only, TLS 1.3**, with certificates issued and renewed automatically
+- **Resilient in production** — multi-zone placement and autoscaling
+- **Zero-downtime releases** — blue/green or slot-based swaps
+- **Least-privilege networking** — no blanket allow rules
+
+The concrete services differ per cloud. Each archetype documents its own
+stack:
+
+| Cloud | Stack | Provision | Setup |
+|-------|-------|-----------|-------|
+| **Azure** | App Service (Linux, container) with VNet integration, Private Endpoint, Managed Identity, Key Vault references, Application Insights + Log Analytics, deployment slots | [form](provision-azure.html) | [guide](setup-azure.md) |
+| **AWS** | ECS Fargate behind an Application Load Balancer, with VPC + NAT, ACM certificates, CloudWatch logs and alarms, X-Ray, CodeDeploy blue/green | *coming soon* | *coming soon* |
+
+The GitHub side of the setup is [identical for every
+cloud](setup-github.md) — do that once, then follow the guide for your target.
 
 ---
 
@@ -71,13 +84,13 @@ the application phase is entirely optional:
 
 | Component                 | Template                           | Repo naming         | Role                                                                                           |
 |---------------------------|------------------------------------|---------------------|------------------------------------------------------------------------------------------------|
-| **Infra**                 | `template-terraform-azure-webapp`  | `{app-name}-infra`  | IaC: VNet, App Service, monitoring, etc. Terraform modules. Always runs.                       |
+| **Infra**                 | one `template-terraform-*` archetype | `{app-name}-infra`  | IaC: networking, compute, monitoring, etc. Terraform modules. Always runs.                     |
 | **App Code** *(optional)* | `template-helloworld-express`      | `{app-name}`        | Runtime: Node.js, Python, Java, etc. Owns CI/CD. Runs only when `app_template_repo` is set.    |
 
 When `app_template_repo` is provided (full mode), the platform:
 
 1. Creates `{app-name}-infra` from the **infra template** (Terraform) ← infrastructure provisioning
-2. Runs Terraform against the infra repo to stand up Azure resources
+2. Runs Terraform against the infra repo to stand up the cloud resources
 3. Creates `{app-name}` from the **app template** (e.g., Node.js starter) ← app CI/CD logic
 4. Sets GitHub environment variables and federated credentials on the app repo
 
@@ -96,22 +109,37 @@ This **decoupling** means:
 
 Each **infra template** is a self-contained Terraform module set covering an infrastructure pattern:
 
-- **`template-terraform-azure-webapp`** (current): App Service with VNet, Private Endpoint, autoscale, observability
+- **`template-terraform-azure-webapp`**: App Service with VNet, Private Endpoint, autoscale, observability
       - Modules: monitoring (Log Analytics), networking (VNet, NSGs, PE), webapp (App Service Plan, Web App, Managed Identity, Autoscale)
       - Environments: dev (P0v3, public), staging (P1v3, autoscale, PE-only), prod (P2v3, zone-redundant, PE-only)
-      - Checkov baselines: prod-strict (mandatory HA, zone redundancy, PE-only), dev/staging-relaxed (dev allows public access for testing)
+
+- **`template-terraform-aws-fargate`**: ECS Fargate behind an ALB, with certificates and blue/green deployments
+      - Modules: monitoring (CloudWatch, X-Ray), networking (VPC, subnets, NAT, ALB, ACM), webapp (ECS cluster/service, task roles, autoscaling)
+      - Environments: dev (public ALB), staging and prod (internal, autoscaled)
 
 - **Future archetypes:** `template-terraform-azure-aks` (Kubernetes), `template-terraform-gcp-cloudrun` (Google Cloud), etc.
 
-When provisioning, you specify which infra template to use as an input parameter to the `provision-infrastructure` workflow.
+Each archetype ships its own Checkov baselines — strict for prod (mandatory HA
+and private networking), relaxed for dev/staging — and its own `scripts/verify.sh`.
+
+When provisioning, you specify which infra template to use as an input
+parameter, which is what selects the target architecture.
 
 ### State management
 
-State is kept in Azure Storage, with one storage account per
-**subscription + application** so that unrelated apps sharing a subscription
-remain decoupled. The state account is AAD-auth-only — no shared keys.
+State lives in the target cloud's own object storage, with one backend per
+**account + application** so that unrelated apps sharing an account remain
+decoupled, and one state object per environment inside it. The platform
+bootstraps that backend itself — it is a platform concern, not something each
+template re-implements — and hardens it the same way everywhere: versioned,
+encrypted at rest, private, and reachable only over TLS.
 
-Beyond the Azure side, the platform also takes care of the **application
+| Cloud | Backend | Identity model |
+|-------|---------|----------------|
+| **Azure** | Storage account `sttf<app><sub>`, container `tfstate` | AAD-auth only — no shared keys |
+| **AWS** | S3 bucket `tf-state-<app>-<account8>` | IAM via OIDC role assumption |
+
+Beyond the cloud side, the platform also takes care of the **application
 repository**: it creates a new repo from a template you choose, configures
 GitHub Environments + variables, registers the per-env OIDC federated
 credentials on the platform service principal, observes the auto-triggered
@@ -122,8 +150,8 @@ test counts.
 
 ```text
 operator                ┌─────────────────────────────────────────────┐
-  ├─ web UI (Pages) ──► │  GitHub Actions: provision-infrastructure   │
-  ├─ trigger script ──► │                                             │
+  ├─ web UI (Pages) ──► │  GitHub Actions: <cloud> - Provision &      │
+  ├─ trigger script ──► │                  Reconcile App Resources    │
   └─ raw curl ────────► │   1. resolve & validate inputs              │
                         │   2. checkov scan (per env)                 │
                         │   3. terraform fmt                          │
@@ -142,14 +170,14 @@ operator                ┌─────────────────�
             OIDC, no secrets │                                │ GH_PAT
                              ▼                                ▼
       ┌──────────────────────────────────┐  ┌────────────────────────────────┐
-      │ Azure subscription               │  │  GitHub: app repo              │
-      │  ├── rg-<app>-tfstate            │  │   ├── from <app_template_repo> │
-      │  │     └── sttf<app><sub>        │  │   ├── envs: dev/staging/prod   │
-      │  │           └── tfstate/{env}/  │  │   ├── per-env variables        │
-      │  └── rg-<app>-{dev|stg|prod}     │  │   ├── ci.yml — build & test &  │
+      │ cloud account                    │  │  GitHub: app repo              │
+      │  ├── state backend, per app      │  │   ├── from <app_template_repo> │
+      │  │     └── one object per env    │  │   ├── envs: dev/staging/prod   │
+      │  │           tfstate/{env}/      │  │   ├── per-env variables        │
+      │  └── one group per environment   │  │   ├── ci.yml — build & test &  │
       │        ├── networking + flow log │  │   │   deploy to dev triggered  │
-      │        ├── monitoring (LA, AI)   │  │   │   by push on main          │
-      │        └── webapp + PE + slot    │  │   ├── release.yml — deploy to  │
+      │        ├── monitoring + tracing  │  │   │   by push on main          │
+      │        └── compute + ingress     │  │   ├── release.yml — deploy to  │
       │                                  │  │   │   staging/prod triggered   │
       │                                  │  │   │   by new release creation  │
       │                                  │  │   └── per-run issue + summary  │
@@ -162,27 +190,38 @@ operator                ┌─────────────────�
 .
 ├── .checkov.nonprod.yaml               # Relaxed skips for dev/staging
 ├── .checkov.yaml                       # Checkov rules + skips for prod (strict)
-├── .github/workflows/
-│   ├── bootstrap-tfstate.yml           # Reusable: create the tfstate storage
-│   ├── delete-app-resources-all.yml    # Manual: delete all env RGs + tfstate for an app
-│   ├── delete-app-resources-single.yml # Manual/callable: delete one env RG for an app
-│   ├── delete-resource-group.yml       # Reusable: delete a single Azure resource group
+├── .github/workflows/                  # one file per cloud; names are prefixed "Azure - " / "AWS - "
+│   ├── bootstrap-tfstate.yml           # Reusable: create the state backend
+│   ├── bootstrap-tfstate-aws.yml       #   └── AWS counterpart
+│   ├── delete-app-resources-all.yml    # Manual: delete every env + state for an app
+│   ├── delete-app-resources-all-aws.yml
+│   ├── delete-app-resources-single.yml # Manual/callable: delete one environment
+│   ├── delete-app-resources-single-aws.yml
+│   ├── delete-resource-group.yml       # Reusable: delete a single resource group
+│   ├── delete-resource-group-aws.yml
 │   ├── detect-drift.yml                # Scheduled/callable: read-only drift sweep
+│   ├── detect-drift-aws.yml
 │   ├── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
 │   ├── tag-app-resources.yml           # Manual: merge compliance tags onto all app resources
-│   └── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
+│   ├── tag-app-resources-aws.yml
+│   ├── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
+│   └── verify-infrastructure-aws.yml
 ├── docs/                               # GitHub Pages site (Jekyll-rendered)
 │   ├── _config.yml                     # Jekyll config
 │   ├── CONTRIBUTING.md                 # Contribution guidelines (Pages mirror)
 │   ├── index.md                        # Pages homepage (this file)
-│   ├── PAGES.md                        # Pages site info & how to enable
-│   ├── provision.html                  # Self-service provisioning form
-│   └── SETUP.md                        # Full setup guide
-├── scripts/
-│   ├── bootstrap-tfstate.sh            # Idempotent az-cli bootstrap script
-│   ├── tag-app-resources.sh            # Merge an arbitrary tag set onto all app resources
-│   ├── trigger-provision.sh            # CLI wrapper around repository_dispatch
-│   └── watch-run.sh                    # Poll a remote workflow run + outputs
+│   ├── pages.md                        # Pages site map & how to enable
+│   ├── provision.html                  # Provisioning entry point — picks a cloud
+│   ├── provision-azure.html            # Self-service provisioning form (Azure)
+│   ├── setup-github.md                 # One-time GitHub setup (every cloud)
+│   └── setup-azure.md                  # One-time Azure setup
+├── scripts/                            # cloud-specific scripts carry an -azure / -aws suffix
+│   ├── bootstrap-tfstate-azure.sh      # Idempotent az-cli state bootstrap (storage account)
+│   ├── bootstrap-tfstate-aws.sh        # Idempotent aws-cli state bootstrap (S3 bucket)
+│   ├── tag-app-resources-azure.sh      # Merge an arbitrary tag set onto all app resources
+│   ├── tag-app-resources-aws.sh        # Same, via the Resource Groups Tagging API
+│   ├── trigger-provision-azure.sh      # CLI wrapper around repository_dispatch
+│   └── watch-run.sh                    # Poll a remote workflow run + outputs (cloud-agnostic)
 ```
 
 > Control-plane verification is no longer defined here. It lives in each infra
@@ -192,38 +231,40 @@ operator                ┌─────────────────�
 
 ## Quick start
 
-A full step-by-step setup (App Registration, federated credentials, RBAC,
-Graph permission, GitHub Environments, GH_PAT secret) lives in the
-[Setup guide](SETUP.md). At a glance:
+Setup is two guides: the GitHub part, identical for every cloud, then the part
+for the cloud you're targeting. At a glance:
 
-1. Push this repo to GitHub.
-2. Create the GitHub Environments `dev`, `staging`, `prod`.
-3. Create an Azure App Registration and configure 4 federated credentials
-   on the platform repo — one branch-scoped (`main`) and three env-scoped.
-4. Grant the service principal three subscription-scoped roles
-   (`Contributor`, `Storage Blob Data Contributor`, `User Access Administrator`)
-   and the Graph application permission `Application.ReadWrite.OwnedBy` so it
-   can manage federated credentials on the application repos it provisions.
-5. Add a `GH_PAT` repo secret with `Contents`/`Administration`/`Actions`/
-   `Environments`/`Variables`/`Issues` write permissions for cross-repo work.
-6. Trigger the workflow — by the **[self-service web UI](provision.html)**,
-   by **`scripts/trigger-provision.sh`**, or by the GitHub Actions UI / API
-   directly.
+1. **[Setup for GitHub](setup-github.md)** — push this repo, create the
+   `dev` / `staging` / `prod` Environments, add the `GH_PAT` secret for
+   cross-repo work.
+2. **Setup for your cloud** — [Azure](setup-azure.md), AWS coming soon:
+   create the platform identity, federate it to GitHub via OIDC so no secrets
+   are stored, and grant it the least privilege needed to bootstrap state and
+   plan changes.
+3. **Trigger a run** — via the **[self-service web UI](provision.html)**, a
+   CLI wrapper such as `scripts/trigger-provision-azure.sh`, or the GitHub
+   Actions UI / API directly.
+
+The state backend itself needs no manual setup: the platform bootstraps it on
+first run and every run thereafter, idempotently.
 
 ## Triggering the platform
 
 ### Self-service web page (recommended)
 
-The [provisioning form](provision.html) explains the platform, validates
-inputs in-browser, shows the equivalent `curl` command for review, and
-dispatches the workflow with a token the operator pastes. See
-[Pages info](PAGES.md) for how the page is hosted and what token scope
-the operator needs.
+The [provisioning page](provision.html) explains how a run works and hands off
+to a per-cloud form. Each form validates inputs in-browser, shows the
+equivalent `curl` command for review, and dispatches the workflow with a token
+the operator pastes. See [Pages info](pages.md) for how the pages are hosted
+and what token scope the operator needs.
 
 ### CLI
 
+One wrapper per cloud, each building that cloud's `repository_dispatch`
+payload. For Azure:
+
 ```bash
-scripts/trigger-provision.sh \
+scripts/trigger-provision-azure.sh \
       --app-name               myapp \
       --environment            dev \
       --azure-tenant-id        22222222-2222-2222-2222-222222222222 \
@@ -239,9 +280,15 @@ for the full reference.
 
 ### GitHub UI
 
-`Actions → Provision Infrastructure → Run workflow` and fill the inputs.
+`Actions → <cloud> - Provision & Reconcile Application Resources → Run workflow`
+and fill the inputs. Every workflow name is prefixed with its cloud, so the
+Azure and AWS pipelines sit side by side in the Actions list.
 
 ### Raw `repository_dispatch`
+
+The `event_type` selects the cloud — for example,
+`azure-provision-infrastructure` in the case of Azure. The payload carries that
+cloud's identity and region parameters:
 
 ```bash
 curl -X POST \
@@ -249,13 +296,14 @@ curl -X POST \
       -H "Accept: application/vnd.github+json" \
       https://api.github.com/repos/<org>/<repo>/dispatches \
       -d '{
-            "event_type": "provision-infrastructure",
+            "event_type": "azure-provision-infrastructure",
             "client_payload": {
                   "app_name":               "myapp",
                   "environment":            "dev",
                   "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
                   "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
                   "azure_client_id":        "11111111-1111-1111-1111-111111111111",
+                  "location":               "westeurope",
                   "infra_template_repo":    "your-org/template-terraform-azure-webapp",
                   "infra_template_ref":     "v1.2.0",
                   "app_template_repo":      "your-org/template-helloworld-express",
@@ -272,8 +320,9 @@ for the `repository_dispatch` endpoint.
 
 ## Compliance tagging
 
-The `tag-app-resources.yml` workflow merges an arbitrary set of tags onto every
-Azure resource that belongs to an app. It is a **day-2 operation** — run it any
+The `tag-app-resources-<cloud>.yml` workflows merge an arbitrary set of tags onto every
+resource that belongs to an app — `tag-app-resources.yml` for Azure,
+`tag-app-resources-aws.yml` for AWS. It is a **day-2 operation** — run it any
 time after resources exist to back-fill governance metadata, adopt a new tagging
 standard, or correct values without reprovisioning.
 
@@ -285,70 +334,88 @@ every resource inside it:
 | Resource group pattern | Purpose |
 | --- | --- |
 | `rg-<app_name>-dev` / `staging` / `prod` | Per-environment application resources |
-| `rg-<app_name>-tfstate` | Terraform state storage |
+| `rg-<app_name>-tfstate` | Terraform state backend |
 
 Tags are **merged** — existing tags not present in `tags_json` are left
 unchanged. Re-running the workflow with updated values is safe.
 
+> **On AWS**, a resource group is a saved tag query rather than a container, so
+> the workflow resolves each group's query and tags the resources it matches.
+> The group names and the merge semantics are the same.
+
 ### Inputs
+
+Three inputs are the same on every cloud; the rest are that cloud's identity
+and region parameters:
 
 | Input | Required | Description |
 | --- | --- | --- |
 | `app_name` | Yes | Application name — used to discover resource groups |
-| `azure_tenant_id` | Yes | Azure Tenant ID |
-| `azure_subscription_id` | Yes | Azure Subscription ID |
-| `azure_client_id` | Yes | Client ID of the OIDC service principal |
 | `tags_json` | Yes | JSON object whose keys/values become the tags, e.g. `{"airid":"309005","Application":"myapp","CreatedBy":"user"}` |
 | `dry_run` | No (default: `false`) | When `true`, discovers and lists all resources that would be tagged without writing anything |
+| *cloud credentials* | Yes | Azure: `azure_tenant_id`, `azure_subscription_id`, `azure_client_id`. AWS: `aws_region`, `aws_role_arn` |
 
 ### How to run
 
-`Actions → Tag Application Resources → Run workflow`, fill the form, and paste
+`Actions → <cloud> - Tag Application Resources → Run workflow`, fill the form, and paste
 the JSON tags object. Use `dry_run: true` first to preview the full scope — the
 step summary shows the tag list and the run log shows every resource that would
 be tagged.
 
-The workflow authenticates to Azure via OIDC (same service principal used by
-`provision-infrastructure`) — no client secret is required.
+The workflow authenticates via OIDC using the same identity the provisioning
+workflow uses — no client secret or access key is required.
 
 ### Running locally
 
-The underlying script (`scripts/tag-app-resources.sh`) can also be run directly
-against an active `az login` session:
+The underlying script can also be run directly against an authenticated CLI
+session. For Azure:
 
 ```bash
 az login --tenant <AZURE_TENANT_ID>
 az account set --subscription <AZURE_SUBSCRIPTION_ID>
 
-scripts/tag-app-resources.sh \
+scripts/tag-app-resources-azure.sh \
   --app-name               myapp \
   --azure-tenant-id        <tenant-guid> \
   --azure-subscription-id  <sub-guid> \
   --azure-client-id        <client-guid> \
-  --tags-json              '{"airid":"309005","Application":"myapp","CreatedBy":"user"}' \
+  --tags-json              '{"tag1":"value1","tag2":"value2","CreatedBy":"user"}' \
   --dry-run
 ```
 
-Remove `--dry-run` to apply. Requires `az` and `jq`.
+For AWS, with credentials already configured:
+
+```bash
+scripts/tag-app-resources-aws.sh \
+  --app-name   myapp \
+  --aws-region eu-west-1 \
+      --tags-json  '{"airid":"309005","Application":"myapp","CreatedBy":"user"}' \
+  --dry-run
+```
+
+Remove `--dry-run` to apply. Both require `jq` plus that cloud's CLI.
 
 ---
 
 ## Conventions
 
-- **Naming.** Most resources follow the pattern `<type>-<app>-<env>` (e.g.
-  `app-myapp-dev`, `asp-myapp-prod`). Two exceptions, both driven by Azure
-  Storage's 24-char globally-unique naming constraint:
-  - **tfstate SA** — `sttf<app12><sub8>` (per-subscription/per-app; lives
-    in `rg-<app>-tfstate`, shared by all envs of that app).
-  - **VNet flow-logs SA** — `stflow<app+env>` capped at 24 chars (per-env;
-    lives inside the per-env RG).
-- **Tags.** Every resource is tagged with `application`, `environment`,
-  `managed-by=terraform`, and `platform=platform-engineering`.
-- **Secrets.** No long-lived credentials. GitHub authenticates to Azure via
-  OIDC federated credentials. Application secrets must live in Key Vault and
-  be referenced by name through the `key_vault_secrets` module input.
-- **State.** One storage account per subscription + application. Inside it,
-  one blob per environment under `tfstate/<env>/terraform.tfstate`.
+These hold across clouds; where a cloud forces an exception it is called out.
+
+- **Naming.** Resources follow `<type>-<app>-<env>`, and resource groups
+  `rg-<app>-<env>` plus `rg-<app>-tfstate`. Exceptions arise only where a
+  provider imposes a stricter namespace — globally-unique storage names, for
+  instance — and each archetype documents its own.
+- **Tags.** Every resource carries `application`, `environment`,
+  `managed-by=terraform`, and `platform=platform-engineering`. On AWS these
+  double as the resource-group query; on Azure they are plain metadata.
+- **Secrets.** No long-lived credentials anywhere. GitHub authenticates to the
+  cloud via OIDC, and the application uses a workload identity — an Azure
+  Managed Identity, an AWS task role. Application secrets belong in the cloud's
+  own secret store and are referenced by name, never inlined.
+- **Regions.** Always an explicit, required input. No workflow or script
+  defaults a region: an implicit one silently deploys somewhere nobody expects.
+- **State.** One backend per account + application, one state object per
+  environment under `<env>/terraform.tfstate`.
 
 ## Local development
 
@@ -375,12 +442,17 @@ checkov -d <app-name>-infra/terraform/environments/dev  --framework terraform --
 ```
 
 To verify deployed infrastructure against the expected per-env policy, run the
-verification script that ships with the generated infra repo (an `az login`
-session must be active):
+verification script that ships with the generated infra repo. It needs an
+authenticated CLI session for that cloud, and each archetype declares the
+environment it expects:
 
 ```bash
 cd <app-name>-infra
+# Azure — requires an active `az login`
 APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
+# AWS — requires configured credentials; the region is mandatory, since
+# nearly every API it calls is regional
+APP_NAME=<app> ENVIRONMENT=<env> AWS_REGION=<region> bash scripts/verify.sh
 ```
 
 ## Roadmap
@@ -405,20 +477,20 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 - [x] Deployment reuses the image in previous environment, applying a new tag
       to ensure that what is being tested is what is being promoted across
       environments (dev tag -> RC tag -> prod/GA tag)
-- [x] Per-env compliance posture (PE-only staging/prod, public dev)
-- [x] VNet flow logs + end-to-end TLS encryption (via azapi)
-- [x] Tightened NSG rules (no protocol/port wildcards)
+- [x] Per-env compliance posture (private staging/prod, public dev)
+- [x] Network flow logs + end-to-end TLS encryption *(Azure archetype)*
+- [x] Tightened network rules (no protocol/port wildcards)
 - [x] Self-service web UI on GitHub Pages
-- [x] CLI trigger script (`scripts/trigger-provision.sh`)
-- [x] Destroy/decommission workflow for retiring an app cleanly (delete RG +
-      tfstate blob + GitHub Environments + fed-creds) -- repos are never deleted
+- [x] CLI trigger script (`scripts/trigger-provision-<cloud>.sh`)
+- [x] Destroy/decommission workflow for retiring an app cleanly (delete
+      resources + state + GitHub Environments + OIDC trust) -- repos are never deleted
 - [x] Scheduled drift detection — weekly (also on-demand and callable)
       `terraform plan -refresh-only` sweep that compares recorded state against
-      live Azure resources for one or more apps (matrix) and opens an issue
+      live resources for one or more apps (matrix) and opens an issue
       with the per-environment findings when drift or an error is detected
-- [x] Compliance tagging workflow — manually triggered `tag-app-resources.yml`
-      merges an arbitrary JSON tag set onto every resource group and resource
-      belonging to an app (env RGs + tfstate RG), with dry-run preview support
+- [x] Compliance tagging workflow — manually triggered, merges an arbitrary
+      JSON tag set onto every resource group and resource belonging to an app
+      (env groups + tfstate group), with dry-run preview support
 - [x] Infra-only mode — application repository phase is fully optional; omitting
       `app_template_repo` skips all app-repo jobs (repo creation, GitHub
       Environments, federated credentials, CI observation) so the workflow can
@@ -430,31 +502,24 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
 
 ### Next
 
-- [ ] **Cost reporting per application** — daily / weekly Azure cost export
+**Platform-wide**
+
+- [ ] **AWS parity** — the ECS Fargate archetype's provisioning workflow, plus
+      its `provision-aws.html` form and `setup-aws.md` guide. Bootstrap,
+      verify, drift, tagging and decommission already have AWS counterparts
+- [ ] **Cost reporting per application** — daily / weekly cost export
       aggregated by `application` tag, surfaced as a comment on the run issue
-- [ ] **Budget alerts** — Azure budget per app/env with action-group
-      notifications wired in
-- [ ] **Container console logs in the module** — add
-      `logs.application_logs.file_system_level = "Information"` so degraded
-      states surface their cause without manual intervention
-- [ ] **Self-hosted runner inside the VNet** — enables real HTTP smoke tests
-      against PE-only staging/prod; today those rely on control-plane
-      assertions only
-- [ ] **Multi-region readiness** — Front Door / Traffic Manager in front of
-      a primary + secondary App Service Plan, with state per region
-- [ ] **Optional Key Vault module** — provisioned per env when secrets are
-      declared, with the existing `key_vault_secrets` wiring already in the
-      webapp module
+- [ ] **Budget alerts** — a per app/env budget with notifications wired in
+- [ ] **Self-hosted runner inside the private network** — enables real HTTP
+      smoke tests against private staging/prod; today those rely on
+      control-plane assertions only
+- [ ] **Multi-region readiness** — a global entry point in front of a primary
+      and secondary deployment, with state per region
+- [ ] **Optional secret-store module** — provisioned per env when secrets are
+      declared
 - [ ] **Override of target environment names** — currently hardcoded
       `dev` / `staging` / `prod`; some apps need `qa`, `uat`, regional
       variants, etc.
-- [ ] **Workflow input for per-env `app_settings`** — the Terraform var
-      exists in the webapp module but isn't surfaced through the workflow
-- [ ] **Custom domain provisioning** — module already supports it, surface
-      it as a workflow input (with cert binding)
-- [ ] **Slot-swap promotion for prod** — today the template's `release.yml`
-      updates the prod container in place; switching it to deploy to the
-      staging slot and swap would give zero-downtime promotion
 - [ ] **Operator audit trail** — record who triggered each run (PAT
       ownership, dispatch source) on the tracking issue
 - [ ] **Rollback** — add a rollback mechanism and workflow, e.g., by creating
@@ -467,6 +532,19 @@ APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
       e2e acceptance/regression tests (UI tests, API tests) as a quality gate
       in the release workflow: to deploy to staging e2e tests must pass in
       dev, and similarly to deploy to prod tests must pass in staging
+
+**Azure archetype**
+
+- [ ] **Container console logs in the module** — add
+      `logs.application_logs.file_system_level = "Information"` so degraded
+      states surface their cause without manual intervention
+- [ ] **Slot-swap promotion for prod** — today the template's `release.yml`
+      updates the prod container in place; switching it to deploy to the
+      staging slot and swap would give zero-downtime promotion
+- [ ] **Workflow input for per-env `app_settings`** — the Terraform var
+      exists in the webapp module but isn't surfaced through the workflow
+- [ ] **Custom domain provisioning** — modules already support it, surface
+      it as a workflow input (with cert binding)
 
 ## Contributing
 

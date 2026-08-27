@@ -1,21 +1,25 @@
 ---
-title: Setup Guide
+title: Setup Guide for Azure
 ---
 
 [← back to home](.)
 
-# Setup Guide
+# Setup Guide for Azure
 
-End-to-end instructions to wire this platform to a GitHub repository and an
-Azure subscription, ready for the first `Provision Infrastructure` run. The
-guide assumes you have **Owner** rights on the target Azure subscription and
-**admin** rights on the GitHub repository.
+Wires this platform to an **Azure subscription**: the identity it authenticates
+with, the permissions it needs, and the storage account that holds Terraform
+state. When you finish, the platform is ready for its first
+`Azure - Provision & Reconcile Application Resources` run.
+
+> **Do the [GitHub setup](setup-github.md) first.** This guide assumes the
+> repository is already on GitHub and its `dev` / `staging` / `prod`
+> Environments exist — the federated credentials below are scoped to that
+> repository slug and those environment names.
+
+It assumes you have **Owner** rights on the target Azure subscription.
 
 ## What you'll end up with
 
-- A GitHub repository hosting this platform code.
-- Three GitHub Environments (`dev`, `staging`, `prod`), with optional
-  approval gates on `prod`.
 - An Azure App Registration + Service Principal authenticated to GitHub via
   OIDC — **no client secrets stored anywhere**.
 - Four federated credentials covering the bootstrap workflow and the three
@@ -23,18 +27,16 @@ guide assumes you have **Owner** rights on the target Azure subscription and
 - The Service Principal granted the minimum RBAC roles needed to bootstrap
   state storage and plan infrastructure changes.
 
-Estimated time: **15–20 minutes** the first time.
+Estimated time: **10–15 minutes** the first time.
 
 ---
 
 ## Prerequisites
 
-Tooling on your workstation:
+Tooling on your workstation, on top of what the GitHub guide lists:
 
 | Tool | Minimum version | Notes |
 |------|-----------------|-------|
-| `git` | 2.30 | Push the repo to GitHub |
-| `gh` (optional) | 2.40 | Convenient for env/secret commands |
 | `az` | 2.60 | App Registration + RBAC + federated credentials |
 | `jq` (optional) | 1.6 | Useful for inspecting `az` output |
 
@@ -48,60 +50,9 @@ Azure access:
   subscriptions; if you hit `MissingSubscriptionRegistration` later, run
   `az provider register --namespace <namespace>`.
 
-GitHub access:
-
-- A GitHub account or organization where you'll host the repository.
-- The ability to create Environments (free for public repos and for private
-  repos on paid plans).
-
 ---
 
-## Step 1 — Push the repository to GitHub
-
-1. Create an empty repository on GitHub (e.g. `your-org/workshop-platform-eng`),
-   without initial README, license, or `.gitignore`.
-2. From the local checkout of this project:
-
-   ```bash
-   git init
-   git add .
-   git commit -m "feat: initial platform engineering scaffold"
-   git branch -M main
-   git remote add origin https://github.com/<your-org>/<repo-name>.git
-   git push -u origin main
-   ```
-
-> **Note.** All federated credentials below tie OIDC tokens to this exact
-> repository slug and to the `main` branch. If you push to a different branch
-> or rename the repo later, you must update the federated credentials too.
-
----
-
-## Step 2 — Create the GitHub Environments
-
-GitHub Environments are referenced by the `plan` job's `environment:` key,
-which is what makes per-environment OIDC subjects work. Create them even if
-you don't add protection rules yet.
-
-In the repository: **Settings → Environments → New environment**, and create:
-
-| Environment | Suggested protection rules |
-|-------------|----------------------------|
-| `dev` | _(none)_ |
-| `staging` | _(none for now)_ |
-| `prod` | _Required reviewers_: at least one trusted reviewer |
-
-You can also create them from the CLI if `gh` is set up:
-
-```bash
-gh api -X PUT repos/<your-org>/<repo-name>/environments/dev
-gh api -X PUT repos/<your-org>/<repo-name>/environments/staging
-gh api -X PUT repos/<your-org>/<repo-name>/environments/prod
-```
-
----
-
-## Step 3 — Create the Azure App Registration
+## Step 1 — Create the Azure App Registration
 
 ```bash
 # Sign in to the right tenant if you have several
@@ -148,7 +99,7 @@ EOF
 
 ---
 
-## Step 4 — Configure federated credentials (OIDC)
+## Step 2 — Configure federated credentials (OIDC)
 
 The workflows authenticate to Azure with short-lived OIDC tokens issued by
 GitHub Actions. Azure validates each token against a **federated credential**
@@ -195,7 +146,7 @@ You should see exactly four rows.
 
 ---
 
-## Step 5 — Assign Azure RBAC roles
+## Step 3 — Assign Azure RBAC roles
 
 The Service Principal needs three roles at **subscription scope**. The third
 one — `Storage Blob Data Contributor` — is the easy-to-miss one: the bootstrap
@@ -416,72 +367,19 @@ workshop baseline.
 
 ---
 
-## Step 6 — Handle GitHub Advanced Security (optional)
+## Step 4 — Trigger the first run
 
-The `checkov` job uploads its findings as SARIF to **Security → Code scanning**.
-Code scanning requires GitHub Advanced Security, which is:
-
-- Free for **public** repositories.
-- A paid add-on for **private** repositories on personal accounts.
-
-If you can't enable it, the upload step will fail. Either:
-
-1. **Make the repository public** (recommended for this workshop), or
-2. Disable the SARIF upload by adding `if: false` to the
-   `Upload SARIF to GitHub Security tab` step in
-   `.github/workflows/provision-infrastructure.yml`. The Checkov scan itself
-   still runs and still fails the build on findings.
-
----
-
-## Step 7 — Provide a `GH_PAT` secret for cross-repo operations
-
-> **Infra-only runs:** if you intend to use the platform exclusively for
-> infrastructure-only provisioning (no `app_template_repo`), this step is
-> **not required** — the app-repo phase is skipped entirely and
-> `GH_PAT` is never accessed.
-
-After the infrastructure is provisioned and verified, the workflow continues
-into **application-repo bootstrap**: it creates a new repo from a template,
-opens a tracking issue, configures GitHub Environments + variables, dispatches
-the app's CI workflow and posts a summary back to the issue.
-
-All of those operations write to **a different repository** than the one the
-workflow runs in. The default `GITHUB_TOKEN` is scoped to this repo only and
-cannot create repositories or write to other repos' environments/variables.
-
-Provide a Personal Access Token (or a GitHub App installation token) as a
-**repository secret** named `GH_PAT`, with these scopes:
-
-| Scope | Used for |
-|-------|----------|
-| `repo` | Read/write the application repository (creation, issues, comments) |
-| `workflow` | Dispatch the CI workflow in the application repo |
-
-Create one at <https://github.com/settings/tokens?type=beta> (fine-grained,
-recommended) with the target organization and `Administration: Read and write`,
-`Contents: Read and write`, `Issues: Read and write`, `Actions: Read and write`,
-`Variables: Read and write`, `Environments: Read and write` repository
-permissions. Save it as the `GH_PAT` secret on this platform repo.
-
-> **Why a PAT and not the workflow token?** GitHub deliberately scopes
-> `GITHUB_TOKEN` to the repository running the workflow. Cross-repo writes
-> require a token whose installation/owner has access to the target.
-
----
-
-## Step 8 — Trigger the first run
-
-In the GitHub UI: **Actions → Provision Infrastructure → Run workflow**, and
-provide:
+In the GitHub UI: **Actions → Azure - Provision & Reconcile Application
+Resources → Run workflow**, and provide:
 
 | Input | Required | Value for the first test |
 | ----- | -------- | ------------------------ |
 | `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
 | `environment` | yes | `dev` |
-| `azure_tenant_id` | yes | the tenant GUID captured in step 3 |
-| `azure_subscription_id` | yes | the GUID captured in step 3 |
-| `azure_client_id` | yes | the `appId` captured in step 3 |
+| `azure_tenant_id` | yes | the tenant GUID captured in step 1 |
+| `azure_subscription_id` | yes | the GUID captured in step 1 |
+| `azure_client_id` | yes | the `appId` captured in step 1 |
+| `location` | yes | `westeurope` — Azure region for the tfstate storage account and every provisioned resource. No default, by design: an implicit region silently deploys to the wrong place |
 | `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
 | `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
@@ -529,7 +427,7 @@ skipped and only the infra issue and final summary are written.
 
 ---
 
-## Step 9 — Configure scheduled drift detection (optional)
+## Step 5 — Configure scheduled drift detection (optional)
 
 The `detect-drift.yml` workflow compares the recorded Terraform state against
 the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
@@ -570,30 +468,33 @@ to drive the automated sweep:
 
 | Repository variable | Required | Description |
 |---------------------|----------|-------------|
-| `DRIFT_APP_NAMES` | yes | Application name(s) to check, comma-separated (e.g. `myapp,otherapp`). The workflow fans out one matrix job per app. |
-| `DRIFT_ENVIRONMENTS` | no | Environment(s) to check: `all` (default) or a comma-separated subset of `dev`/`staging`/`prod`. |
+| `DRIFT_AZURE_APP_NAMES` | yes | Application name(s) to check, comma-separated (e.g. `myapp,otherapp`). The workflow fans out one matrix job per app. |
+| `DRIFT_AZURE_ENVIRONMENTS` | no | Environment(s) to check: `all` (default) or a comma-separated subset of `dev`/`staging`/`prod`. |
 | `DRIFT_AZURE_TENANT_ID` | yes | Azure Tenant ID used for the OIDC login. |
 | `DRIFT_AZURE_SUBSCRIPTION_ID` | yes | Azure Subscription ID hosting the apps' resources and tfstate. |
 | `DRIFT_AZURE_CLIENT_ID` | yes | Client ID of the platform App Registration. |
+| `DRIFT_AZURE_LOCATION` | yes | Azure region of the resources under check (e.g. `westeurope`). Required by the infra template; a refresh-only plan will not run without it. |
 
 Set them under **Settings → Secrets and variables → Actions → Variables**, or
 via the CLI:
 
 ```bash
-gh variable set DRIFT_APP_NAMES             -R <org>/<platform-repo> --body "test-webapp"
-gh variable set DRIFT_ENVIRONMENTS          -R <org>/<platform-repo> --body "all"
+gh variable set DRIFT_AZURE_APP_NAMES       -R <org>/<platform-repo> --body "test-webapp"
+gh variable set DRIFT_AZURE_ENVIRONMENTS    -R <org>/<platform-repo> --body "all"
 gh variable set DRIFT_AZURE_TENANT_ID       -R <org>/<platform-repo> --body "<tenant-guid>"
 gh variable set DRIFT_AZURE_SUBSCRIPTION_ID -R <org>/<platform-repo> --body "<subscription-guid>"
 gh variable set DRIFT_AZURE_CLIENT_ID       -R <org>/<platform-repo> --body "<client-guid>"
+gh variable set DRIFT_AZURE_LOCATION        -R <org>/<platform-repo> --body "westeurope"
 ```
 
 The drift job authenticates with the **branch-scoped** federated credential
-(`repo:<org>/<repo>:ref:refs/heads/main`) already configured in step 4 — it is
+(`repo:<org>/<repo>:ref:refs/heads/main`) already configured in step 2 — it is
 read-only and never binds a GitHub Environment, so no extra OIDC subject is
 needed. Issue creation in the `<app>-infra` repo uses the same `GH_PAT` secret
-from step 7.
+configured in the
+[GitHub setup guide](setup-github.md).
 
-If `DRIFT_APP_NAMES` (or any required GUID variable) is missing, the scheduled
+If `DRIFT_AZURE_APP_NAMES` or any required input is missing, the scheduled
 run fails fast with a clear error instead of silently doing nothing.
 
 ---
@@ -624,7 +525,7 @@ are required and people commonly stop after the first:
    permission **with admin consent**.
 
 Without (2), even a fully-owning SP gets `Insufficient privileges`. Run the
-two-step procedure in *step 5 — Allow the SP to manage its own federated
+two-step procedure in *step 3 — Allow the SP to manage its own federated
 credentials*. Step (2) requires a directory-role admin (Global,
 Privileged Role, Cloud Application, or Application Administrator) — in a
 corporate tenant this is usually an internal request.
@@ -633,16 +534,16 @@ corporate tenant this is usually an internal request.
 
 The Service Principal lacks one of the three RBAC roles, or propagation hasn't
 finished yet. Re-run after a minute. If it persists, re-run the
-`az role assignment list` command from step 5 and confirm all three roles are
+`az role assignment list` command from step 3 and confirm all three roles are
 listed at subscription scope.
 
 ### `Failed to query container 'tfstate' on '<account>'` during `bootstrap-tfstate`
 
-The script (`scripts/bootstrap-tfstate.sh`) traps this on the
+The script (`scripts/bootstrap-tfstate-azure.sh`) traps this on the
 `az storage container exists` call. Two possible causes:
 
 1. **RBAC**: the SP has `Contributor` (control plane) but not
-   `Storage Blob Data Contributor` (data plane). Re-check step 5.
+   `Storage Blob Data Contributor` (data plane). Re-check step 3.
 2. **Network rules**: the storage account has `defaultAction = Deny` (e.g.
    created by an earlier version of the script, or modified manually). The
    GitHub-hosted runner has no fixed egress IP and is blocked. Fix:
@@ -653,53 +554,13 @@ The script (`scripts/bootstrap-tfstate.sh`) traps this on the
    ```
 
    The current bootstrap script keeps `defaultAction = Allow` by design — see
-   the security-model note in step 5.
+   the security-model note in step 3.
 
 ### `terraform init` fails with `Error refreshing state`
 
 Most often a missing `Storage Blob Data Contributor` assignment. Same fix as
 above. If RBAC is correct, double-check that the workflow is using
 `use_oidc=true` in the `-backend-config` flags (it is, by default).
-
-### CI in the new app repo fails with `denied: permission_denied: write_package`
-
-The container push to GHCR (`docker push ghcr.io/<owner>/<repo>:<tag>`) is
-rejected even though the platform workflow set the new repo's default
-workflow permissions to `write`. Common causes, in rough order of frequency:
-
-1. **The CI workflow declares its own `permissions:` block** that omits
-   `packages: write`. The block replaces the default — it doesn't merge with
-   it. The workflow must include all the scopes it needs, e.g.
-   `contents: read`, `packages: write`, `id-token: write`.
-
-2. **The login step uses the wrong token or username.** For `docker
-   login ghcr.io`, expect `username: ${{ github.actor }}` and
-   `password: ${{ secrets.GITHUB_TOKEN }}` — typos or a stale PAT will fail
-   with the same `denied` error.
-
-3. **Org-level setting overrides the repo setting.** Org admins can lock
-   workflow permissions at *Settings → Actions → General* with override
-   disabled. The repo-level PUT is silently ignored. Ask the org admin to
-   allow per-repo overrides or set the org default to `write`.
-
-4. **Image namespace mismatch.** GHCR only accepts pushes to
-   `ghcr.io/<owner>/<name>` where `<owner>` matches the repo owner. A tag
-   computed against a different org/user is rejected.
-
-5. **A pre-existing GHCR package linked to a different repo (or unlinked).**
-   If a package with the same name already exists in the owner's namespace
-   from a deleted repo or earlier experiment, GHCR refuses pushes from this
-   repo even with correct permissions. Visit
-   `https://github.com/orgs/<owner>/packages` (or
-   `/users/<owner>/packages`), open the package's settings and either
-   **delete** it or use **Manage Actions access** to link it to the new
-   repository.
-
-Useful diagnostic command:
-
-```bash
-gh run view <run-id> -R <owner>/<app> --log-failed
-```
 
 ### Checkov reports new findings after a Terraform change
 
@@ -725,7 +586,7 @@ With the first run green end-to-end, the typical follow-up workshop topics are:
   manually from *Actions → Release → Run workflow* for ad-hoc promotions.
   The release workflow performs control-plane validation only against
   staging/prod — HTTP smoke tests don't work from a GitHub-hosted runner
-  against PE-only envs (see *Web App network exposure* in step 5).
+  against PE-only envs (see *Web App network exposure* in step 3).
 - **Try the self-service web UI** — enable GitHub Pages on this repo
   (`Settings → Pages → Source: Deploy from a branch / main / /docs`), then
   fire subsequent runs from `https://<owner>.github.io/<repo>/`. The page

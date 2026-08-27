@@ -1,4 +1,4 @@
-name: Bootstrap Terraform State
+name: Azure - Bootstrap Terraform State
 
 # Reusable bootstrap of the per-application Terraform state storage account
 # (idempotent — safe to run every time). Three entry points:
@@ -6,7 +6,7 @@ name: Bootstrap Terraform State
 #   1. workflow_call      – invoked from provision-infrastructure.yml.
 #   2. workflow_dispatch  – ad-hoc manual run from the GitHub UI.
 #   3. repository_dispatch – external trigger via the GitHub API
-#                            (event type: bootstrap-tfstate).
+#                            (event type: azure-bootstrap-tfstate).
 
 on:
   workflow_call:
@@ -67,7 +67,7 @@ on:
 
   repository_dispatch:
     types:
-      - bootstrap-tfstate
+      - azure-bootstrap-tfstate
 
 permissions:
   id-token: write
@@ -152,7 +152,7 @@ jobs:
           [[ -n "$PRINCIPAL_ID" ]] && ARGS+=(--principal-id "$PRINCIPAL_ID")
 
           # Capture stdout (the KEY=VALUE output lines) into a variable
-          OUTPUT=$(bash scripts/bootstrap-tfstate.sh "${ARGS[@]}")
+          OUTPUT=$(bash scripts/bootstrap-tfstate-azure.sh "${ARGS[@]}")
           echo "$OUTPUT"
 
           # Parse outputs and forward to GITHUB_OUTPUT

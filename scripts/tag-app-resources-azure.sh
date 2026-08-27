@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tag-app-resources.sh
+# tag-app-resources-azure.sh
 # Merge an arbitrary set of tags onto every Azure resource that belongs to an
 # app. Resource groups are discovered by the naming conventions:
 #   rg-<app_name>-<env>     (per-environment groups)
@@ -13,7 +13,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  scripts/tag-app-resources.sh [flags]
+  scripts/tag-app-resources-azure.sh [flags]
 
 Required (flag OR env var):
   --app-name              <name>    APP_NAME
@@ -36,7 +36,7 @@ For help:
   -h, --help
 
 Example:
-  scripts/tag-app-resources.sh \
+  scripts/tag-app-resources-azure.sh \
     --app-name               myapp \
     --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
     --azure-subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \

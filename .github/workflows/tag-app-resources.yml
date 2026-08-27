@@ -1,4 +1,4 @@
-name: Tag Application Resources
+name: Azure - Tag Application Resources
 
 on:
   workflow_dispatch:
@@ -88,7 +88,7 @@ jobs:
           AZURE_CLIENT_ID:       ${{ inputs.azure_client_id }}
           TAGS_JSON:             ${{ inputs.tags_json }}
           DRYRUN:                ${{ inputs.dry_run }}
-        run: bash scripts/tag-app-resources.sh
+        run: bash scripts/tag-app-resources-azure.sh
 
       - name: Summary
         if: always()

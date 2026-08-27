@@ -1,4 +1,4 @@
-name: Delete Application Resources (Single Environment)
+name: Azure - Delete Application Resources (Single Environment)
 
 on:
   workflow_call:
@@ -203,7 +203,7 @@ jobs:
       # This runs AFTER delete-rg (see `needs`) so the state is only discarded
       # once the resources it tracked are actually gone.
       #
-      # The blob is SOFT-deleted: bootstrap-tfstate.sh enables versioning and a
+      # The blob is SOFT-deleted: bootstrap-tfstate-azure.sh enables versioning and a
       # 30-day delete-retention on the account, so this stays recoverable for 30
       # days rather than being destroyed outright. That safety net is
       # deliberate — do not purge versions here.
@@ -216,7 +216,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Must match the formula in scripts/bootstrap-tfstate.sh exactly.
+          # Must match the formula in scripts/bootstrap-tfstate-azure.sh exactly.
           APP_SHORT=$(echo "$APP_NAME"        | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
           SUB_SHORT=$(echo "$SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           STORAGE_ACCOUNT="sttf${APP_SHORT}${SUB_SHORT}"

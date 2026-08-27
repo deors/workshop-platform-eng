@@ -1,4 +1,4 @@
-name: Delete Application Resources (All Environments + tfstate)
+name: Azure - Delete Application Resources (All Environments + tfstate)
 
 on:
   workflow_dispatch:

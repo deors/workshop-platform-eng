@@ -1,4 +1,4 @@
-name: Verify Infrastructure
+name: Azure - Verify Application Resources
 
 # Reusable verification of a deployed stack. The verification logic itself is
 # NOT defined here — it lives in the provisioned infrastructure repository at
@@ -11,7 +11,7 @@ name: Verify Infrastructure
 #                           matrix job after `apply`.
 #   2. workflow_dispatch  – ad-hoc manual run from the GitHub UI.
 #   3. repository_dispatch – external trigger via the GitHub API
-#                            (event type: verify-infrastructure).
+#                            (event type: azure-verify-infrastructure).
 
 on:
   workflow_call:
@@ -83,7 +83,7 @@ on:
 
   repository_dispatch:
     types:
-      - verify-infrastructure
+      - azure-verify-infrastructure
 
 permissions:
   id-token: write

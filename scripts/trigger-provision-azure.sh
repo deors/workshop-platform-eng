@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# trigger-provision.sh
-# Fire the Provision Infrastructure workflow via the GitHub `repository_dispatch`
-# trigger. Each value can come from a CLI flag, or from the equivalent
-# upper-case env var if the flag is omitted. Missing required values produce
-# an error with the expected syntax.
+# trigger-provision-azure.sh
+# Fire the Azure - Provision & Reconcile Application Resources workflow via
+# the GitHub `repository_dispatch` trigger. Each value can come from a CLI
+# flag, or from the equivalent upper-case env var if the flag is omitted.
+# Missing required values produce an error with the expected syntax.
 #
 # The target repository (where the workflow lives) is auto-detected from the
 # current git remote via `gh repo view`. Override with --repo.
@@ -15,7 +15,7 @@ set -euo pipefail
 usage() {
   cat <<'USAGE' >&2
 Usage:
-  scripts/trigger-provision.sh [flags]
+  scripts/trigger-provision-azure.sh [flags]
 
 Required (flag OR env var):
   --app-name              <name>                    APP_NAME
@@ -44,7 +44,7 @@ For help:
   -h, --help
 
 Example:
-  scripts/trigger-provision.sh \
+  scripts/trigger-provision-azure.sh \
     --app-name               test-webapp \
     --environment            dev \
     --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
@@ -136,7 +136,7 @@ PAYLOAD=$(jq -nc \
   --arg reg        "$CONTAINER_REGISTRY_URL" \
   --arg ci         "$CI_WORKFLOW_FILE" \
   '{
-    event_type:     "provision-infrastructure",
+    event_type:     "azure-provision-infrastructure",
     client_payload: ({
       app_name:              $app,
       environment:           $env,
@@ -153,7 +153,7 @@ PAYLOAD=$(jq -nc \
   }')
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
-echo "Dispatching 'provision-infrastructure' to ${PLATFORM_REPO}…"
+echo "Dispatching 'azure-provision-infrastructure' to ${PLATFORM_REPO}…"
 echo "$PAYLOAD" | gh api \
   --method POST \
   -H "Accept: application/vnd.github+json" \

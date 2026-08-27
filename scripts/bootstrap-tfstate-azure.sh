@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# bootstrap-tfstate.sh
+# bootstrap-tfstate-azure.sh
 # Creates (idempotently) the Azure Storage Account used as Terraform remote backend.
 # One storage account per subscription + application; one blob per environment inside it.
 #
 # Usage:
-#   bootstrap-tfstate.sh --app-name <name> --azure-subscription-id <id> \
-#                        --location <region> [--principal-id <object-id>]
+#   bootstrap-tfstate-azure.sh --app-name <name> --azure-subscription-id <id> \
+#                              --location <region> [--principal-id <object-id>]
 #
 # --app-name, --azure-subscription-id and --location are all required; there is
 # no default location.
@@ -180,7 +180,7 @@ if ! CONTAINER_EXISTS=$(az storage container exists \
   on the storage account (data-plane role). The account is configured with
   --allow-shared-key-access=false, so AAD auth is mandatory.
   Fix: assign 'Storage Blob Data Contributor' at subscription or resource-group
-  scope to the OIDC service principal, then re-run. See docs/SETUP.md."
+  scope to the OIDC service principal, then re-run. See docs/setup-azure.md."
 fi
 
 if [[ "$CONTAINER_EXISTS" == "true" ]]; then

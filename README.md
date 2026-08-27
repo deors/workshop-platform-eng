@@ -23,14 +23,15 @@ Pages** site rendered from [`docs/`](docs/):
 
 (Replace the URL above with your fork's Pages URL if you've cloned the repo.
 The site activates once Pages is enabled on the repository — see
-[`docs/PAGES.md`](docs/PAGES.md).)
+[`docs/pages.md`](docs/pages.md).)
 
 | What you're looking for | Where |
 |-------------------------|-------|
 | What the platform provisions, architecture, roadmap | [`docs/index.md`](docs/index.md) (Pages home) |
-| One-time setup of App Registration, RBAC, federated credentials, GH_PAT | [`docs/SETUP.md`](docs/SETUP.md) |
-| How the Pages site is built and how to enable it | [`docs/PAGES.md`](docs/PAGES.md) |
-| Self-service provisioning form (one-click trigger) | [`docs/provision.html`](docs/provision.html) — best viewed on the Pages site |
+| Setup for GitHub: repository, Environments, `GH_PAT` — do this first, whatever the cloud | [`docs/setup-github.md`](docs/setup-github.md) |
+| Setup for Azure: App Registration, RBAC, federated credentials, state storage | [`docs/setup-azure.md`](docs/setup-azure.md) |
+| How the Pages site is built and how to enable it | [`docs/pages.md`](docs/pages.md) |
+| Self-service provisioning (pick a cloud, one-click trigger) | [`docs/provision.html`](docs/provision.html) — best viewed on the Pages site |
 | Contribution guidelines, coding standards, PR checklist | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
 ---

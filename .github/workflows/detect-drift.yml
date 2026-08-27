@@ -1,4 +1,4 @@
-name: Detect Drift
+name: Azure - Detect Drift
 
 # Scheduled (and on-demand / callable) infrastructure drift detection.
 #
@@ -44,7 +44,7 @@ on:
     # with 60 days of no activity. Treat the time below as "no earlier than".
     #
     # Every OTHER parameter comes from repository variables on schedule runs
-    # (DRIFT_APP_NAMES, DRIFT_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
+    # (DRIFT_AZURE_APP_NAMES, DRIFT_AZURE_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
     # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID,
     # DRIFT_AZURE_LOCATION).
     - cron: "0 6 * * 1"
@@ -153,8 +153,8 @@ jobs:
           # Schedule fallbacks (no inputs available on cron runs). All
           # DRIFT_-prefixed so it is unambiguous they exist solely to drive the
           # automated weekly drift sweep.
-          VAR_APPS:     ${{ vars.DRIFT_APP_NAMES }}
-          VAR_ENV:      ${{ vars.DRIFT_ENVIRONMENTS }}
+          VAR_APPS:     ${{ vars.DRIFT_AZURE_APP_NAMES }}
+          VAR_ENV:      ${{ vars.DRIFT_AZURE_ENVIRONMENTS }}
           VAR_TENANT:   ${{ vars.DRIFT_AZURE_TENANT_ID }}
           VAR_SUB:      ${{ vars.DRIFT_AZURE_SUBSCRIPTION_ID }}
           VAR_CLIENT:   ${{ vars.DRIFT_AZURE_CLIENT_ID }}
@@ -176,7 +176,7 @@ jobs:
           [[ -z "$AZURE_CLIENT_ID"      ]] && MISSING+=(azure_client_id)
           [[ -z "$LOCATION"             ]] && MISSING+=(location)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
-            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_APP_NAMES / DRIFT_AZURE_TENANT_ID / DRIFT_AZURE_SUBSCRIPTION_ID / DRIFT_AZURE_CLIENT_ID / DRIFT_AZURE_LOCATION)"
+            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_AZURE_APP_NAMES / DRIFT_AZURE_TENANT_ID / DRIFT_AZURE_SUBSCRIPTION_ID / DRIFT_AZURE_CLIENT_ID / DRIFT_AZURE_LOCATION)"
             exit 1
           fi
 
@@ -275,7 +275,7 @@ jobs:
           OWNER:                 ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          # Must match the formula in scripts/bootstrap-tfstate.sh exactly.
+          # Must match the formula in scripts/bootstrap-tfstate-azure.sh exactly.
           APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
           SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           {

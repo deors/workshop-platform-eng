@@ -1,4 +1,4 @@
-name: Provision Infrastructure
+name: Azure - Provision & Reconcile Application Resources
 
 on:
   workflow_dispatch:
@@ -66,7 +66,7 @@ on:
 
   repository_dispatch:
     types:
-      - provision-infrastructure
+      - azure-provision-infrastructure
 
 # Permissions required for OIDC login and SARIF upload to Security tab.
 permissions:
@@ -211,7 +211,7 @@ jobs:
           APP_NAME:        ${{ steps.params.outputs.app_name }}
           AZURE_SUBSCRIPTION_ID: ${{ steps.params.outputs.azure_subscription_id }}
         run: |
-          # Must match the formula in scripts/bootstrap-tfstate.sh exactly
+          # Must match the formula in scripts/bootstrap-tfstate-azure.sh exactly
           APP_SHORT=$(echo "$APP_NAME"              | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-12)
           SUB_SHORT=$(echo "$AZURE_SUBSCRIPTION_ID" | tr -d '-'                              | cut -c1-8)
           echo "storage_account=sttf${APP_SHORT}${SUB_SHORT}" >> "$GITHUB_OUTPUT"
@@ -1138,7 +1138,7 @@ jobs:
   #      Prerequisite: the SP itself must be an Owner of its own App
   #      Registration AND hold Application.ReadWrite.OwnedBy on Microsoft
   #      Graph (admin consent) to manage its own federated credentials.
-  #      See docs/SETUP.md step 5.
+  #      See docs/setup-azure.md step 5.
   # ────────────────────────────────────────────────────────────────────────────
   configure-federated-credentials:
     name: "Federated credential · ${{ matrix.environment }}"

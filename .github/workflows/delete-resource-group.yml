@@ -1,4 +1,4 @@
-name: Delete Azure Resource Group
+name: Azure - Delete Resource Group
 
 on:
   workflow_call:
