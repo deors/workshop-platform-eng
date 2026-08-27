@@ -112,6 +112,14 @@ if [[ "$ACCOUNT_EXISTS" == false ]]; then
   # GitHub-hosted runners (no fixed egress IPs) and any operator running this
   # script from outside Azure. Use Private Endpoint + self-hosted runner if
   # stronger network isolation is required.
+  #
+  # TLS floor stays at 1.2 by platform constraint, NOT by choice: Azure Storage
+  # does not support a 1.3 floor ("TLS1_3 is not yet supported. Microsoft
+  # recommends setting MinimumTlsVersion to TLS1_2"). `TLS1_3` is accepted by
+  # the CLI's argument enum but is not enforceable by the service, so setting it
+  # would buy a false sense of compliance. The AWS bootstrap enforces 1.3 via
+  # its bucket policy, matching the ALB listener policy; raise this to match
+  # once Azure Storage supports it.
   az storage account create \
     --name                "$STORAGE_ACCOUNT_NAME" \
     --resource-group      "$RESOURCE_GROUP_NAME" \
