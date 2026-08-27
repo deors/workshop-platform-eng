@@ -271,12 +271,24 @@
         </div>
 
         <div>
+          <label for="infra_template_ref">Infrastructure template ref <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="infra_template_ref" name="infra_template_ref" placeholder="main" />
+          <span class="hint">Tag, branch or commit SHA pinning the infra template. Default: its default branch.</span>
+        </div>
+
+        <div>
           <label for="app_template_repo">Application template repo <span class="hint" style="display:inline;">(optional)</span></label>
           <input type="text" id="app_template_repo" name="app_template_repo"
                  placeholder="owner/template-helloworld-express"
                  pattern="^([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)?$" />
           <span class="hint">Source for the new application repo. <code>owner/name</code>. Leave empty for infra-only provisioning.</span>
           <div class="field-error" data-for="app_template_repo">Format must be <code>owner/name</code>.</div>
+        </div>
+
+        <div>
+          <label for="app_template_ref">Application template ref <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="app_template_ref" name="app_template_ref" placeholder="main" />
+          <span class="hint">Tag, branch or commit SHA pinning the app template. Default: its default branch.</span>
         </div>
 
         <div>
@@ -392,7 +404,8 @@
         infra_template_repo: v('infra_template_repo'),
       }
     };
-    ['app_template_repo', 'container_image', 'container_registry_url', 'ci_workflow_file'].forEach(id => {
+    ['infra_template_ref', 'app_template_repo', 'app_template_ref', 'container_image',
+     'container_registry_url', 'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
     });
     return payload;
