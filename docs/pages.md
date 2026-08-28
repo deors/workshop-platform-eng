@@ -2,7 +2,7 @@
 title: Pages site
 ---
 
-[← back to home](.)
+[← back to home](index.md)
 
 # Pages site — structure and setup
 
@@ -24,6 +24,8 @@ new cloud is added by dropping in new files, never by editing the shared ones.
 | `/provision-aws.html` | `provision-aws.html` | Self-service provisioning form for AWS ECS Fargate. |
 | `/setup-github/` | `setup-github.md` | One-time GitHub setup — identical for every cloud. Do this first. |
 | `/setup-azure/` | `setup-azure.md` | One-time Azure setup — identity, RBAC, state backend. |
+| `/setup-aws/` | `setup-aws.md` | One-time AWS setup — OIDC provider, IAM role and trust policy. |
+| `/troubleshooting/` | `troubleshooting.md` | Troubleshooting for everything this repo owns: GitHub/Actions/forms, Terraform state, cloud login. Cloud-service issues live in the templates. |
 | `/CONTRIBUTING/` | `CONTRIBUTING.md` | Contribution guidelines (mirror of the repo-root file). |
 | `/pages/` | `pages.md` | This page. Acts as a site map. |
 

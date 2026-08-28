@@ -8,7 +8,7 @@ The canonical copy is at the repo root; this one is published as part of
 the GitHub Pages documentation site.
 -->
 
-[← back to home](.)
+[← back to home](index.md)
 
 # Contributing
 

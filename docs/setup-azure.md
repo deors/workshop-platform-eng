@@ -2,7 +2,7 @@
 title: Setup Guide for Azure
 ---
 
-[← back to home](.)
+[← back to home](index.md)
 
 # Setup Guide for Azure
 
@@ -501,74 +501,16 @@ run fails fast with a clear error instead of silently doing nothing.
 
 ## Troubleshooting
 
-### `AADSTS70021: No matching federated identity record found`
+Azure identity/login failures (`AADSTS70021`, `Insufficient privileges`) and
+Terraform state problems (`AuthorizationFailed`, `Failed to query container`,
+`Error refreshing state`) are collected in [Troubleshooting](troubleshooting.md):
 
-The OIDC token's subject doesn't match any federated credential on the App
-Registration. Re-check:
+- [Cloud integration and login](troubleshooting.md#cloud-integration-and-login)
+- [Terraform state](troubleshooting.md#terraform-state)
 
-- The repo slug is exactly `<org>/<repo>` — case-sensitive.
-- For environment subjects, the GitHub Environment exists with the exact
-  name (`dev`, `staging`, `prod`) and the `plan` job runs against it.
-- If you triggered the workflow from a branch other than `main`, the
-  branch-scoped credential won't match. Either trigger from `main` or add
-  another federated credential for that branch.
-
-### `Insufficient privileges to complete the operation` in `configure-federated-credentials`
-
-The job calls `az ad app federated-credential create`, which hits Microsoft
-Graph (`POST /applications/{id}/federatedIdentityCredentials`). Two things
-are required and people commonly stop after the first:
-
-1. The SP is an **owner** of its own App Registration
-   (`az ad app owner add …`).
-2. The SP has the `Application.ReadWrite.OwnedBy` Graph application
-   permission **with admin consent**.
-
-Without (2), even a fully-owning SP gets `Insufficient privileges`. Run the
-two-step procedure in *step 3 — Allow the SP to manage its own federated
-credentials*. Step (2) requires a directory-role admin (Global,
-Privileged Role, Cloud Application, or Application Administrator) — in a
-corporate tenant this is usually an internal request.
-
-### `AuthorizationFailed` during `bootstrap-tfstate`
-
-The Service Principal lacks one of the three RBAC roles, or propagation hasn't
-finished yet. Re-run after a minute. If it persists, re-run the
-`az role assignment list` command from step 3 and confirm all three roles are
-listed at subscription scope.
-
-### `Failed to query container 'tfstate' on '<account>'` during `bootstrap-tfstate`
-
-The script (`scripts/bootstrap-tfstate-azure.sh`) traps this on the
-`az storage container exists` call. Two possible causes:
-
-1. **RBAC**: the SP has `Contributor` (control plane) but not
-   `Storage Blob Data Contributor` (data plane). Re-check step 3.
-2. **Network rules**: the storage account has `defaultAction = Deny` (e.g.
-   created by an earlier version of the script, or modified manually). The
-   GitHub-hosted runner has no fixed egress IP and is blocked. Fix:
-
-   ```bash
-   az storage account update \
-     --name <account> --resource-group <rg> --default-action Allow
-   ```
-
-   The current bootstrap script keeps `defaultAction = Allow` by design — see
-   the security-model note in step 3.
-
-### `terraform init` fails with `Error refreshing state`
-
-Most often a missing `Storage Blob Data Contributor` assignment. Same fix as
-above. If RBAC is correct, double-check that the workflow is using
-`use_oidc=true` in the `-backend-config` flags (it is, by default).
-
-### Checkov reports new findings after a Terraform change
-
-Either fix the finding or, if you've judged it a false positive or
-not-applicable, add a justified entry to `.checkov.yaml` documenting why the
-check is skipped. See [`CONTRIBUTING.md`](CONTRIBUTING.md#terraform) for
-the rules around skips.
-
+For the Azure resources themselves — App Service, networking, the template's
+Checkov baselines — see the
+[infrastructure template's troubleshooting](https://github.com/deors/template-terraform-azure-webapp#troubleshooting).
 ---
 
 ## What's next

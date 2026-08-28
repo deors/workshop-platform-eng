@@ -9,10 +9,12 @@ the repo's top-level README.md is intentionally a short pointer to this page
 and does not duplicate the content below.
 -->
 
-**📚 Documentation:**
-[Self-service provisioning ➜](provision.html) ·
+**📚 Quick links:**
+[Self-service provisioning](provision.html) ·
 [Setup: GitHub](setup-github.md) ·
 [Setup: Azure](setup-azure.md) ·
+[Setup: AWS](setup-aws.md) ·
+[Troubleshooting](troubleshooting.md) ·
 [Contributing](CONTRIBUTING.md) ·
 [Pages info](pages.md) ·
 [Source on GitHub]({{ site.github.repository_url }})
@@ -70,7 +72,7 @@ stack:
 | Cloud | Stack | Provision | Setup |
 |-------|-------|-----------|-------|
 | **Azure** | App Service (Linux, container) with VNet integration, Private Endpoint, Managed Identity, Key Vault references, Application Insights + Log Analytics, deployment slots | [form](provision-azure.html) | [guide](setup-azure.md) |
-| **AWS** | ECS Fargate behind an Application Load Balancer, with VPC + NAT, ACM certificates, CloudWatch logs and alarms, X-Ray, CodeDeploy blue/green | *coming soon* | *coming soon* |
+| **AWS** | ECS Fargate behind an Application Load Balancer, with VPC + NAT, ACM certificates, CloudWatch logs and alarms, X-Ray, CodeDeploy blue/green | [form](provision-aws.html) | [guide](setup-aws.md) |
 
 The GitHub side of the setup is [identical for every
 cloud](setup-github.md) — do that once, then follow the guide for your target.
@@ -117,7 +119,7 @@ Each **infra template** is a self-contained Terraform module set covering an inf
       - Modules: monitoring (CloudWatch, X-Ray), networking (VPC, subnets, NAT, ALB, ACM), webapp (ECS cluster/service, task roles, autoscaling)
       - Environments: dev (public ALB), staging and prod (internal, autoscaled)
 
-- **Future archetypes:** `template-terraform-azure-aks` (Kubernetes), `template-terraform-gcp-cloudrun` (Google Cloud), etc.
+- **Future archetypes:** `template-terraform-gcp-cloudrun` (Google Cloud), etc.
 
 Each archetype ships its own Checkov baselines — strict for prod (mandatory HA
 and private networking), relaxed for dev/staging — and its own `scripts/verify.sh`.
@@ -136,7 +138,7 @@ encrypted at rest, private, and reachable only over TLS.
 
 | Cloud | Backend | Identity model |
 |-------|---------|----------------|
-| **Azure** | Storage account `sttf<app><sub>`, container `tfstate` | AAD-auth only — no shared keys |
+| **Azure** | Storage account `sttf<app12><sub8>`, container `tfstate` | AAD-auth only — no shared keys |
 | **AWS** | S3 bucket `tf-state-<app>-<account8>` | IAM via OIDC role assumption |
 
 Beyond the cloud side, the platform also takes care of the **application
@@ -188,42 +190,44 @@ operator                ┌─────────────────�
 
 ```text
 .
-├── .checkov.nonprod.yaml               # Relaxed skips for dev/staging
-├── .checkov.yaml                       # Checkov rules + skips for prod (strict)
-├── .github/workflows/                  # one file per cloud; names are prefixed "Azure - " / "AWS - "
-│   ├── bootstrap-tfstate.yml           # Reusable: create the state backend
-│   ├── bootstrap-tfstate-aws.yml       #   └── AWS counterpart
-│   ├── delete-app-resources-all.yml    # Manual: delete every env + state for an app
-│   ├── delete-app-resources-all-aws.yml
-│   ├── delete-app-resources-single.yml # Manual/callable: delete one environment
-│   ├── delete-app-resources-single-aws.yml
-│   ├── delete-resource-group.yml       # Reusable: delete a single resource group
-│   ├── delete-resource-group-aws.yml
-│   ├── detect-drift.yml                # Scheduled/callable: read-only drift sweep
-│   ├── detect-drift-aws.yml
-│   ├── provision-infrastructure.yml    # Main workflow: end-to-end pipeline
-│   ├── tag-app-resources.yml           # Manual: merge compliance tags onto all app resources
-│   ├── tag-app-resources-aws.yml
-│   ├── verify-infrastructure.yml       # Reusable: runs the infra repo's verify script
-│   └── verify-infrastructure-aws.yml
-├── docs/                               # GitHub Pages site (Jekyll-rendered)
-│   ├── _config.yml                     # Jekyll config
-│   ├── CONTRIBUTING.md                 # Contribution guidelines (Pages mirror)
-│   ├── index.md                        # Pages homepage (this file)
-│   ├── pages.md                        # Pages site map & how to enable
-│   ├── provision.html                  # Provisioning entry point — picks a cloud
-│   ├── provision-azure.html            # Self-service provisioning form (Azure)
-│   ├── provision-aws.html              # Self-service provisioning form (AWS)
-│   ├── setup-github.md                 # One-time GitHub setup (every cloud)
-│   └── setup-azure.md                  # One-time Azure setup
-├── scripts/                            # cloud-specific scripts carry an -azure / -aws suffix
-│   ├── bootstrap-tfstate-azure.sh      # Idempotent az-cli state bootstrap (storage account)
-│   ├── bootstrap-tfstate-aws.sh        # Idempotent aws-cli state bootstrap (S3 bucket)
-│   ├── tag-app-resources-azure.sh      # Merge an arbitrary tag set onto all app resources
-│   ├── tag-app-resources-aws.sh        # Same, via the Resource Groups Tagging API
-│   ├── trigger-provision-azure.sh      # CLI wrapper around repository_dispatch
-│   ├── trigger-provision-aws.sh        # Same, for the AWS workflow
-│   └── watch-run.sh                    # Poll a remote workflow run + outputs (cloud-agnostic)
+├── .checkov.nonprod.yaml                    # Relaxed skips for dev/staging
+├── .checkov.yaml                            # Checkov rules + skips for prod (strict)
+├── .github/workflows/                       # one file per cloud; names are prefixed "Azure - " / "AWS - "
+│   ├── bootstrap-tfstate.yml                # Reusable: create the state backend in Azure
+│   ├── bootstrap-tfstate-aws.yml            #   └── AWS counterpart
+│   ├── delete-app-resources-all.yml         # Manual: delete every env + state for an app in Azure
+│   ├── delete-app-resources-all-aws.yml.    #   └── AWS counterpart
+│   ├── delete-app-resources-single.yml      # Manual/callable: delete one environment in Azure
+│   ├── delete-app-resources-single-aws.yml. #   └── AWS counterpart
+│   ├── delete-resource-group.yml            # Reusable: delete a single resource group in Azure
+│   ├── delete-resource-group-aws.yml        #   └── AWS counterpart
+│   ├── detect-drift.yml                     # Scheduled/callable: read-only drift sweep in Azure
+│   ├── detect-drift-aws.yml                 #   └── AWS counterpart
+│   ├── provision-infrastructure.yml         # Main workflow: end-to-end pipeline in Azure
+│   ├── provision-infrastructure-aws.yml     #   └── AWS counterpart
+│   ├── tag-app-resources.yml                # Manual: merge compliance tags onto all app resources in Azure
+│   ├── tag-app-resources-aws.yml            #   └── AWS counterpart
+│   ├── verify-infrastructure.yml            # Reusable: runs the infra repo's verify script in Azure
+│   └── verify-infrastructure-aws.yml        #   └── AWS counterpart
+├── docs/                                    # GitHub Pages site (Jekyll-rendered)
+│   ├── _config.yml                          # Jekyll config
+│   ├── CONTRIBUTING.md                      # Contribution guidelines (Pages mirror)
+│   ├── index.md                             # Pages homepage (this file)
+│   ├── pages.md                             # Pages site map & how to enable
+│   ├── provision.html                       # Provisioning entry point — picks a cloud
+│   ├── provision-azure.html                 # Self-service provisioning form (Azure)
+│   ├── provision-aws.html                   # Self-service provisioning form (AWS)
+│   ├── setup-github.md                      # One-time GitHub setup (every cloud)
+│   ├── setup-azure.md                       # One-time Azure setup
+│   └── troubleshooting.md                   # GitHub/Actions, tfstate & cloud-login issues
+├── scripts/                                 # cloud-specific scripts carry an -azure / -aws suffix
+│   ├── bootstrap-tfstate-azure.sh           # Idempotent az-cli state bootstrap (storage account)
+│   ├── bootstrap-tfstate-aws.sh             # Idempotent aws-cli state bootstrap (S3 bucket)
+│   ├── tag-app-resources-azure.sh           # Merge an arbitrary tag set onto all app resources
+│   ├── tag-app-resources-aws.sh             # Same, via the Resource Groups Tagging API
+│   ├── trigger-provision-azure.sh           # CLI wrapper around repository_dispatch
+│   ├── trigger-provision-aws.sh             # Same, for the AWS workflow
+│   └── watch-run.sh                         # Poll a remote workflow run + outputs (cloud-agnostic)
 ```
 
 > Control-plane verification is no longer defined here. It lives in each infra
@@ -239,13 +243,14 @@ for the cloud you're targeting. At a glance:
 1. **[Setup for GitHub](setup-github.md)** — push this repo, create the
    `dev` / `staging` / `prod` Environments, add the `GH_PAT` secret for
    cross-repo work.
-2. **Setup for your cloud** — [Azure](setup-azure.md), AWS coming soon:
+2. **Setup for your cloud** — [Azure](setup-azure.md) or [AWS](setup-aws.md):
    create the platform identity, federate it to GitHub via OIDC so no secrets
    are stored, and grant it the least privilege needed to bootstrap state and
    plan changes.
 3. **Trigger a run** — via the **[self-service web UI](provision.html)**, a
-   CLI wrapper such as `scripts/trigger-provision-azure.sh`, or the GitHub
-   Actions UI / API directly.
+   CLI wrapper (`scripts/trigger-provision-azure.sh` /
+   `scripts/trigger-provision-aws.sh`), or the GitHub Actions UI / API
+   directly.
 
 The state backend itself needs no manual setup: the platform bootstraps it on
 first run and every run thereafter, idempotently.
@@ -269,16 +274,31 @@ payload. For Azure:
 scripts/trigger-provision-azure.sh \
       --app-name               myapp \
       --environment            dev \
-      --azure-tenant-id        22222222-2222-2222-2222-222222222222 \
-      --azure-subscription-id  00000000-0000-0000-0000-000000000000 \
-      --azure-client-id        11111111-1111-1111-1111-111111111111 \
+      --azure-tenant-id        $AZURE_TENANT_ID \
+      --azure-subscription-id  $AZURE_SUBSCRIPTION_ID \
+      --azure-client-id        $AZURE_CLIENT_ID \
       --infra-template-repo    your-org/template-terraform-azure-webapp \
       --app-template-repo      your-org/template-helloworld-express
 ```
 
+And for AWS — `--main-domain` is required, since it drives the ACM
+certificate and Route 53 records:
+
+```bash
+scripts/trigger-provision-aws.sh \
+      --app-name            myapp \
+      --environment         dev \
+      --aws-region          eu-west-1 \
+      --aws-role-arn        arn:aws:iam::$AWS_ACCOUNT_ID:role/GitHubActionsRole \
+      --main-domain         example.com \
+      --infra-template-repo your-org/template-terraform-aws-fargate \
+      --app-template-repo   your-org/template-helloworld-express
+```
+
 Flags fall back to upper-case env vars (`ENVIRONMENT`, `APP_NAME`, …) and the
-script auto-detects the platform repo from the current git remote. `--help`
-for the full reference.
+scripts auto-detect the platform repo from the current git remote. `--help`
+for the full reference, including the AWS-only `--container-port` and
+`--health-check-path` options.
 
 ### GitHub UI
 
@@ -302,16 +322,45 @@ curl -X POST \
             "client_payload": {
                   "app_name":               "myapp",
                   "environment":            "dev",
-                  "azure_tenant_id":        "22222222-2222-2222-2222-222222222222",
-                  "azure_subscription_id":  "00000000-0000-0000-0000-000000000000",
-                  "azure_client_id":        "11111111-1111-1111-1111-111111111111",
-                  "location":               "westeurope",
+                  "azure_tenant_id":        "$AZURE_TENANT_ID",
+                  "azure_subscription_id":  "$AZURE_SUBSCRIPTION_ID",
+                  "azure_client_id":        "$AZURE_CLIENT_ID",
+                  "azure_location":         "westeurope",
                   "infra_template_repo":    "your-org/template-terraform-azure-webapp",
-                  "infra_template_ref":     "v1.2.0",
+                  "infra_template_ref":     "main",
                   "app_template_repo":      "your-org/template-helloworld-express",
-                  "app_template_ref":       "v2.0.1",
-                  "container_image":        "mcr.microsoft.com/appsvc/staticsite:latest",
-                  "container_registry_url": "myregistry.azurecr.io"
+                  "app_template_ref":       "main",
+                  "container_image":        "appsvc/staticsite:latest",
+                  "container_registry_url": "mcr.microsoft.com"
+            }
+      }'
+```
+
+And the AWS equivalent — same endpoint, different `event_type` and identity
+parameters (`main_domain` is required; `container_port` and
+`health_check_path` are optional and default to the nginx placeholder's
+`80` / `/`):
+
+```bash
+curl -X POST \
+      -H "Authorization: Bearer $GH_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      https://api.github.com/repos/<org>/<repo>/dispatches \
+      -d '{
+            "event_type": "aws-provision-infrastructure",
+            "client_payload": {
+                  "app_name":            "myapp",
+                  "environment":         "dev",
+                  "aws_role_arn":        "arn:aws:iam::$AWS_ACCOUNT_ID:role/GitHubActionsRole",
+                  "aws_region":          "eu-west-1",
+                  "main_domain":         "example.com",
+                  "infra_template_repo": "your-org/template-terraform-aws-fargate",
+                  "infra_template_ref":  "main",
+                  "app_template_repo":   "your-org/template-helloworld-express",
+                  "app_template_ref":    "main",
+                  "container_image":     "public.ecr.aws/nginx/nginx:stable-alpine",
+                  "container_port":      "80",
+                  "health_check_path":   "/"
             }
       }'
 ```
@@ -373,14 +422,11 @@ The underlying script can also be run directly against an authenticated CLI
 session. For Azure:
 
 ```bash
-az login --tenant <AZURE_TENANT_ID>
-az account set --subscription <AZURE_SUBSCRIPTION_ID>
-
 scripts/tag-app-resources-azure.sh \
   --app-name               myapp \
-  --azure-tenant-id        <tenant-guid> \
-  --azure-subscription-id  <sub-guid> \
-  --azure-client-id        <client-guid> \
+  --azure-tenant-id        $AZURE_TENANT_ID \
+  --azure-subscription-id  $AZURE_SUBSCRIPTION_ID \
+  --azure-client-id        $AZURE_CLIENT_ID \
   --tags-json              '{"tag1":"value1","tag2":"value2","CreatedBy":"user"}' \
   --dry-run
 ```
@@ -391,7 +437,7 @@ For AWS, with credentials already configured:
 scripts/tag-app-resources-aws.sh \
   --app-name   myapp \
   --aws-region eu-west-1 \
-      --tags-json  '{"airid":"309005","Application":"myapp","CreatedBy":"user"}' \
+  --tags-json  '{"tag1":"value1","tag2":"value2","CreatedBy":"user"}' \
   --dry-run
 ```
 
@@ -423,39 +469,17 @@ These hold across clouds; where a cloud forces an exception it is called out.
 
 Terraform now lives in the generated `{app-name}-infra` repository (from
 `infra_template_repo`). To inspect it locally, clone that repo and run checks
-there. State writes should always go through CI:
+there. State writes should always go through CI.
 
 ```bash
 git clone https://github.com/<org>/<app-name>-infra.git
-cd <app-name>-infra/terraform/environments/dev
-terraform fmt -check -recursive ../..
-terraform init -backend=false                  # local-only, no remote state
-terraform validate
+cd <app-name>-infra/
 ```
 
-To run Checkov locally:
-
-```bash
-pip install checkov
-# Strict ruleset (matches what CI runs against prod)
-checkov -d <app-name>-infra/terraform/environments/prod --framework terraform --config-file .checkov.yaml
-# Relaxed ruleset (matches what CI runs against dev/staging)
-checkov -d <app-name>-infra/terraform/environments/dev  --framework terraform --config-file .checkov.nonprod.yaml
-```
-
-To verify deployed infrastructure against the expected per-env policy, run the
-verification script that ships with the generated infra repo. It needs an
-authenticated CLI session for that cloud, and each archetype declares the
-environment it expects:
-
-```bash
-cd <app-name>-infra
-# Azure — requires an active `az login`
-APP_NAME=<app> ENVIRONMENT=<env> bash scripts/verify.sh
-# AWS — requires configured credentials; the region is mandatory, since
-# nearly every API it calls is regional
-APP_NAME=<app> ENVIRONMENT=<env> AWS_REGION=<region> bash scripts/verify.sh
-```
+The generated infra repository includes a detailed, step-by-step guide in its
+own documentation that explains how to configure the tools, run the Checkov
+checks, create and apply plans locally, validate changes, to be able to evolve
+the infrastructure when new requirements arise.
 
 ## Roadmap
 
@@ -501,14 +525,15 @@ APP_NAME=<app> ENVIRONMENT=<env> AWS_REGION=<region> bash scripts/verify.sh
 - [x] **Template-repo pinning** — accept `infra_template_ref` and
       `app_template_ref` inputs so known tags/commits are used rather than
       the latest default branches
+- [x] **AWS parity** — the ECS Fargate archetype's provisioning workflow and
+      its [`provision-aws.html`](provision-aws.html) form are in place, and
+      bootstrap, verify, drift, tagging and decommission all have AWS
+      counterparts
 
 ### Next
 
 **Platform-wide**
 
-- [ ] **AWS parity** — the ECS Fargate archetype's provisioning workflow, plus
-      its `provision-aws.html` form and `setup-aws.md` guide. Bootstrap,
-      verify, drift, tagging and decommission already have AWS counterparts
 - [ ] **Cost reporting per application** — daily / weekly cost export
       aggregated by `application` tag, surfaced as a comment on the run issue
 - [ ] **Budget alerts** — a per app/env budget with notifications wired in

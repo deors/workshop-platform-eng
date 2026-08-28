@@ -2,7 +2,7 @@
 title: Setup Guide for GitHub
 ---
 
-[← back to home](.)
+[← back to home](index.md)
 
 # Setup Guide for GitHub
 
@@ -159,52 +159,10 @@ self-service provisioning forms. To publish it, see
 
 ## Troubleshooting
 
-### CI in the new app repo fails with `denied: permission_denied: write_package`
-
-The container push to GHCR (`docker push ghcr.io/<owner>/<repo>:<tag>`) is
-rejected even though the platform workflow set the new repo's default
-workflow permissions to `write`. Common causes, in rough order of frequency:
-
-1. **The CI workflow declares its own `permissions:` block** that omits
-   `packages: write`. The block replaces the default — it doesn't merge with
-   it. The workflow must include all the scopes it needs, e.g.
-   `contents: read`, `packages: write`, `id-token: write`.
-
-2. **The login step uses the wrong token or username.** For `docker
-   login ghcr.io`, expect `username: ${{ github.actor }}` and
-   `password: ${{ secrets.GITHUB_TOKEN }}` — typos or a stale PAT will fail
-   with the same `denied` error.
-
-3. **Org-level setting overrides the repo setting.** Org admins can lock
-   workflow permissions at *Settings → Actions → General* with override
-   disabled. The repo-level PUT is silently ignored. Ask the org admin to
-   allow per-repo overrides or set the org default to `write`.
-
-4. **Image namespace mismatch.** GHCR only accepts pushes to
-   `ghcr.io/<owner>/<name>` where `<owner>` matches the repo owner. A tag
-   computed against a different org/user is rejected.
-
-5. **A pre-existing GHCR package linked to a different repo (or unlinked).**
-   If a package with the same name already exists in the owner's namespace
-   from a deleted repo or earlier experiment, GHCR refuses pushes from this
-   repo even with correct permissions. Visit
-   `https://github.com/orgs/<owner>/packages` (or
-   `/users/<owner>/packages`), open the package's settings and either
-   **delete** it or use **Manage Actions access** to link it to the new
-   repository.
-
-Useful diagnostic command:
-
-```bash
-gh run view <run-id> -R <owner>/<app> --log-failed
-```
-
-### Environments exist but OIDC still fails
-
-Check the environment **name** matches exactly — the OIDC subject is
-`repo:<org>/<repo>:environment:<env>`, and `Dev` will not match `dev`. The
-cloud guides cover the rest of the trust configuration.
-
+GitHub, Actions and provisioning-form problems — including the GHCR
+`permission_denied: write_package` failure and the `HTTP 403` returned when a
+token lacks *Contents: write* — are collected in
+[Troubleshooting](troubleshooting.md#github-actions-and-the-provisioning-forms).
 ---
 
 ## What's next
@@ -213,5 +171,5 @@ Continue with the guide for your target cloud:
 
 - **[Setup Guide for Azure](setup-azure.md)** — App Registration, federated
   credentials, RBAC roles, and the Terraform state storage account.
-- **AWS** — *coming soon*: OIDC identity provider, IAM role trust policy, and
-  the Terraform state S3 bucket.
+- **[Setup Guide for AWS](setup-aws.md)** — OIDC identity provider, IAM role
+  trust policy, and the Terraform state S3 bucket.
