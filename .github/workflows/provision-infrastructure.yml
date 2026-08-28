@@ -1,4 +1,4 @@
-name: Azure - Provision & Reconcile Application Resources
+name: Azure - Provision and Reconcile Application Resources
 
 on:
   workflow_dispatch:
@@ -25,7 +25,7 @@ on:
         description: Client ID of the Azure service principal / managed identity used for OIDC login
         type: string
         required: true
-      location:
+      azure_location:
         description: Azure region for all the resources (e.g. westeurope)
         type: string
         required: true
@@ -91,7 +91,7 @@ jobs:
       azure_tenant_id:         ${{ steps.params.outputs.azure_tenant_id }}
       azure_subscription_id:   ${{ steps.params.outputs.azure_subscription_id }}
       azure_client_id:         ${{ steps.params.outputs.azure_client_id }}
-      location:                ${{ steps.params.outputs.location }}
+      azure_location:          ${{ steps.params.outputs.azure_location }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
       infra_template_ref:      ${{ steps.params.outputs.infra_template_ref }}
@@ -115,7 +115,7 @@ jobs:
           WD_TENANT_ID:          ${{ github.event.inputs.azure_tenant_id }}
           WD_SUB_ID:             ${{ github.event.inputs.azure_subscription_id }}
           WD_CLIENT_ID:          ${{ github.event.inputs.azure_client_id }}
-          WD_LOCATION:           ${{ github.event.inputs.location }}
+          WD_AZURE_LOCATION:     ${{ github.event.inputs.azure_location }}
           WD_INFRA_TEMPLATE:     ${{ github.event.inputs.infra_template_repo }}
           WD_INFRA_TEMPLATE_REF: ${{ github.event.inputs.infra_template_ref }}
           WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
@@ -129,7 +129,7 @@ jobs:
           RD_TENANT_ID:          ${{ github.event.client_payload.azure_tenant_id }}
           RD_SUB_ID:             ${{ github.event.client_payload.azure_subscription_id }}
           RD_CLIENT_ID:          ${{ github.event.client_payload.azure_client_id }}
-          RD_LOCATION:           ${{ github.event.client_payload.location }}
+          RD_AZURE_LOCATION:     ${{ github.event.client_payload.azure_location }}
           RD_INFRA_TEMPLATE:     ${{ github.event.client_payload.infra_template_repo }}
           RD_INFRA_TEMPLATE_REF: ${{ github.event.client_payload.infra_template_ref }}
           RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
@@ -144,7 +144,7 @@ jobs:
           AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
           AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
           AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
-          LOCATION="${WD_LOCATION:-$RD_LOCATION}"
+          AZURE_LOCATION="${WD_AZURE_LOCATION:-$RD_AZURE_LOCATION}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
@@ -164,7 +164,7 @@ jobs:
           [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
           [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
           [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
-          [[ -z "$LOCATION"              ]] && MISSING+=(location)
+          [[ -z "$AZURE_LOCATION"        ]] && MISSING+=(azure_location)
           [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
@@ -189,7 +189,7 @@ jobs:
           # flow through job outputs to downstream jobs.
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
-          echo "location=$LOCATION"                             >> "$GITHUB_OUTPUT"
+          echo "azure_location=$AZURE_LOCATION"                 >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
           echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
@@ -233,6 +233,7 @@ jobs:
           APP_NAME:       ${{ steps.params.outputs.app_name }}
           ENVIRONMENT:    ${{ steps.params.outputs.environment }}
           IMAGE:          ${{ steps.params.outputs.container_image }}
+          REGISTRY:       ${{ steps.params.outputs.container_registry_url }}
           TRIGGER:        ${{ github.event_name }}
           WITH_APP_REPO:  ${{ steps.params.outputs.with_app_repo }}
         run: |
@@ -245,6 +246,7 @@ jobs:
           | App name         | \`$APP_NAME\`       |
           | Environment      | \`$ENVIRONMENT\`    |
           | Image            | \`$IMAGE\`          |
+          | Registry         | \`$REGISTRY\`       |
           | App repo phase   | \`$WITH_APP_REPO\`  |
           EOF
 
@@ -483,7 +485,7 @@ jobs:
       azure_tenant_id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
       azure_subscription_id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
       azure_client_id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
-      location:              ${{ needs.resolve-inputs.outputs.location }}
+      azure_location:        ${{ needs.resolve-inputs.outputs.azure_location }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 7. Terraform plan – one job per target environment, after scan passes
@@ -539,7 +541,7 @@ jobs:
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
           SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
-          LOCATION:               ${{ needs.resolve-inputs.outputs.location }}
+          LOCATION:               ${{ needs.resolve-inputs.outputs.azure_location }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
@@ -658,7 +660,7 @@ jobs:
         env:
           APP_NAME:               ${{ needs.resolve-inputs.outputs.app_name }}
           SUBSCRIPTION_ID:        ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
-          LOCATION:               ${{ needs.resolve-inputs.outputs.location }}
+          LOCATION:               ${{ needs.resolve-inputs.outputs.azure_location }}
           CONTAINER_IMAGE:        ${{ needs.resolve-inputs.outputs.container_image }}
           CONTAINER_REGISTRY_URL: ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |

@@ -23,7 +23,7 @@ Required (flag OR env var):
   --azure-tenant-id       <guid>                    AZURE_TENANT_ID
   --azure-subscription-id <guid>                    AZURE_SUBSCRIPTION_ID
   --azure-client-id       <guid>                    AZURE_CLIENT_ID
-  --location              <region>                  LOCATION
+  --azure-location        <region>                  AZURE_LOCATION
   --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
 
 Optional:
@@ -70,7 +70,7 @@ ENVIRONMENT="${ENVIRONMENT:-}"
 AZURE_TENANT_ID="${AZURE_TENANT_ID:-}"
 AZURE_SUBSCRIPTION_ID="${AZURE_SUBSCRIPTION_ID:-}"
 AZURE_CLIENT_ID="${AZURE_CLIENT_ID:-}"
-LOCATION="${LOCATION:-}"
+AZURE_LOCATION="${AZURE_LOCATION:-}"
 INFRA_TEMPLATE_REPO="${INFRA_TEMPLATE_REPO:-}"
 INFRA_TEMPLATE_REF="${INFRA_TEMPLATE_REF:-}"
 APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
@@ -87,7 +87,7 @@ while [[ $# -gt 0 ]]; do
     --azure-tenant-id)        AZURE_TENANT_ID="$2";        shift 2 ;;
     --azure-subscription-id)  AZURE_SUBSCRIPTION_ID="$2";  shift 2 ;;
     --azure-client-id)        AZURE_CLIENT_ID="$2";        shift 2 ;;
-    --location)               LOCATION="$2";               shift 2 ;;
+    --azure-location)         AZURE_LOCATION="$2";         shift 2 ;;
     --infra-template-repo)    INFRA_TEMPLATE_REPO="$2";    shift 2 ;;
     --infra-template-ref)     INFRA_TEMPLATE_REF="$2";     shift 2 ;;
     --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
@@ -110,7 +110,7 @@ MISSING=()
 [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=("--azure-tenant-id / AZURE_TENANT_ID")
 [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=("--azure-subscription-id / AZURE_SUBSCRIPTION_ID")
 [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
-[[ -z "$LOCATION"              ]] && MISSING+=("--location / LOCATION")
+[[ -z "$AZURE_LOCATION"        ]] && MISSING+=("--azure-location / AZURE_LOCATION")
 [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
@@ -143,7 +143,7 @@ PAYLOAD=$(jq -nc \
   --arg tid        "$AZURE_TENANT_ID" \
   --arg sub        "$AZURE_SUBSCRIPTION_ID" \
   --arg cid        "$AZURE_CLIENT_ID" \
-  --arg loc        "$LOCATION" \
+  --arg loc        "$AZURE_LOCATION" \
   --arg infra_tmpl "$INFRA_TEMPLATE_REPO" \
   --arg infra_ref  "$INFRA_TEMPLATE_REF" \
   --arg app_tmpl   "$APP_TEMPLATE_REPO" \
@@ -159,7 +159,7 @@ PAYLOAD=$(jq -nc \
       azure_tenant_id:       $tid,
       azure_subscription_id: $sub,
       azure_client_id:       $cid,
-      location:              $loc,
+      azure_location:        $loc,
       infra_template_repo:   $infra_tmpl
     }
     + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)

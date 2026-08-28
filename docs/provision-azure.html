@@ -247,12 +247,12 @@
         </div>
 
         <div>
-          <label for="location">Azure region <span class="req">*</span></label>
-          <input type="text" id="location" name="location" required
+          <label for="azure_location">Azure region <span class="req">*</span></label>
+          <input type="text" id="azure_location" name="azure_location" required
                  placeholder="westeurope"
                  pattern="^[a-z][a-z0-9]+$" />
           <span class="hint">Region for the Terraform state storage account. No default — must be set explicitly.</span>
-          <div class="field-error" data-for="location">Lowercase letters and digits, e.g. <code>westeurope</code>.</div>
+          <div class="field-error" data-for="azure_location">Lowercase letters and digits, e.g. <code>westeurope</code>.</div>
         </div>
 
       </div>
@@ -301,7 +301,7 @@
         <div>
           <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
           <input type="text" id="container_registry_url" name="container_registry_url"
-                 placeholder="myregistry.azurecr.io" />
+                 placeholder="mcr.microsoft.com" />
           <span class="hint">Leave empty for public images / GHCR.</span>
         </div>
 
@@ -400,7 +400,7 @@
         azure_tenant_id: v('azure_tenant_id'),
         azure_subscription_id: v('azure_subscription_id'),
         azure_client_id: v('azure_client_id'),
-        location: v('location'),
+        azure_location: v('azure_location'),
         infra_template_repo: v('infra_template_repo'),
       }
     };
