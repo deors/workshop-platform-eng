@@ -1,4 +1,4 @@
-name: AWS - Provision and Reconcile Application Resources
+name: AWS - Provision & Reconcile Application Resources
 
 # AWS counterpart of provision-infrastructure.yml. The job graph is deliberately
 # identical so the two clouds stay comparable; only the cloud-specific mechanics
@@ -75,11 +75,6 @@ on:
         type: string
         required: false
         default: "/"
-      container_registry_url:
-        description: Container registry URL, e.g. an ECR registry (leave empty for public images; used only to configure the app repo, never passed to Terraform)
-        type: string
-        required: false
-        default: ""
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -125,7 +120,6 @@ jobs:
       container_image:         ${{ steps.params.outputs.container_image }}
       container_port:          ${{ steps.params.outputs.container_port }}
       health_check_path:       ${{ steps.params.outputs.health_check_path }}
-      container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
       ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
       tfstate_bucket:          ${{ steps.tfstate_names.outputs.bucket }}
       infra_repo_full:         ${{ steps.params.outputs.infra_repo_full }}
@@ -148,7 +142,6 @@ jobs:
           WD_IMAGE:              ${{ github.event.inputs.container_image }}
           WD_PORT:               ${{ github.event.inputs.container_port }}
           WD_HEALTH_PATH:        ${{ github.event.inputs.health_check_path }}
-          WD_REGISTRY:           ${{ github.event.inputs.container_registry_url }}
           WD_CI_FILE:            ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
           RD_APP:                ${{ github.event.client_payload.app_name }}
@@ -163,7 +156,6 @@ jobs:
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
           RD_PORT:               ${{ github.event.client_payload.container_port }}
           RD_HEALTH_PATH:        ${{ github.event.client_payload.health_check_path }}
-          RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
@@ -176,20 +168,9 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          # container_image is optional. The placeholder is what Terraform
-          # writes on the first apply; thereafter the ECS service's
-          # lifecycle.ignore_changes on task_definition means whatever
-          # CodeDeploy put there stays running. Reconcile runs therefore don't
-          # need a real image value.
           CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-public.ecr.aws/nginx/nginx:stable-alpine}}"
-          # container_port and health_check_path DO keep applying on reconcile
-          # runs — they drive the ALB target group, which no deployment tool
-          # owns. Their defaults match the nginx placeholder above; a real
-          # application must pass its own on EVERY run, exactly like aws_region,
-          # or a reconcile would point the health check back at the placeholder.
           CONTAINER_PORT="${WD_PORT:-${RD_PORT:-80}}"
           HEALTH_CHECK_PATH="${WD_HEALTH_PATH:-${RD_HEALTH_PATH:-/}}"
-          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
@@ -257,7 +238,6 @@ jobs:
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
           echo "container_port=$CONTAINER_PORT"                 >> "$GITHUB_OUTPUT"
           echo "health_check_path=$HEALTH_CHECK_PATH"           >> "$GITHUB_OUTPUT"
-          echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
           echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
           echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
           echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
@@ -1164,7 +1144,6 @@ jobs:
           REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
           ROLE_ARN:   ${{ needs.resolve-inputs.outputs.aws_role_arn }}
           ACCOUNT_ID: ${{ needs.resolve-inputs.outputs.aws_account_id }}
-          REGISTRY:   ${{ needs.resolve-inputs.outputs.container_registry_url }}
         run: |
           # 1. Create the environment (PUT is idempotent — 200 if it already exists).
           gh api -X PUT "repos/${REPO_FULL}/environments/${ENV}" --silent
@@ -1179,12 +1158,15 @@ jobs:
             fi
           }
 
+          # Only variables with a real downstream consumer are set. There is
+          # no CONTAINER_REGISTRY_URL here: ECS pulls by full image reference
+          # (IAM-authenticated for ECR, anonymous for public registries), so a
+          # registry variable would have nothing to configure.
           set_var AWS_REGION     "$REGION"
           set_var AWS_ROLE_ARN   "$ROLE_ARN"
           set_var AWS_ACCOUNT_ID "$ACCOUNT_ID"
           set_var ECS_CLUSTER    "${APP_NAME}-${ENV}"
           set_var ECS_SERVICE    "${APP_NAME}-${ENV}"
-          [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
 
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 

@@ -49,8 +49,6 @@ Optional:
   --health-check-path      <path>        HEALTH_CHECK_PATH
                                            (default: /, matching the nginx placeholder;
                                             use /health for a real application)
-  --container-registry-url <url>         CONTAINER_REGISTRY_URL
-                                           (default: empty)
   --ci-workflow-file       <name>        CI_WORKFLOW_FILE
                                            (default: ci.yml)
   --repo                   <owner/name>  PLATFORM_REPO
@@ -85,7 +83,6 @@ APP_TEMPLATE_REF="${APP_TEMPLATE_REF:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
 CONTAINER_PORT="${CONTAINER_PORT:-}"
 HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH:-}"
-CONTAINER_REGISTRY_URL="${CONTAINER_REGISTRY_URL:-}"
 CI_WORKFLOW_FILE="${CI_WORKFLOW_FILE:-}"
 PLATFORM_REPO="${PLATFORM_REPO:-}"
 
@@ -103,7 +100,6 @@ while [[ $# -gt 0 ]]; do
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
     --container-port)         CONTAINER_PORT="$2";         shift 2 ;;
     --health-check-path)      HEALTH_CHECK_PATH="$2";      shift 2 ;;
-    --container-registry-url) CONTAINER_REGISTRY_URL="$2"; shift 2 ;;
     --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
     --repo)                   PLATFORM_REPO="$2";          shift 2 ;;
     -h|--help)                usage; exit 0 ;;
@@ -188,7 +184,6 @@ PAYLOAD=$(jq -nc \
   --arg image       "$CONTAINER_IMAGE" \
   --arg port        "$CONTAINER_PORT" \
   --arg health      "$HEALTH_CHECK_PATH" \
-  --arg reg         "$CONTAINER_REGISTRY_URL" \
   --arg ci          "$CI_WORKFLOW_FILE" \
   '{
     event_type:     "aws-provision-infrastructure",
@@ -206,7 +201,6 @@ PAYLOAD=$(jq -nc \
     + (if $image     != "" then {container_image:        $image}     else {} end)
     + (if $port      != "" then {container_port:         $port}      else {} end)
     + (if $health    != "" then {health_check_path:      $health}    else {} end)
-    + (if $reg       != "" then {container_registry_url: $reg}       else {} end)
     + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
   }')
 

@@ -1,4 +1,4 @@
-name: Azure - Provision and Reconcile Application Resources
+name: Azure - Provision & Reconcile Application Resources
 
 on:
   workflow_dispatch:
@@ -52,12 +52,12 @@ on:
         description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/deploy)"
         type: string
         required: false
-        default: "mcr.microsoft.com/appsvc/staticsite:latest"
+        default: "appsvc/staticsite:latest"
       container_registry_url:
         description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
         type: string
         required: false
-        default: ""
+        default: "mcr.microsoft.com"
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string

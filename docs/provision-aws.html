@@ -288,14 +288,7 @@
           <label for="container_image">Container image <span class="hint" style="display:inline;">(optional)</span></label>
           <input type="text" id="container_image" name="container_image"
                  placeholder="public.ecr.aws/nginx/nginx:stable-alpine" />
-          <span class="hint">Ignored on reconcile runs. Default placeholder used if blank.</span>
-        </div>
-
-        <div>
-          <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="container_registry_url" name="container_registry_url"
-                 placeholder="123456789012.dkr.ecr.eu-west-1.amazonaws.com" />
-          <span class="hint">Leave empty for public images / GHCR.</span>
+          <span class="hint">Ignored on reconcile runs. Default placeholder used if blank. Include the registry host in the reference — ECS pulls by full image reference, so there is no separate registry field.</span>
         </div>
 
         <div>
@@ -413,7 +406,7 @@
       }
     };
     ['infra_template_ref', 'app_template_repo', 'app_template_ref', 'container_image',
-     'container_registry_url', 'container_port', 'health_check_path', 'ci_workflow_file'].forEach(id => {
+     'container_port', 'health_check_path', 'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
     });
     return payload;
