@@ -1,0 +1,395 @@
+name: AWS - Delete Application Resources (Single Environment)
+
+# Tears down ONE environment of an application on AWS, mirroring
+# delete-app-resources-single.yml on the Azure side:
+#
+#   1. destroy the infrastructure
+#   2. delete the environment's resource group object
+#   3. remove the application repo's GitHub Environment and its variables
+#   4. remove the environment's OIDC trust subject
+#
+# The application REPOSITORY is never deleted — only the Environment inside it,
+# exactly as the Azure workflow behaves.
+#
+# HOW THE INFRASTRUCTURE IS DESTROYED
+#
+# The Azure workflow deletes `rg-<app>-<env>` and Azure removes everything
+# inside it. AWS has no equivalent: a resource group is only a saved tag query,
+# so deleting it destroys nothing. Teardown therefore runs `terraform destroy`
+# against the recorded state in the app's infra repo, which is both authoritative
+# about what exists and aware of the dependency ordering AWS demands (drain the
+# ECS service before the cluster, release ENIs before the subnets, delete the
+# NAT gateway before detaching the internet gateway, and so on).
+#
+# This fails safe: if the state is empty or missing, `destroy` is a no-op and
+# nothing is removed.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, staging, prod)
+        type: string
+        required: true
+      aws_region:
+        description: AWS region holding the resources
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC
+        type: string
+        required: true
+      main_domain:
+        description: "Root domain the template issued certificates under (empty when HTTPS was not enabled)"
+        type: string
+        required: false
+        default: ""
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      confirmation_environment:
+        description: Repeat the exact environment to confirm destructive deletion
+        type: string
+        required: true
+    secrets:
+      GH_PAT:
+        required: true
+
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+      aws_region:
+        description: AWS region holding the resources (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      main_domain:
+        description: "Root domain the template issued certificates under (leave empty when HTTPS was not enabled)"
+        type: string
+        required: false
+        default: ""
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      confirmation_environment:
+        description: Repeat the exact environment to confirm destructive deletion
+        type: string
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    name: Validate inputs
+    runs-on: ubuntu-latest
+    outputs:
+      app_name:            ${{ steps.out.outputs.app_name }}
+      environment:         ${{ steps.out.outputs.environment }}
+      resource_group_name: ${{ steps.out.outputs.resource_group_name }}
+      app_repo_full:       ${{ steps.out.outputs.app_repo_full }}
+      infra_repo_full:     ${{ steps.out.outputs.infra_repo_full }}
+    steps:
+      - name: Validate
+        id: out
+        env:
+          IN_APP:         ${{ inputs.app_name }}
+          WD_APP:         ${{ github.event.inputs.app_name }}
+          IN_ENV:         ${{ inputs.environment }}
+          WD_ENV:         ${{ github.event.inputs.environment }}
+          IN_CONFIRM_APP: ${{ inputs.confirmation_app_name }}
+          WD_CONFIRM_APP: ${{ github.event.inputs.confirmation_app_name }}
+          IN_CONFIRM_ENV: ${{ inputs.confirmation_environment }}
+          WD_CONFIRM_ENV: ${{ github.event.inputs.confirmation_environment }}
+        run: |
+          set -euo pipefail
+
+          APP_NAME="${IN_APP:-$WD_APP}"
+          ENVIRONMENT="${IN_ENV:-$WD_ENV}"
+          CONFIRM_APP_NAME="${IN_CONFIRM_APP:-$WD_CONFIRM_APP}"
+          CONFIRM_ENVIRONMENT="${IN_CONFIRM_ENV:-$WD_CONFIRM_ENV}"
+
+          [[ -z "$APP_NAME"    ]] && { echo "::error::app_name is required"; exit 1; }
+          [[ -z "$ENVIRONMENT" ]] && { echo "::error::environment is required"; exit 1; }
+
+          if [[ "$APP_NAME" != "$CONFIRM_APP_NAME" ]]; then
+            echo "::error::confirmation_app_name must exactly match app_name"
+            exit 1
+          fi
+          if [[ "$ENVIRONMENT" != "$CONFIRM_ENVIRONMENT" ]]; then
+            echo "::error::confirmation_environment must exactly match environment"
+            exit 1
+          fi
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3-22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+          if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "staging" && "$ENVIRONMENT" != "prod" ]]; then
+            echo "::error::environment must be one of dev, staging, prod"
+            exit 1
+          fi
+
+          RG_NAME="rg-${APP_NAME}-${ENVIRONMENT}"
+          APP_REPO_FULL="${GITHUB_REPOSITORY_OWNER}/${APP_NAME}"
+          INFRA_REPO_FULL="${GITHUB_REPOSITORY_OWNER}/${APP_NAME}-infra"
+
+          {
+            echo "app_name=$APP_NAME"
+            echo "environment=$ENVIRONMENT"
+            echo "resource_group_name=$RG_NAME"
+            echo "app_repo_full=$APP_REPO_FULL"
+            echo "infra_repo_full=$INFRA_REPO_FULL"
+          } >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Destroy the infrastructure via Terraform. This is the step that actually
+  # removes AWS resources; everything after it is cleanup of metadata.
+  # ────────────────────────────────────────────────────────────────────────────
+  destroy:
+    name: "Terraform destroy · ${{ needs.validate.outputs.environment }}"
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      destroy_status: ${{ steps.destroy.outputs.destroy_status }}
+
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.validate.outputs.infra_repo_full }}
+          path:       infra-repo
+          token:      ${{ secrets.GH_PAT || github.token }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+          aws-region:     ${{ inputs.aws_region || github.event.inputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Terraform destroy
+        id: destroy
+        env:
+          APP_NAME:    ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT: ${{ needs.validate.outputs.environment }}
+          AWS_REGION:  ${{ inputs.aws_region || github.event.inputs.aws_region }}
+          MAIN_DOMAIN: ${{ inputs.main_domain || github.event.inputs.main_domain }}
+        run: |
+          set -euo pipefail
+
+          DIR="infra-repo/terraform/environments/${ENVIRONMENT}"
+          if [[ ! -d "$DIR" ]]; then
+            echo "::error::environment directory '${ENVIRONMENT}' not found in the infra repo — cannot destroy safely"
+            exit 1
+          fi
+
+          # Must match the formula in scripts/bootstrap-tfstate-aws.sh exactly.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          APP_SHORT=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr -d '_' | cut -c1-20)
+          ACCT_SHORT=$(echo "$ACCOUNT_ID" | cut -c1-8)
+          TFSTATE_BUCKET="tf-state-${APP_SHORT}-${ACCT_SHORT}"
+          echo "State bucket: ${TFSTATE_BUCKET}, key: ${ENVIRONMENT}/terraform.tfstate"
+
+          cd "$DIR"
+
+          # The template's required variables. `container_image` is immaterial
+          # to a destroy (nothing is created), but Terraform still refuses to
+          # run without every required variable set. main_domain DOES matter:
+          # it gates the ACM/Route 53 resources via `count`, so passing the
+          # value the environment was created with is what lets those resources
+          # be destroyed rather than left orphaned.
+          printf 'aws_region      = "%s"\n' "$AWS_REGION"  >  terraform.tfvars
+          printf 'app_name        = "%s"\n' "$APP_NAME"    >> terraform.tfvars
+          printf 'container_image = "%s"\n' "public.ecr.aws/nginx/nginx:stable-alpine" >> terraform.tfvars
+          printf 'main_domain     = "%s"\n' "${MAIN_DOMAIN:-}" >> terraform.tfvars
+
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TFSTATE_BUCKET}" \
+            -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true"
+
+          # An empty or missing state means there is nothing to tear down. Say
+          # so and stop rather than letting `destroy` look like it did work.
+          STATE_COUNT=$(terraform state list 2>/dev/null | grep -c . || true)
+          if [[ "$STATE_COUNT" -eq 0 ]]; then
+            echo "No resources in state — nothing to destroy."
+            echo "destroy_status=Nothing to destroy (empty state)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Destroying ${STATE_COUNT} managed resources…"
+          terraform destroy -auto-approve -input=false -no-color
+
+          REMAINING=$(terraform state list 2>/dev/null | grep -c . || true)
+          if [[ "$REMAINING" -gt 0 ]]; then
+            echo "::error::terraform destroy finished but ${REMAINING} resources remain in state"
+            echo "destroy_status=Incomplete (${REMAINING} left in state)" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "destroy_status=Destroyed (${STATE_COUNT} resources)" >> "$GITHUB_OUTPUT"
+
+  # The group object only becomes safe to remove once its resources are gone.
+  delete-rg:
+    name: Delete AWS resource group
+    needs: [validate, destroy]
+    uses: ./.github/workflows/delete-resource-group-aws.yml
+    with:
+      resource_group_name: ${{ needs.validate.outputs.resource_group_name }}
+      aws_region:          ${{ inputs.aws_region || github.event.inputs.aws_region }}
+      aws_role_arn:        ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+
+  cleanup-github-and-oidc:
+    name: Cleanup GitHub environment and OIDC
+    needs: [validate, destroy, delete-rg]
+    runs-on: ubuntu-latest
+    steps:
+      # Deletes the ENVIRONMENT and its variables inside the application repo.
+      # The repository itself is never deleted.
+      - name: Remove GitHub environment variables and environment
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          APP_REPO_FULL: ${{ needs.validate.outputs.app_repo_full }}
+          TARGET_ENV:    ${{ needs.validate.outputs.environment }}
+        run: |
+          set -euo pipefail
+
+          if ! gh api "repos/${APP_REPO_FULL}" --silent 2>/dev/null; then
+            echo "Application repo '${APP_REPO_FULL}' not found. Skipping GitHub environment cleanup."
+            exit 0
+          fi
+
+          VAR_NAMES=$(gh api "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}/variables" --jq '.variables[].name' 2>/dev/null || true)
+          if [[ -n "$VAR_NAMES" ]]; then
+            while IFS= read -r var_name; do
+              [[ -z "$var_name" ]] && continue
+              gh api -X DELETE "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}/variables/${var_name}" --silent || true
+            done <<< "$VAR_NAMES"
+          fi
+
+          gh api -X DELETE "repos/${APP_REPO_FULL}/environments/${TARGET_ENV}" --silent 2>/dev/null || true
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+          aws-region:     ${{ inputs.aws_region || github.event.inputs.aws_region }}
+
+      # Azure removes the environment's federated credential from the AD app.
+      # The AWS analogue is the GitHub OIDC subject inside the IAM role's trust
+      # policy. This is a read-modify-write of a document that may be SHARED by
+      # other applications, so it is deliberately conservative: it removes only
+      # the exact subject for this app+environment, drops a statement solely if
+      # that leaves it with no subjects at all (an empty subject list would
+      # match nothing and is worse than no statement), and writes nothing back
+      # when the document is unchanged.
+      #
+      # Concurrency: the all-environments workflow serialises its matrix
+      # (max-parallel: 1), so an app's own environments cannot race here.
+      # Deleting two DIFFERENT apps at the same time still can — the last write
+      # would win. Retire apps one at a time if they share a role.
+      - name: Remove OIDC trust subject
+        env:
+          ROLE_ARN:      ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+          APP_REPO_FULL: ${{ needs.validate.outputs.app_repo_full }}
+          TARGET_ENV:    ${{ needs.validate.outputs.environment }}
+        run: |
+          set -euo pipefail
+
+          ROLE_NAME="${ROLE_ARN##*/}"
+          SUBJECT="repo:${APP_REPO_FULL}:environment:${TARGET_ENV}"
+          echo "Looking for trust subject '${SUBJECT}' on role '${ROLE_NAME}'…"
+
+          if ! CURRENT=$(aws iam get-role --role-name "$ROLE_NAME" \
+                          --query 'Role.AssumeRolePolicyDocument' --output json 2>/dev/null); then
+            echo "Could not read the trust policy for '${ROLE_NAME}'. Skipping OIDC cleanup."
+            exit 0
+          fi
+
+          # Strip the subject wherever it appears, as a bare string or in a list,
+          # under any condition operator (StringEquals / StringLike / ...).
+          UPDATED=$(jq --arg s "$SUBJECT" '
+            def strip_sub:
+              with_entries(
+                if (.key | ascii_downcase | endswith("githubusercontent.com:sub"))
+                then .value |= (if type == "array" then map(select(. != $s))
+                                elif . == $s then []
+                                else . end)
+                else . end
+              );
+            .Statement |= (
+              map(if has("Condition")
+                  then .Condition |= with_entries(.value |= strip_sub)
+                  else . end)
+              # Drop only statements whose sub-condition became empty.
+              | map(select(
+                  (.Condition // {})
+                  | to_entries
+                  | map(.value | to_entries
+                        | map(select((.key | ascii_downcase | endswith("githubusercontent.com:sub"))
+                                     and (.value | type == "array") and ((.value | length) == 0)))
+                        | length)
+                  | add // 0
+                  | . == 0
+                ))
+            )' <<<"$CURRENT")
+
+          if [[ "$(jq -S . <<<"$UPDATED")" == "$(jq -S . <<<"$CURRENT")" ]]; then
+            echo "Trust policy does not reference '${SUBJECT}'. Nothing to change."
+            exit 0
+          fi
+
+          if [[ "$(jq '.Statement | length' <<<"$UPDATED")" -eq 0 ]]; then
+            echo "::warning::Removing '${SUBJECT}' would leave the trust policy with no statements; leaving it untouched. Clean up '${ROLE_NAME}' manually if the role is now unused."
+            exit 0
+          fi
+
+          aws iam update-assume-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-document "$UPDATED"
+          echo "Removed '${SUBJECT}' from the trust policy of '${ROLE_NAME}'."
+
+      - name: Summary
+        if: always()
+        env:
+          APP_NAME:       ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT:    ${{ needs.validate.outputs.environment }}
+          RESOURCE_GROUP: ${{ needs.validate.outputs.resource_group_name }}
+          DESTROY_STATUS: ${{ needs.destroy.outputs.destroy_status }}
+          RG_STATUS:      ${{ needs.delete-rg.outputs.resource_group_status }}
+        run: |
+          {
+            echo "## Delete App Resources (AWS)"
+            echo ""
+            echo "- App name: $APP_NAME"
+            echo "- Environment: $ENVIRONMENT"
+            echo "- Terraform destroy: ${DESTROY_STATUS:-Unknown}"
+            echo "- Resource group: $RESOURCE_GROUP"
+            echo "- Resource group delete status: ${RG_STATUS:-Unknown}"
+            echo "- GitHub environment cleanup: executed (environment and its variables; repository untouched)"
+            echo "- OIDC trust subject cleanup: executed"
+          } >> "$GITHUB_STEP_SUMMARY"

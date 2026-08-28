@@ -1,0 +1,216 @@
+name: AWS - Delete Application Resources (All Environments + tfstate)
+
+# Retires an entire application on AWS, mirroring delete-app-resources-all.yml
+# on the Azure side: every environment in turn, then the Terraform state backend.
+#
+# The application and infrastructure REPOSITORIES are never deleted — only the
+# GitHub Environments inside the app repo, matching the Azure behaviour.
+#
+# Ordering matters and is enforced by `needs`: the state backend is destroyed
+# LAST, because every per-environment `terraform destroy` reads and writes the
+# state stored in it. Removing the bucket first would strand the infrastructure
+# with no way to tear it down short of hand-deleting each resource.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name used in resource group names
+        type: string
+        required: true
+      aws_region:
+        description: AWS region holding the resources and the tfstate bucket (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      main_domain:
+        description: "Root domain the template issued certificates under (leave empty when HTTPS was not enabled)"
+        type: string
+        required: false
+        default: ""
+      confirmation_app_name:
+        description: Repeat the exact application name to confirm destructive deletion
+        type: string
+        required: true
+      delete_tfstate:
+        description: Also delete the Terraform state bucket (irreversible — the state history is unrecoverable)
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  validate:
+    name: Validate request
+    runs-on: ubuntu-latest
+    outputs:
+      app_name:       ${{ steps.validate.outputs.app_name }}
+      delete_tfstate: ${{ steps.validate.outputs.delete_tfstate }}
+    steps:
+      - name: Validate inputs
+        id: validate
+        env:
+          APP_NAME:              ${{ github.event.inputs.app_name }}
+          CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
+          DELETE_TFSTATE:        ${{ github.event.inputs.delete_tfstate }}
+        run: |
+          set -euo pipefail
+
+          [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
+          if [[ "$APP_NAME" != "$CONFIRMATION_APP_NAME" ]]; then
+            echo "::error::confirmation_app_name must exactly match app_name"
+            exit 1
+          fi
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3-22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+          if [[ "$DELETE_TFSTATE" != "true" && "$DELETE_TFSTATE" != "false" ]]; then
+            echo "::error::delete_tfstate must be either true or false"
+            exit 1
+          fi
+
+          echo "app_name=$APP_NAME"             >> "$GITHUB_OUTPUT"
+          echo "delete_tfstate=$DELETE_TFSTATE" >> "$GITHUB_OUTPUT"
+
+  # One environment at a time (max-parallel: 1). Serialising is not just
+  # tidiness: the environments share an IAM role whose trust policy is edited
+  # during cleanup, and concurrent read-modify-write would lose updates.
+  delete-env-resources:
+    name: "Delete env · ${{ matrix.environment }}"
+    needs: validate
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        environment: [dev, staging, prod]
+    uses: ./.github/workflows/delete-app-resources-single-aws.yml
+    with:
+      app_name:                 ${{ needs.validate.outputs.app_name }}
+      environment:              ${{ matrix.environment }}
+      confirmation_app_name:    ${{ needs.validate.outputs.app_name }}
+      confirmation_environment: ${{ matrix.environment }}
+      aws_region:               ${{ github.event.inputs.aws_region }}
+      aws_role_arn:             ${{ github.event.inputs.aws_role_arn }}
+      main_domain:              ${{ github.event.inputs.main_domain }}
+    secrets: inherit
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # The state backend, last. Skipped entirely when delete_tfstate is false, so
+  # an app can be torn down while keeping its state history for forensics.
+  # ────────────────────────────────────────────────────────────────────────────
+  delete-tfstate-bucket:
+    name: Delete tfstate bucket
+    needs: [validate, delete-env-resources]
+    if: needs.validate.outputs.delete_tfstate == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      bucket_status: ${{ steps.delete_bucket.outputs.bucket_status }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ github.event.inputs.aws_role_arn }}
+          aws-region:     ${{ github.event.inputs.aws_region }}
+
+      - name: Empty and delete state bucket
+        id: delete_bucket
+        env:
+          APP_NAME:   ${{ needs.validate.outputs.app_name }}
+          AWS_REGION: ${{ github.event.inputs.aws_region }}
+        run: |
+          set -euo pipefail
+
+          # Must match the formula in scripts/bootstrap-tfstate-aws.sh exactly.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          APP_SHORT=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr -d '_' | cut -c1-20)
+          ACCT_SHORT=$(echo "$ACCOUNT_ID" | cut -c1-8)
+          BUCKET="tf-state-${APP_SHORT}-${ACCT_SHORT}"
+          echo "State bucket: $BUCKET"
+
+          # head-bucket exits non-zero for a missing bucket AND for denied access
+          # or expired credentials. Only a genuine 404 means "already gone";
+          # anything else must fail loudly rather than silently report success.
+          if ERR=$(aws s3api head-bucket --bucket "$BUCKET" 2>&1 >/dev/null); then
+            :
+          elif grep -qi "404\|Not Found\|NoSuchBucket" <<<"$ERR"; then
+            echo "Bucket '$BUCKET' not found."
+            echo "bucket_status=Not found" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            echo "::error::Could not determine whether bucket '${BUCKET}' exists:"
+            printf '%s\n' "$ERR" >&2
+            exit 1
+          fi
+
+          # The bootstrap enables versioning, so the bucket is not empty until
+          # every object VERSION and every DELETE MARKER is gone. `aws s3 rm
+          # --recursive` and `s3 rb --force` only remove current objects and
+          # would leave delete-bucket failing with BucketNotEmpty.
+          # Versions and delete markers are purged in ONE loop. Draining them in
+          # separate passes looks tidier but is wrong: `--max-keys` caps the two
+          # lists COMBINED, so a page consisting only of delete markers would
+          # make a versions-only pass see zero and stop early, leaving versions
+          # behind and delete-bucket failing with BucketNotEmpty.
+          #
+          # There is no pagination token here by design — each iteration deletes
+          # what it just listed, so the next listing starts from what remains.
+          echo "Emptying '$BUCKET'…"
+          TOTAL=0
+          while :; do
+            # max-keys 1000 also keeps each batch within delete-objects' limit.
+            BATCH=$(aws s3api list-object-versions --bucket "$BUCKET" --max-keys 1000 \
+                      --output json \
+                    | jq -c '{Objects: [ (.Versions[]?, .DeleteMarkers[]?) | {Key, VersionId} ], Quiet: true}')
+            N=$(jq '.Objects | length' <<<"$BATCH")
+            [[ "$N" -eq 0 ]] && break
+            aws s3api delete-objects --bucket "$BUCKET" --delete "$BATCH" >/dev/null
+            TOTAL=$((TOTAL + N))
+            echo "  purged ${TOTAL} object versions / delete markers so far…"
+          done
+          echo "Bucket emptied (${TOTAL} versions and delete markers removed)."
+
+          aws s3api delete-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+          echo "bucket_status=Deleted" >> "$GITHUB_OUTPUT"
+
+  delete-tfstate-resource-group:
+    name: Delete tfstate resource group
+    needs: [validate, delete-tfstate-bucket]
+    uses: ./.github/workflows/delete-resource-group-aws.yml
+    with:
+      resource_group_name: rg-${{ needs.validate.outputs.app_name }}-tfstate
+      aws_region:          ${{ github.event.inputs.aws_region }}
+      aws_role_arn:        ${{ github.event.inputs.aws_role_arn }}
+
+  summary:
+    name: Summary
+    needs: [validate, delete-env-resources, delete-tfstate-bucket, delete-tfstate-resource-group]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        env:
+          APP_NAME:       ${{ needs.validate.outputs.app_name }}
+          DELETE_TFSTATE: ${{ needs.validate.outputs.delete_tfstate }}
+          ENV_RESULT:     ${{ needs.delete-env-resources.result }}
+          BUCKET_STATUS:  ${{ needs.delete-tfstate-bucket.outputs.bucket_status }}
+          RG_STATUS:      ${{ needs.delete-tfstate-resource-group.outputs.resource_group_status }}
+        run: |
+          {
+            echo "## Delete Application Resources — AWS (all environments)"
+            echo ""
+            echo "- App name: $APP_NAME"
+            echo "- Environments (dev, staging, prod): ${ENV_RESULT:-Unknown}"
+            echo "- Delete tfstate requested: $DELETE_TFSTATE"
+            echo "- State bucket: ${BUCKET_STATUS:-Skipped}"
+            echo "- tfstate resource group: ${RG_STATUS:-Skipped}"
+            echo ""
+            echo "> Application and infrastructure repositories were not deleted."
+          } >> "$GITHUB_STEP_SUMMARY"

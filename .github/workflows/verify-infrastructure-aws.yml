@@ -1,0 +1,213 @@
+name: AWS - Verify Application Resources
+
+# Reusable verification of a deployed stack. The verification logic itself is
+# NOT defined here — it lives in the provisioned infrastructure repository at
+# the canonical path scripts/verify.sh (seeded from the infra template). This
+# workflow is template-agnostic: it checks out the infra repo and runs that
+# script, then surfaces the results. Each infra template therefore owns and
+# governs its own assertions. Three entry points:
+#
+#   1. workflow_call      – invoked from an AWS provisioning workflow as a
+#                           matrix job after `apply`.
+#   2. workflow_dispatch  – ad-hoc manual run from the GitHub UI.
+#   3. repository_dispatch – external trigger via the GitHub API
+#                            (event type: aws-verify-infrastructure).
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment (dev, staging, prod)
+        type: string
+        required: true
+      aws_region:
+        description: AWS region the stack was applied to
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC
+        type: string
+        required: true
+      main_domain:
+        description: "Root domain in Route 53. When set, verify.sh adds ACM certificate, Route 53 record and end-to-end HTTPS checks."
+        type: string
+        required: false
+        default: ""
+      infra_repo:
+        description: "Provisioned infrastructure repo holding scripts/verify.sh (owner/name). Defaults to <owner>/<app_name>-infra when empty."
+        type: string
+        required: false
+        default: ""
+      verify_script:
+        description: Canonical path to the verification script inside the infra repo
+        type: string
+        required: false
+        default: scripts/verify.sh
+    secrets:
+      gh_pat:
+        description: PAT used to checkout the (possibly private) infrastructure repo. Falls back to the GH_PAT repo secret for standalone runs.
+        required: false
+
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod]
+        required: true
+        default: dev
+      aws_region:
+        description: AWS region the stack was applied to (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      main_domain:
+        description: "Root domain in Route 53 (leave empty to skip certificate, DNS and HTTPS checks)"
+        type: string
+        required: false
+        default: ""
+      infra_repo:
+        description: "Provisioned infrastructure repo holding scripts/verify.sh (owner/name). Leave empty to derive <owner>/<app_name>-infra."
+        type: string
+        required: false
+        default: ""
+
+  repository_dispatch:
+    types:
+      - aws-verify-infrastructure
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  verify:
+    name: "Verify · ${{ inputs.environment || github.event.client_payload.environment }}"
+    runs-on: ubuntu-latest
+    # Bind to the GitHub Environment so the env-scoped OIDC subject
+    # (`repo:<org>/<repo>:environment:<env>`) matches the role's trust policy.
+    environment: ${{ inputs.environment || github.event.client_payload.environment }}
+
+    steps:
+      - name: Resolve inputs
+        id: params
+        env:
+          # Typed inputs (workflow_call & workflow_dispatch share the same
+          # `inputs.*` context).
+          IN_APP:           ${{ inputs.app_name }}
+          IN_ENV:           ${{ inputs.environment }}
+          IN_REGION:        ${{ inputs.aws_region }}
+          IN_ROLE_ARN:      ${{ inputs.aws_role_arn }}
+          IN_MAIN_DOMAIN:   ${{ inputs.main_domain }}
+          IN_INFRA_REPO:    ${{ inputs.infra_repo }}
+          IN_VERIFY_SCRIPT: ${{ inputs.verify_script }}
+          # repository_dispatch payload (untyped).
+          RD_APP:           ${{ github.event.client_payload.app_name }}
+          RD_ENV:           ${{ github.event.client_payload.environment }}
+          RD_REGION:        ${{ github.event.client_payload.aws_region }}
+          RD_ROLE_ARN:      ${{ github.event.client_payload.aws_role_arn }}
+          RD_MAIN_DOMAIN:   ${{ github.event.client_payload.main_domain }}
+          RD_INFRA_REPO:    ${{ github.event.client_payload.infra_repo }}
+          RD_VERIFY_SCRIPT: ${{ github.event.client_payload.verify_script }}
+          OWNER:            ${{ github.repository_owner }}
+        run: |
+          APP_NAME="${IN_APP:-$RD_APP}"
+          ENVIRONMENT="${IN_ENV:-$RD_ENV}"
+          AWS_REGION="${IN_REGION:-$RD_REGION}"
+          AWS_ROLE_ARN="${IN_ROLE_ARN:-$RD_ROLE_ARN}"
+          MAIN_DOMAIN="${IN_MAIN_DOMAIN:-${RD_MAIN_DOMAIN:-}}"
+          INFRA_REPO="${IN_INFRA_REPO:-$RD_INFRA_REPO}"
+          # Canonical path of the verification script inside the infra repo.
+          VERIFY_SCRIPT="${IN_VERIFY_SCRIPT:-${RD_VERIFY_SCRIPT:-scripts/verify.sh}}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"     ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"  ]] && MISSING+=(environment)
+          [[ -z "$AWS_REGION"   ]] && MISSING+=(aws_region)
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING+=(aws_role_arn)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          # Derive the infra repo from the app name for standalone runs that
+          # don't pass it explicitly. Matches the orchestrator's convention
+          # (`<owner>/<app_name>-infra`).
+          if [[ -z "$INFRA_REPO" ]]; then
+            INFRA_REPO="${OWNER}/${APP_NAME}-infra"
+          fi
+
+          # The role ARN and region are identifiers, not secrets in an OIDC
+          # flow; they are NOT masked because GitHub blanks masked values when
+          # they pass through step outputs.
+
+          echo "app_name=$APP_NAME"           >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"     >> "$GITHUB_OUTPUT"
+          echo "aws_region=$AWS_REGION"       >> "$GITHUB_OUTPUT"
+          echo "aws_role_arn=$AWS_ROLE_ARN"   >> "$GITHUB_OUTPUT"
+          echo "main_domain=$MAIN_DOMAIN"     >> "$GITHUB_OUTPUT"
+          echo "infra_repo=$INFRA_REPO"       >> "$GITHUB_OUTPUT"
+          echo "verify_script=$VERIFY_SCRIPT" >> "$GITHUB_OUTPUT"
+
+      # Check out the provisioned infrastructure repo so we can run ITS
+      # verification logic. The script lives beside the Terraform that defines
+      # the expectations, keeping this workflow template-agnostic.
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.params.outputs.infra_repo }}
+          path:       infra-repo
+          # Standalone runs have no caller-passed secret; fall back to the
+          # repo-level GH_PAT. Public infra repos check out fine without a
+          # token, but passing one keeps private repos working too.
+          token:      ${{ secrets.gh_pat || secrets.GH_PAT || github.token }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.params.outputs.aws_role_arn }}
+          aws-region:     ${{ steps.params.outputs.aws_region }}
+
+      - name: Verify infrastructure
+        working-directory: infra-repo
+        env:
+          APP_NAME:      ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT:   ${{ steps.params.outputs.environment }}
+          # verify.sh requires AWS_REGION explicitly and deliberately provides no
+          # fallback to AWS_DEFAULT_REGION or the ambient profile: almost every
+          # API it calls is regional, so an implicit region would report "no such
+          # resource" for a stack that is deployed and healthy elsewhere.
+          AWS_REGION:    ${{ steps.params.outputs.aws_region }}
+          # Optional. When set, verify.sh adds ACM certificate, Route 53 record
+          # and end-to-end HTTPS assertions.
+          MAIN_DOMAIN:   ${{ steps.params.outputs.main_domain }}
+          VERIFY_SCRIPT: ${{ steps.params.outputs.verify_script }}
+        run: |
+          if [[ ! -f "$VERIFY_SCRIPT" ]]; then
+            echo "::error::Verification script '$VERIFY_SCRIPT' not found in ${{ steps.params.outputs.infra_repo }}. Each infra template must provide its own verification logic at this canonical path."
+            exit 1
+          fi
+          bash "$VERIFY_SCRIPT"
+
+      # Always upload, even when verify failed — the script writes the
+      # summary file before exiting non-zero, and the calling workflow's
+      # final summary still wants to render the counts.
+      - name: Upload verify summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              verify-aws-${{ steps.params.outputs.environment }}
+          path:              /tmp/verify-summary.txt
+          retention-days:    7
+          if-no-files-found: warn

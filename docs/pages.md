@@ -21,6 +21,7 @@ new cloud is added by dropping in new files, never by editing the shared ones.
 | `/` | `index.md` | Homepage — what the platform does, architecture, conventions, roadmap. |
 | `/provision.html` | `provision.html` | Provisioning entry point: explains the generic run, links to the per-cloud forms. |
 | `/provision-azure.html` | `provision-azure.html` | Self-service provisioning form for Azure App Service. |
+| `/provision-aws.html` | `provision-aws.html` | Self-service provisioning form for AWS ECS Fargate. |
 | `/setup-github/` | `setup-github.md` | One-time GitHub setup — identical for every cloud. Do this first. |
 | `/setup-azure/` | `setup-azure.md` | One-time Azure setup — identity, RBAC, state backend. |
 | `/CONTRIBUTING/` | `CONTRIBUTING.md` | Contribution guidelines (mirror of the repo-root file). |
@@ -86,8 +87,8 @@ cloud) to do everything else.
 > **Gotcha:** "Actions: write" sounds like the right permission for
 > triggering workflows but it isn't enough for `repository_dispatch` —
 > GitHub specifically requires Contents:write here. If you see
-> `HTTP 403: Resource not accessible by personal access token`, this is
-> almost always the cause.
+> `HTTP 403: Resource not accessible by personal access token`, see
+> [Troubleshooting](troubleshooting.md#http-403-resource-not-accessible-by-personal-access-token).
 
 ## Auto-detected repo
 

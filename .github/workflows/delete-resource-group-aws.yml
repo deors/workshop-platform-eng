@@ -1,0 +1,123 @@
+name: AWS - Delete Resource Group
+
+# Deletes an AWS Resource Group OBJECT. Callable-only leaf, mirroring
+# delete-resource-group.yml on the Azure side.
+#
+# ⚠️ IMPORTANT SEMANTIC DIFFERENCE FROM AZURE ⚠️
+#
+# An Azure resource group is a CONTAINER: `az group delete` destroys every
+# resource inside it, and the Azure delete family relies on exactly that.
+#
+# An AWS resource group is only a SAVED TAG QUERY. `aws resource-groups
+# delete-group` removes the query object and NOTHING ELSE — every VPC, ECS
+# service, load balancer and NAT gateway it matched keeps running and keeps
+# billing. This workflow therefore does NOT destroy infrastructure and must
+# never be used as if it did.
+#
+# The actual teardown lives in delete-app-resources-single-aws.yml, which runs
+# `terraform destroy` against the recorded state. This workflow is called
+# AFTERWARDS to clear away the now-empty group object.
+
+on:
+  workflow_call:
+    inputs:
+      resource_group_name:
+        description: AWS Resource Group name to delete (the query object, not its resources)
+        type: string
+        required: true
+      aws_region:
+        description: AWS region the resource group lives in
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC
+        type: string
+        required: true
+    outputs:
+      resource_group_status:
+        description: Deletion status for the resource group object
+        value: ${{ jobs.delete-resource-group.outputs.resource_group_status }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  delete-resource-group:
+    name: Delete resource group
+    runs-on: ubuntu-latest
+    outputs:
+      resource_group_status: ${{ steps.delete_rg.outputs.resource_group_status }}
+
+    steps:
+      - name: Validate inputs
+        env:
+          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+          AWS_REGION:          ${{ inputs.aws_region }}
+        run: |
+          set -euo pipefail
+
+          [[ -z "$RESOURCE_GROUP_NAME" ]] && { echo "::error::resource_group_name is required"; exit 1; }
+          [[ -z "$AWS_REGION"          ]] && { echo "::error::aws_region is required"; exit 1; }
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ inputs.aws_role_arn }}
+          aws-region:     ${{ inputs.aws_region }}
+
+      - name: Delete resource group
+        id: delete_rg
+        env:
+          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+          AWS_REGION:          ${{ inputs.aws_region }}
+        run: |
+          set -euo pipefail
+
+          # `get-group` exits non-zero for a missing group — but equally for an
+          # expired token, a throttle or a denied permission. Treating every
+          # failure as "not found" would report success while deleting nothing,
+          # so the error is inspected and only a genuine NotFoundException is
+          # accepted as an absent group.
+          if ERR=$(aws resource-groups get-group \
+                     --region "$AWS_REGION" \
+                     --group-name "$RESOURCE_GROUP_NAME" 2>&1 >/dev/null); then
+            GROUP_EXISTS=true
+          elif grep -qi "NotFoundException\|does not exist" <<<"$ERR"; then
+            GROUP_EXISTS=false
+          else
+            echo "::error::Could not determine whether resource group '${RESOURCE_GROUP_NAME}' exists:"
+            printf '%s\n' "$ERR" >&2
+            exit 1
+          fi
+
+          if [[ "$GROUP_EXISTS" == "false" ]]; then
+            STATUS="Not found"
+          else
+            # Synchronous: unlike `az group delete`, there is nothing to wait
+            # for — the call returns once the query object is gone. That is why
+            # this workflow has no `wait_for_completion` input.
+            aws resource-groups delete-group \
+              --region "$AWS_REGION" \
+              --group-name "$RESOURCE_GROUP_NAME" >/dev/null
+            STATUS="Deleted"
+          fi
+
+          echo "resource_group_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Write summary
+        if: always()
+        env:
+          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
+          STATUS:              ${{ steps.delete_rg.outputs.resource_group_status }}
+        run: |
+          {
+            echo "## Delete Resource Group (AWS)"
+            echo ""
+            echo "- Resource group: $RESOURCE_GROUP_NAME"
+            echo "- Result: ${STATUS:-Unknown}"
+            echo ""
+            echo "> Only the resource-group query object was removed. AWS resource"
+            echo "> groups do not contain resources, so no infrastructure was"
+            echo "> destroyed by this step."
+          } >> "$GITHUB_STEP_SUMMARY"

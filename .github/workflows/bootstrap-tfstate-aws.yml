@@ -1,0 +1,178 @@
+name: AWS - Bootstrap Terraform State
+
+# Reusable bootstrap of the per-application Terraform state S3 bucket
+# (idempotent — safe to run every time). Three entry points:
+#
+#   1. workflow_call      – invoked from an AWS provisioning workflow.
+#   2. workflow_dispatch  – ad-hoc manual run from the GitHub UI.
+#   3. repository_dispatch – external trigger via the GitHub API
+#                            (event type: aws-bootstrap-tfstate).
+#
+# The state backend is a PLATFORM concern: every application template must get
+# its state provisioned the same way, so the script lives here rather than in
+# any template repository.
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: Application name
+        type: string
+        required: true
+      aws_region:
+        description: AWS region for the tfstate bucket
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC
+        type: string
+        required: true
+      aws_account_id:
+        description: "AWS account ID (optional — resolved via STS when omitted)"
+        type: string
+        required: false
+        default: ""
+
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name (must match the value used when provisioning)
+        type: string
+        required: true
+      aws_region:
+        description: AWS region for the tfstate bucket (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      aws_account_id:
+        description: "AWS account ID (optional — leave empty to resolve it via STS)"
+        type: string
+        required: false
+        default: ""
+
+  repository_dispatch:
+    types:
+      - aws-bootstrap-tfstate
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bootstrap:
+    name: Bootstrap tfstate bucket
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve inputs
+        id: params
+        env:
+          # Typed inputs (workflow_call & workflow_dispatch share the same
+          # `inputs.*` context).
+          IN_APP:        ${{ inputs.app_name }}
+          IN_REGION:     ${{ inputs.aws_region }}
+          IN_ROLE_ARN:   ${{ inputs.aws_role_arn }}
+          IN_ACCOUNT_ID: ${{ inputs.aws_account_id }}
+          # repository_dispatch payload (untyped).
+          RD_APP:        ${{ github.event.client_payload.app_name }}
+          RD_REGION:     ${{ github.event.client_payload.aws_region }}
+          RD_ROLE_ARN:   ${{ github.event.client_payload.aws_role_arn }}
+          RD_ACCOUNT_ID: ${{ github.event.client_payload.aws_account_id }}
+        run: |
+          APP_NAME="${IN_APP:-$RD_APP}"
+          AWS_REGION="${IN_REGION:-$RD_REGION}"
+          AWS_ROLE_ARN="${IN_ROLE_ARN:-$RD_ROLE_ARN}"
+          AWS_ACCOUNT_ID="${IN_ACCOUNT_ID:-${RD_ACCOUNT_ID:-}}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"     ]] && MISSING+=(app_name)
+          [[ -z "$AWS_REGION"   ]] && MISSING+=(aws_region)
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING+=(aws_role_arn)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3–22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+
+          # The role ARN and account ID are identifiers, not secrets in an OIDC
+          # flow; they are NOT masked because GitHub blanks masked values when
+          # they pass through step outputs.
+          {
+            echo "app_name=$APP_NAME"
+            echo "aws_region=$AWS_REGION"
+            echo "aws_role_arn=$AWS_ROLE_ARN"
+            echo "aws_account_id=$AWS_ACCOUNT_ID"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.params.outputs.aws_role_arn }}
+          aws-region:     ${{ steps.params.outputs.aws_region }}
+
+      - name: Run bootstrap script
+        id: bootstrap
+        env:
+          APP_NAME:   ${{ steps.params.outputs.app_name }}
+          AWS_REGION: ${{ steps.params.outputs.aws_region }}
+          ACCOUNT_ID: ${{ steps.params.outputs.aws_account_id }}
+        run: |
+          ARGS=(
+            --app-name   "$APP_NAME"
+            --aws-region "$AWS_REGION"
+          )
+          [[ -n "$ACCOUNT_ID" ]] && ARGS+=(--aws-account-id "$ACCOUNT_ID")
+
+          # Capture stdout (the KEY=VALUE output lines) into a variable. The
+          # script writes its progress log to stderr, so stdout carries only the
+          # machine-readable values.
+          OUTPUT=$(bash scripts/bootstrap-tfstate-aws.sh "${ARGS[@]}")
+          echo "$OUTPUT"
+
+          # Parse outputs and forward to GITHUB_OUTPUT, skipping the blank lines
+          # the script prints around them.
+          while IFS='=' read -r key value; do
+            [[ -z "$key" ]] && continue
+            echo "${key}=${value}" >> "$GITHUB_OUTPUT"
+          done <<< "$OUTPUT"
+
+      - name: Write summary
+        env:
+          APP_NAME: ${{ steps.params.outputs.app_name }}
+          BUCKET:   ${{ steps.bootstrap.outputs.TFSTATE_BUCKET }}
+          REGION:   ${{ steps.bootstrap.outputs.TFSTATE_REGION }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Terraform State Storage
+
+          | Resource        | Name              |
+          |-----------------|-------------------|
+          | S3 bucket       | \`$BUCKET\`       |
+          | Region          | \`$REGION\`       |
+          | Resource group  | \`rg-$APP_NAME-tfstate\` |
+
+          ### Backend config for \`$APP_NAME\`
+
+          Use these values in \`terraform init\` or copy to \`backend.tf\`:
+
+          \`\`\`hcl
+          terraform {
+            backend "s3" {
+              bucket  = "$BUCKET"
+              key     = "<environment>/terraform.tfstate"
+              region  = "$REGION"
+              encrypt = true
+            }
+          }
+          \`\`\`
+          EOF

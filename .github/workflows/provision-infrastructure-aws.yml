@@ -1,0 +1,1461 @@
+name: AWS - Provision & Reconcile Application Resources
+
+# AWS counterpart of provision-infrastructure.yml. The job graph is deliberately
+# identical so the two clouds stay comparable; only the cloud-specific mechanics
+# differ. The four substantive differences from the Azure orchestrator are:
+#
+#   1. Identity — one IAM role assumed via OIDC (`aws_role_arn`) replaces the
+#      tenant/subscription/client triple. The AWS account ID is derived from the
+#      role ARN rather than passed separately.
+#   2. State backend — an S3 bucket (`tf-state-<app>-<account8>`) instead of a
+#      storage account + container.
+#   3. Trust registration — the Azure "federated credential" per environment is
+#      a subject inside the IAM role's assume-role policy on AWS, so that job is
+#      a read-modify-write of a SHARED document and must not run in parallel.
+#   4. Template inputs — the AWS Fargate template additionally requires
+#      `main_domain` (it issues an ACM certificate and a Route 53 record) and
+#      accepts `container_port` / `health_check_path`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: Application name (short, lowercase, no spaces)
+        type: string
+        required: true
+      environment:
+        description: Target environment
+        type: choice
+        options: [dev, staging, prod, all]
+        required: true
+        default: dev
+      aws_region:
+        description: AWS region for all the resources and the tfstate bucket (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      main_domain:
+        description: Root domain managed in Route 53 (e.g. example.com). The template issues a certificate for <app>.<env>.<main_domain>.
+        type: string
+        required: true
+      infra_template_repo:
+        description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-aws-fargate)"
+        type: string
+        required: true
+      infra_template_ref:
+        description: "Git ref (tag, branch, or commit SHA) to pin the infra template; leave empty to use the template's default branch latest commit"
+        type: string
+        required: false
+        default: ""
+      app_template_repo:
+        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express); leave empty to skip the application repository phase"
+        type: string
+        required: false
+        default: ""
+      app_template_ref:
+        description: "Git ref (tag, branch, or commit SHA) to pin the app template; leave empty to use the template's default branch latest commit"
+        type: string
+        required: false
+        default: ""
+      container_image:
+        description: "Container image reference (ignored in reconcile runs — the ECS service's lifecycle keeps the task definition last set by CodeDeploy)"
+        type: string
+        required: false
+        default: "public.ecr.aws/nginx/nginx:stable-alpine"
+      container_port:
+        description: "TCP port the container listens on. Default 80 matches the nginx placeholder above; set 8080 (the template's own default) for a real application."
+        type: string
+        required: false
+        default: "80"
+      health_check_path:
+        description: "HTTP path the ALB health check polls. Default / matches the nginx placeholder; set /health for a real application."
+        type: string
+        required: false
+        default: "/"
+      container_registry_url:
+        description: Container registry URL, e.g. an ECR registry (leave empty for public images; used only to configure the app repo, never passed to Terraform)
+        type: string
+        required: false
+        default: ""
+      ci_workflow_file:
+        description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
+        type: string
+        required: false
+        default: ci.yml
+
+  repository_dispatch:
+    types:
+      - aws-provision-infrastructure
+
+# Permissions required for OIDC login and SARIF upload to Security tab.
+permissions:
+  id-token:        write
+  contents:        read
+  security-events: write
+
+concurrency:
+  # Distinct from the Azure group so an AWS run for an app is never queued
+  # behind that app's Azure run — they touch different clouds and different
+  # state, and only share the app name.
+  group: provision-aws-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
+  cancel-in-progress: false   # never cancel an in-flight provision
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Resolve & validate inputs from either trigger source
+  # ────────────────────────────────────────────────────────────────────────────
+  resolve-inputs:
+    name: Resolve inputs
+    runs-on: ubuntu-latest
+    outputs:
+      app_name:                ${{ steps.params.outputs.app_name }}
+      environments:            ${{ steps.matrix.outputs.environments }}
+      aws_region:              ${{ steps.params.outputs.aws_region }}
+      aws_role_arn:            ${{ steps.params.outputs.aws_role_arn }}
+      aws_account_id:          ${{ steps.params.outputs.aws_account_id }}
+      main_domain:             ${{ steps.params.outputs.main_domain }}
+      infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
+      app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
+      infra_template_ref:      ${{ steps.params.outputs.infra_template_ref }}
+      app_template_ref:        ${{ steps.params.outputs.app_template_ref }}
+      with_app_repo:           ${{ steps.params.outputs.with_app_repo }}
+      container_image:         ${{ steps.params.outputs.container_image }}
+      container_port:          ${{ steps.params.outputs.container_port }}
+      health_check_path:       ${{ steps.params.outputs.health_check_path }}
+      container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
+      ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
+      tfstate_bucket:          ${{ steps.tfstate_names.outputs.bucket }}
+      infra_repo_full:         ${{ steps.params.outputs.infra_repo_full }}
+      app_repo_full:           ${{ steps.params.outputs.app_repo_full }}
+
+    steps:
+      - name: Extract and validate parameters
+        id: params
+        env:
+          # workflow_dispatch values
+          WD_APP:                ${{ github.event.inputs.app_name }}
+          WD_ENV:                ${{ github.event.inputs.environment }}
+          WD_REGION:             ${{ github.event.inputs.aws_region }}
+          WD_ROLE_ARN:           ${{ github.event.inputs.aws_role_arn }}
+          WD_MAIN_DOMAIN:        ${{ github.event.inputs.main_domain }}
+          WD_INFRA_TEMPLATE:     ${{ github.event.inputs.infra_template_repo }}
+          WD_INFRA_TEMPLATE_REF: ${{ github.event.inputs.infra_template_ref }}
+          WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
+          WD_APP_TEMPLATE_REF:   ${{ github.event.inputs.app_template_ref }}
+          WD_IMAGE:              ${{ github.event.inputs.container_image }}
+          WD_PORT:               ${{ github.event.inputs.container_port }}
+          WD_HEALTH_PATH:        ${{ github.event.inputs.health_check_path }}
+          WD_REGISTRY:           ${{ github.event.inputs.container_registry_url }}
+          WD_CI_FILE:            ${{ github.event.inputs.ci_workflow_file }}
+          # repository_dispatch values (client_payload)
+          RD_APP:                ${{ github.event.client_payload.app_name }}
+          RD_ENV:                ${{ github.event.client_payload.environment }}
+          RD_REGION:             ${{ github.event.client_payload.aws_region }}
+          RD_ROLE_ARN:           ${{ github.event.client_payload.aws_role_arn }}
+          RD_MAIN_DOMAIN:        ${{ github.event.client_payload.main_domain }}
+          RD_INFRA_TEMPLATE:     ${{ github.event.client_payload.infra_template_repo }}
+          RD_INFRA_TEMPLATE_REF: ${{ github.event.client_payload.infra_template_ref }}
+          RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
+          RD_APP_TEMPLATE_REF:   ${{ github.event.client_payload.app_template_ref }}
+          RD_IMAGE:              ${{ github.event.client_payload.container_image }}
+          RD_PORT:               ${{ github.event.client_payload.container_port }}
+          RD_HEALTH_PATH:        ${{ github.event.client_payload.health_check_path }}
+          RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
+          RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
+          OWNER:                 ${{ github.repository_owner }}
+        run: |
+          APP_NAME="${WD_APP:-$RD_APP}"
+          ENVIRONMENT="${WD_ENV:-$RD_ENV}"
+          AWS_REGION="${WD_REGION:-$RD_REGION}"
+          AWS_ROLE_ARN="${WD_ROLE_ARN:-$RD_ROLE_ARN}"
+          MAIN_DOMAIN="${WD_MAIN_DOMAIN:-$RD_MAIN_DOMAIN}"
+          INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
+          INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
+          APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
+          APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
+          # container_image is optional. The placeholder is what Terraform
+          # writes on the first apply; thereafter the ECS service's
+          # lifecycle.ignore_changes on task_definition means whatever
+          # CodeDeploy put there stays running. Reconcile runs therefore don't
+          # need a real image value.
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-public.ecr.aws/nginx/nginx:stable-alpine}}"
+          # container_port and health_check_path DO keep applying on reconcile
+          # runs — they drive the ALB target group, which no deployment tool
+          # owns. Their defaults match the nginx placeholder above; a real
+          # application must pass its own on EVERY run, exactly like aws_region,
+          # or a reconcile would point the health check back at the placeholder.
+          CONTAINER_PORT="${WD_PORT:-${RD_PORT:-80}}"
+          HEALTH_CHECK_PATH="${WD_HEALTH_PATH:-${RD_HEALTH_PATH:-/}}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
+          CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
+
+          MISSING=()
+          [[ -z "$APP_NAME"            ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"         ]] && MISSING+=(environment)
+          [[ -z "$AWS_REGION"          ]] && MISSING+=(aws_region)
+          [[ -z "$AWS_ROLE_ARN"        ]] && MISSING+=(aws_role_arn)
+          [[ -z "$MAIN_DOMAIN"         ]] && MISSING+=(main_domain)
+          [[ -z "$INFRA_TEMPLATE_REPO" ]] && MISSING+=(infra_template_repo)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]}"
+            exit 1
+          fi
+
+          # Presence of app_template_repo controls whether the application
+          # repository phase runs; omitting it provisions infra only.
+          WITH_APP_REPO=false
+          [[ -n "$APP_TEMPLATE_REPO" ]] && WITH_APP_REPO=true
+
+          # Validate app_name: lowercase alphanumeric + hyphens only
+          if ! [[ "$APP_NAME" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+            echo "::error::app_name must be 3–22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+            exit 1
+          fi
+
+          # The role ARN is parsed twice below — for the account ID that names
+          # the tfstate bucket, and (in configure-oidc-trust) for the role name.
+          # A malformed ARN would silently yield a wrong bucket or a wrong role
+          # rather than an error, so it is validated up front.
+          if ! [[ "$AWS_ROLE_ARN" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$ ]]; then
+            echo "::error::aws_role_arn must be a full IAM role ARN, e.g. arn:aws:iam::123456789012:role/GitHubActionsRole"
+            exit 1
+          fi
+          # Field 5 of the ARN. This is by definition the account the role lives
+          # in, which is the account we assume into — so it always matches what
+          # `aws sts get-caller-identity` would return, without needing a login.
+          AWS_ACCOUNT_ID=$(cut -d: -f5 <<<"$AWS_ROLE_ARN")
+
+          if ! [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] || (( CONTAINER_PORT < 1 || CONTAINER_PORT > 65535 )); then
+            echo "::error::container_port must be an integer between 1 and 65535 — got '${CONTAINER_PORT}'"
+            exit 1
+          fi
+          if [[ "$HEALTH_CHECK_PATH" != /* ]]; then
+            echo "::error::health_check_path must start with '/' — got '${HEALTH_CHECK_PATH}'"
+            exit 1
+          fi
+
+          # Note: aws_role_arn and the account ID identify AWS principals. They
+          # are not secrets in an OIDC flow (security comes from the role's
+          # trust policy subject condition). They are NOT masked here because
+          # GitHub Actions blanks masked values when they flow through job
+          # outputs to downstream jobs.
+
+          echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
+          echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
+          echo "aws_region=$AWS_REGION"                         >> "$GITHUB_OUTPUT"
+          echo "aws_role_arn=$AWS_ROLE_ARN"                     >> "$GITHUB_OUTPUT"
+          echo "aws_account_id=$AWS_ACCOUNT_ID"                 >> "$GITHUB_OUTPUT"
+          echo "main_domain=$MAIN_DOMAIN"                       >> "$GITHUB_OUTPUT"
+          echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
+          echo "infra_template_ref=$INFRA_TEMPLATE_REF"         >> "$GITHUB_OUTPUT"
+          echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
+          echo "app_template_ref=$APP_TEMPLATE_REF"             >> "$GITHUB_OUTPUT"
+          echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
+          echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
+          echo "container_port=$CONTAINER_PORT"                 >> "$GITHUB_OUTPUT"
+          echo "health_check_path=$HEALTH_CHECK_PATH"           >> "$GITHUB_OUTPUT"
+          echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
+          echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
+          echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
+          echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
+
+      - name: Derive tfstate resource names
+        id: tfstate_names
+        env:
+          APP_NAME:       ${{ steps.params.outputs.app_name }}
+          AWS_ACCOUNT_ID: ${{ steps.params.outputs.aws_account_id }}
+        run: |
+          # Must match the formula in scripts/bootstrap-tfstate-aws.sh exactly
+          APP_SHORT=$(echo "$APP_NAME"       | tr '[:upper:]' '[:lower:]' | tr -d '_' | cut -c1-20)
+          ACCT_SHORT=$(echo "$AWS_ACCOUNT_ID" | cut -c1-8)
+          echo "bucket=tf-state-${APP_SHORT}-${ACCT_SHORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Build environment matrix
+        id: matrix
+        env:
+          ENVIRONMENT: ${{ steps.params.outputs.environment }}
+        run: |
+          if [[ "$ENVIRONMENT" == "all" ]]; then
+            echo 'environments=["dev","staging","prod"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "environments=[\"$ENVIRONMENT\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summary
+        env:
+          APP_NAME:       ${{ steps.params.outputs.app_name }}
+          ENVIRONMENT:    ${{ steps.params.outputs.environment }}
+          REGION:         ${{ steps.params.outputs.aws_region }}
+          IMAGE:          ${{ steps.params.outputs.container_image }}
+          TRIGGER:        ${{ github.event_name }}
+          WITH_APP_REPO:  ${{ steps.params.outputs.with_app_repo }}
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Provision Infrastructure (AWS)
+
+          | Parameter        | Value               |
+          |------------------|---------------------|
+          | Trigger          | \`$TRIGGER\`        |
+          | App name         | \`$APP_NAME\`       |
+          | Environment      | \`$ENVIRONMENT\`    |
+          | Region           | \`$REGION\`         |
+          | Image            | \`$IMAGE\`          |
+          | App repo phase   | \`$WITH_APP_REPO\`  |
+          EOF
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Create infrastructure repository from template (idempotent)
+  # ────────────────────────────────────────────────────────────────────────────
+  create-infra-repo:
+    name: Create infrastructure repo
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+    outputs:
+      infra_repo_existed: ${{ steps.create.outputs.repo_existed }}
+
+    steps:
+      - name: Create from template
+        id: create
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          OWNER:         ${{ github.repository_owner }}
+          APP_NAME:      ${{ needs.resolve-inputs.outputs.app_name }}
+          REPO_FULL:     ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          TEMPLATE:      ${{ needs.resolve-inputs.outputs.infra_template_repo }}
+          TEMPLATE_REF:  ${{ needs.resolve-inputs.outputs.infra_template_ref }}
+        run: |
+          if gh api "repos/${REPO_FULL}" --silent 2>/dev/null; then
+            echo "Repository ${REPO_FULL} already exists — skipping creation"
+            echo "repo_existed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Creating ${REPO_FULL} from template ${TEMPLATE}…"
+          gh api -X POST "repos/${TEMPLATE}/generate" \
+            -f "owner=${OWNER}" \
+            -f "name=${APP_NAME}-infra" \
+            -f "description=Infrastructure repository for ${APP_NAME} (provisioned by platform-eng)" \
+            -F "private=false" \
+            -F "include_all_branches=false"
+
+          # The "generate" endpoint is async. Wait until the repo exists AND
+          # its default branch is queryable so downstream actions/checkout sees
+          # an actual branch tip rather than a half-created repository.
+          READY=false
+          for _ in $(seq 1 30); do
+            DEFAULT_BRANCH=$(gh api "repos/${REPO_FULL}" --jq '.default_branch // ""' 2>/dev/null || true)
+            if [[ -n "$DEFAULT_BRANCH" ]] && gh api "repos/${REPO_FULL}/branches/${DEFAULT_BRANCH}" --silent 2>/dev/null; then
+              READY=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ "$READY" != "true" ]]; then
+            echo "::error::Repository ${REPO_FULL} was created but its default branch did not become ready in time"
+            exit 1
+          fi
+
+          # Pin the repo contents to a specific template ref if requested.
+          # GitHub's generate endpoint always seeds from the template's default
+          # branch; to honour a pinned tag/branch/SHA we clone the template at
+          # that exact ref and force-push it onto the new repo's default branch.
+          if [[ -n "$TEMPLATE_REF" ]]; then
+            echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
+            git clone \
+              "https://x-access-token:${GH_TOKEN}@github.com/${TEMPLATE}.git" \
+              /tmp/template-infra-pin
+            git -C /tmp/template-infra-pin checkout "${TEMPLATE_REF}"
+            git -C /tmp/template-infra-pin remote add target \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            git -C /tmp/template-infra-pin push --force target \
+              "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
+          fi
+
+          echo "repo_existed=false" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          EXISTED:   ${{ steps.create.outputs.repo_existed }}
+        run: |
+          {
+            echo "## Infrastructure repository"
+            if [[ "$EXISTED" == "true" ]]; then
+              echo ""
+              echo "[\`$REPO_FULL\`](https://github.com/$REPO_FULL) already existed — using existing."
+            else
+              echo ""
+              echo "Created [\`$REPO_FULL\`](https://github.com/$REPO_FULL) from template."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. Open a per-run tracking issue in the infrastructure repository.
+  #     Created right after the infra repo is available (new or existing). A
+  #     follow-up comment with the full infrastructure summary (plan results,
+  #     verify counts) is posted by comment-infra-issue after apply + verify.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-infra-issue:
+    name: Create infra repo issue
+    needs: [resolve-inputs, create-infra-repo]
+    runs-on: ubuntu-latest
+    outputs:
+      infra_issue_number: ${{ steps.issue.outputs.number }}
+      infra_issue_url:    ${{ steps.issue.outputs.url }}
+    steps:
+      - name: Build issue body
+        id: body
+        env:
+          ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
+          APP_NAME:           ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:         ${{ needs.resolve-inputs.outputs.aws_region }}
+          INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          INFRA_TEMPLATE:     ${{ needs.resolve-inputs.outputs.infra_template_repo }}
+          INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
+          PROVISION_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+          ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
+
+          if [[ "$INFRA_REPO_EXISTED" == "false" ]]; then
+            TITLE_PREFIX="Provision run"
+            REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) created from template [\`${INFRA_TEMPLATE}\`](https://github.com/${INFRA_TEMPLATE})."
+          else
+            TITLE_PREFIX="Reconcile run"
+            REPO_LINE="Infrastructure repository [\`${INFRA_REPO_FULL}\`](https://github.com/${INFRA_REPO_FULL}) already existed — Terraform will reconcile AWS against the repo's current canonical contents."
+          fi
+
+          {
+            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo
+            echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
+            echo
+            echo "## Infrastructure repository"
+            echo
+            echo "${REPO_LINE}"
+            echo
+            echo "Cloud: AWS, region \`${AWS_REGION}\`."
+            echo
+            echo "Environments in scope: ${ENV_LIST}."
+            echo
+            echo "_Infrastructure apply and verify results will be added in a follow-up comment._"
+          } > /tmp/infra-issue-body.md
+
+          echo "title=${TITLE_PREFIX} (AWS) — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue
+        id: issue
+        env:
+          GH_TOKEN:        ${{ secrets.GH_PAT }}
+          INFRA_REPO_FULL: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          TITLE:           ${{ steps.body.outputs.title }}
+        run: |
+          URL=$(gh issue create -R "$INFRA_REPO_FULL" \
+            --title "$TITLE" \
+            --body-file /tmp/infra-issue-body.md)
+          NUMBER="${URL##*/}"
+          echo "url=$URL"        >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 4. Checkov – security and compliance scan, per target environment
+  #    Per-env scoping lets us keep prod-strict baselines (ALB deletion
+  #    protection, restrictive security groups) while allowing dev/staging to
+  #    run lighter, faster-to-tear-down footprints.
+  # ────────────────────────────────────────────────────────────────────────────
+  checkov:
+    name: "Checkov · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-infra-repo]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          path: infra-repo
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Run Checkov
+        id: checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory:             infra-repo/terraform/environments/${{ matrix.environment }}
+          framework:             terraform
+          # Prod uses the strict baseline; dev/staging use the relaxed config
+          # that additionally skips CKV_AWS_150, CKV_AWS_260, CKV2_AWS_5 and
+          # CKV2_AWS_19.
+          config_file: ${{ matrix.environment == 'prod' && 'infra-repo/.checkov.yaml' || 'infra-repo/.checkov.nonprod.yaml' }}
+          output_format:         cli,sarif
+          output_file_path:      console,checkov-results.sarif
+          download_external_modules: false
+          soft_fail:             false
+
+      - name: Upload SARIF to GitHub Security tab
+        if: always()   # upload even when checkov fails so findings are visible
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file:      checkov-results.sarif
+          # Distinct from the Azure category so findings from the two clouds
+          # do not overwrite each other in the Security tab.
+          category:        checkov-terraform-aws-${{ matrix.environment }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 5. Terraform format check (once, not per-environment)
+  # ────────────────────────────────────────────────────────────────────────────
+  fmt:
+    name: Terraform fmt check
+    needs: [resolve-inputs, create-infra-repo]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          path: infra-repo
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive infra-repo/terraform/
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 6. Bootstrap remote state storage (idempotent – safe to run every time).
+  #    Delegates to the reusable bootstrap-tfstate-aws.yml workflow so the same
+  #    logic can be triggered standalone.
+  # ────────────────────────────────────────────────────────────────────────────
+  bootstrap-tfstate:
+    name: Bootstrap tfstate bucket
+    needs: [resolve-inputs, checkov, fmt]
+    uses: ./.github/workflows/bootstrap-tfstate-aws.yml
+    with:
+      app_name:       ${{ needs.resolve-inputs.outputs.app_name }}
+      aws_region:     ${{ needs.resolve-inputs.outputs.aws_region }}
+      aws_role_arn:   ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+      # Already derived from the role ARN, so the reusable workflow can skip
+      # its STS lookup — and the bucket it creates is guaranteed to be the one
+      # plan/apply below will init against.
+      aws_account_id: ${{ needs.resolve-inputs.outputs.aws_account_id }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 7. Terraform plan – one job per target environment, after scan passes
+  # ────────────────────────────────────────────────────────────────────────────
+  plan:
+    name: "Plan · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-infra-repo, checkov, fmt, bootstrap-tfstate]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # plan remaining envs even if one fails
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    environment: ${{ matrix.environment }}   # enables GitHub environment protection rules
+
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          path: infra-repo
+          token: ${{ secrets.GH_PAT }}
+
+      # Sets AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN in
+      # the job env, which both the S3 backend and the aws provider pick up
+      # from the standard credential chain — no -backend-config credentials
+      # and no provider-block boilerplate needed.
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Generate tfvars
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
+          CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
+          CONTAINER_PORT:    ${{ needs.resolve-inputs.outputs.container_port }}
+          HEALTH_CHECK_PATH: ${{ needs.resolve-inputs.outputs.health_check_path }}
+          MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
+        run: |
+          # Write tfvars using printf to avoid shell interpolation of HCL syntax.
+          # container_port is a number in the template's variables.tf, so it is
+          # written unquoted; everything else is a string.
+          printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
+          printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
+          printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
+          printf 'container_port    = %s\n'   "$CONTAINER_PORT"    >> terraform.tfvars
+          printf 'health_check_path = "%s"\n' "$HEALTH_CHECK_PATH" >> terraform.tfvars
+          printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
+
+      - name: Terraform init
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          ENVIRONMENT:    ${{ matrix.environment }}
+          TFSTATE_BUCKET: ${{ needs.resolve-inputs.outputs.tfstate_bucket }}
+          AWS_REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TFSTATE_BUCKET}" \
+            -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true"
+
+      - name: Terraform validate
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        run: terraform validate
+
+      - name: Terraform plan
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        run: |
+          set -o pipefail
+          # -no-color: markdown code blocks in the step summary don't render
+          # ANSI escapes; without this the captured output is unreadable.
+          terraform plan \
+            -input=false \
+            -no-color \
+            -out=tfplan \
+            2>&1 | tee plan-output.txt
+
+      - name: Write plan summary
+        if: always()
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          {
+            echo "## Plan · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            echo "<details><summary>Show plan output</summary>"
+            echo ""
+            echo '```'
+            cat plan-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          retention-days:    7
+          if-no-files-found: error
+          path: |
+            infra-repo/terraform/environments/${{ matrix.environment }}/tfplan
+            infra-repo/terraform/environments/${{ matrix.environment }}/plan-output.txt
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 8. Terraform apply – consume the plan artifact and provision per environment
+  # ────────────────────────────────────────────────────────────────────────────
+  apply:
+    name: "Apply · ${{ matrix.environment }}"
+    needs: [resolve-inputs, plan]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    environment: ${{ matrix.environment }}
+
+    steps:
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          path: infra-repo
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Generate tfvars
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
+          CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
+          CONTAINER_PORT:    ${{ needs.resolve-inputs.outputs.container_port }}
+          HEALTH_CHECK_PATH: ${{ needs.resolve-inputs.outputs.health_check_path }}
+          MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
+        run: |
+          # Must match the plan job's tfvars exactly — an `aws_region` that
+          # differed between plan and apply would move every resource to
+          # another region.
+          printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
+          printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
+          printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
+          printf 'container_port    = %s\n'   "$CONTAINER_PORT"    >> terraform.tfvars
+          printf 'health_check_path = "%s"\n' "$HEALTH_CHECK_PATH" >> terraform.tfvars
+          printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
+
+      - name: Terraform init
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          ENVIRONMENT:    ${{ matrix.environment }}
+          TFSTATE_BUCKET: ${{ needs.resolve-inputs.outputs.tfstate_bucket }}
+          AWS_REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TFSTATE_BUCKET}" \
+            -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="encrypt=true"
+
+      - name: Download tfplan
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          path: infra-repo/terraform/environments/${{ matrix.environment }}
+
+      - name: Terraform apply
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        run: |
+          set -o pipefail
+          terraform apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
+
+      - name: Write apply summary
+        if: always()
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
+          ENVIRONMENT: ${{ matrix.environment }}
+        run: |
+          {
+            echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            echo "<details><summary>Show apply output</summary>"
+            echo ""
+            echo '```'
+            cat apply-output.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 9. Verify – delegates to the reusable verify-infrastructure-aws.yml
+  #    workflow. The reusable workflow owns the GitHub Environment binding and
+  #    the OIDC login, so trust-policy subject matching stays consistent
+  #    whether verify runs from here or is triggered standalone.
+  # ────────────────────────────────────────────────────────────────────────────
+  verify:
+    name: "Verify · ${{ matrix.environment }}"
+    needs: [resolve-inputs, apply]
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    uses: ./.github/workflows/verify-infrastructure-aws.yml
+    with:
+      app_name:     ${{ needs.resolve-inputs.outputs.app_name }}
+      environment:  ${{ matrix.environment }}
+      aws_region:   ${{ needs.resolve-inputs.outputs.aws_region }}
+      aws_role_arn: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+      # Drives the certificate, Route 53 and end-to-end HTTPS assertions. It is
+      # mandatory for this workflow, so verify always runs the full set.
+      main_domain:  ${{ needs.resolve-inputs.outputs.main_domain }}
+      # The verification logic lives in the provisioned infra repo (seeded from
+      # the infra template at scripts/verify.sh), not in this orchestrator.
+      infra_repo:   ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+    secrets:
+      # Needed to check out the (possibly private) infra repo from the reusable
+      # workflow — the default GITHUB_TOKEN can't read other repositories.
+      gh_pat: ${{ secrets.GH_PAT }}
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 10. Application repository – create from template (idempotent).
+  #
+  #    The workflow can be re-invoked any number of times — typically once per
+  #    environment as it is rolled out. On re-runs the repo already exists and
+  #    creation is skipped, but environment configuration and OIDC trust
+  #    registration still run (they're idempotent). The bootstrap issue, CI
+  #    observation and final comment are only emitted on first creation.
+  #
+  #    Requires a PAT with `repo` + `workflow` + `admin:repo_hook` scopes (or a
+  #    GitHub App installation token) exposed as the `GH_PAT` repository secret.
+  #    The default GITHUB_TOKEN is scoped to this repo only and cannot create
+  #    repositories or write to other repos' environments/variables.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-app-repo:
+    name: Create application repo
+    needs: [resolve-inputs, verify]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      repo_existed: ${{ steps.create.outputs.repo_existed }}
+      repo_full:    ${{ needs.resolve-inputs.outputs.app_repo_full }}
+      created_at:   ${{ steps.create.outputs.created_at }}
+    steps:
+      - name: Create from template
+        id: create
+        env:
+          GH_TOKEN:     ${{ secrets.GH_PAT }}
+          OWNER:        ${{ github.repository_owner }}
+          APP_NAME:     ${{ needs.resolve-inputs.outputs.app_name }}
+          REPO_FULL:    ${{ needs.resolve-inputs.outputs.app_repo_full }}
+          TEMPLATE:     ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          TEMPLATE_REF: ${{ needs.resolve-inputs.outputs.app_template_ref }}
+        run: |
+          if gh api "repos/${REPO_FULL}" --silent 2>/dev/null; then
+            echo "Repository ${REPO_FULL} already exists — skipping creation"
+            echo "repo_existed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Capture the wall-clock just before the create call so we can later
+          # find the auto-triggered CI run (template generation enqueues a
+          # workflow run on the first commit it pushes to `main`).
+          CREATED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "created_at=${CREATED_AT}" >> "$GITHUB_OUTPUT"
+
+          echo "Creating ${REPO_FULL} from template ${TEMPLATE}…"
+          # Public repo: keeps the workshop's GHCR packages pullable
+          # anonymously. Switch to `private=true` if your context
+          # requires it — note the template's CI assumes Strategy 1
+          # (public package) by default; private repos need Strategy 2
+          # or 3, see the template README file.
+          gh api -X POST "repos/${TEMPLATE}/generate" \
+            -f "owner=${OWNER}" \
+            -f "name=${APP_NAME}" \
+            -f "description=Application repository for ${APP_NAME} (provisioned by platform-eng)" \
+            -F "private=false" \
+            -F "include_all_branches=false"
+
+          # The "generate" endpoint is async. Wait until the repo exists AND
+          # its default branch is queryable so later CI observation targets a
+          # fully initialized repository.
+          READY=false
+          for _ in $(seq 1 30); do
+            DEFAULT_BRANCH=$(gh api "repos/${REPO_FULL}" --jq '.default_branch // ""' 2>/dev/null || true)
+            if [[ -n "$DEFAULT_BRANCH" ]] && gh api "repos/${REPO_FULL}/branches/${DEFAULT_BRANCH}" --silent 2>/dev/null; then
+              READY=true
+              break
+            fi
+            sleep 2
+          done
+
+          if [[ "$READY" != "true" ]]; then
+            echo "::error::Repository ${REPO_FULL} was created but its default branch did not become ready in time"
+            exit 1
+          fi
+
+          # Pin the repo contents to a specific template ref if requested.
+          # GitHub's generate endpoint always seeds from the template's default
+          # branch; to honour a pinned tag/branch/SHA we clone the template at
+          # that exact ref and force-push it onto the new repo's default branch.
+          if [[ -n "$TEMPLATE_REF" ]]; then
+            echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
+            git clone \
+              "https://x-access-token:${GH_TOKEN}@github.com/${TEMPLATE}.git" \
+              /tmp/template-app-pin
+            git -C /tmp/template-app-pin checkout "${TEMPLATE_REF}"
+            git -C /tmp/template-app-pin remote add target \
+              "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            git -C /tmp/template-app-pin push --force target \
+              "HEAD:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
+          fi
+
+          echo "repo_existed=false" >> "$GITHUB_OUTPUT"
+
+      # Grant the default GITHUB_TOKEN write permission to GHCR (and other
+      # in-repo writes) so the template's CI workflow can `docker push` to
+      # ghcr.io/<owner>/<repo> using the workflow token. New repos default to
+      # `read` only, which causes `denied: permission_denied: write_package`.
+      # Idempotent (PUT) — safe to run on every invocation.
+      - name: Allow workflows to write packages
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
+        run: |
+          gh api --method PUT "repos/${REPO_FULL}/actions/permissions/workflow" \
+            -f default_workflow_permissions=write \
+            -F can_approve_pull_request_reviews=false \
+            --silent
+          echo "Default workflow permissions on ${REPO_FULL} set to 'write'"
+
+      - name: Summary
+        env:
+          REPO_FULL: ${{ needs.resolve-inputs.outputs.app_repo_full }}
+          EXISTED:   ${{ steps.create.outputs.repo_existed }}
+        run: |
+          {
+            echo "## Application repository"
+            if [[ "$EXISTED" == "true" ]]; then
+              echo ""
+              echo "[\`$REPO_FULL\`](https://github.com/$REPO_FULL) already existed — environment configuration will be reconciled, CI observation skipped."
+            else
+              echo ""
+              echo "Created [\`$REPO_FULL\`](https://github.com/$REPO_FULL) from template."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 11. Per-run tracking issue in the application repository. Covers only
+  #     app-specific outcomes: whether the repo was created or already existed,
+  #     and (via a follow-up comment) env config and CI/CD results.
+  #     Infrastructure details are tracked separately in the infra repo issue.
+  # ────────────────────────────────────────────────────────────────────────────
+  create-run-issue:
+    name: Create app repo issue
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      issue_number: ${{ steps.issue.outputs.number }}
+      issue_url:    ${{ steps.issue.outputs.url }}
+    steps:
+      - name: Build issue body
+        id: body
+        env:
+          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
+          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
+          APP_TEMPLATE:      ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          APP_REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:      ${{ needs.create-app-repo.outputs.repo_existed }}
+          PROVISION_URL:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+          ENV_LIST=$(echo "$ENVS" | paste -sd, - | sed 's/,/, /g')
+
+          if [[ "$REPO_EXISTED" == "false" ]]; then
+            TITLE_PREFIX="Bootstrap run"
+            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) created from template [\`${APP_TEMPLATE}\`](https://github.com/${APP_TEMPLATE})."
+          else
+            TITLE_PREFIX="Reconcile run"
+            APP_REPO_LINE="Application repository [\`${APP_REPO_FULL}\`](https://github.com/${APP_REPO_FULL}) already exists — environment configuration will be reconciled."
+          fi
+
+          {
+            echo "# ${TITLE_PREFIX} — \`${APP_NAME}\` / ${ENV_LIST}"
+            echo
+            echo "Triggered by [#${{ github.run_id }}](${PROVISION_URL})."
+            echo
+            echo "## Application repository"
+            echo
+            echo "${APP_REPO_LINE}"
+            echo
+            echo "Cloud: AWS, region \`${AWS_REGION}\`."
+            echo
+            echo "Environments in scope: ${ENV_LIST}."
+            echo
+            echo "_Environment settings, CI/CD details, and a run summary will be added in a follow-up comment._"
+          } > /tmp/app-issue-body.md
+
+          echo "title=${TITLE_PREFIX} (AWS) — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+
+      - name: Open issue
+        id: issue
+        env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
+          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
+          TITLE:     ${{ steps.body.outputs.title }}
+        run: |
+          URL=$(gh issue create -R "$REPO_FULL" \
+            --title "$TITLE" \
+            --body-file /tmp/app-issue-body.md)
+          NUMBER="${URL##*/}"
+          echo "url=$URL"        >> "$GITHUB_OUTPUT"
+          echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 12. Comment on the infra repo issue with the full infrastructure summary:
+  #      per-env terraform plan results, verification test counts, and whether
+  #      this run was a provision or reconcile. Runs after apply + verify.
+  # ────────────────────────────────────────────────────────────────────────────
+  comment-infra-issue:
+    name: Comment on infra issue
+    needs: [resolve-inputs, create-infra-repo, create-infra-issue, apply, verify]
+    runs-on: ubuntu-latest
+    steps:
+      # One download step per env — same artifact naming pattern as plan/verify.
+      - name: Download plan artifact (dev)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-dev
+          path: plans/dev
+
+      - name: Download plan artifact (staging)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-staging
+          path: plans/staging
+
+      - name: Download plan artifact (prod)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
+        uses: actions/download-artifact@v8
+        with:
+          name: tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-prod
+          path: plans/prod
+
+      # Artifact names are fixed by verify-infrastructure-aws.yml.
+      - name: Download verify summary (dev)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-aws-dev
+          path: verify/dev
+
+      - name: Download verify summary (staging)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-aws-staging
+          path: verify/staging
+
+      - name: Download verify summary (prod)
+        if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
+        uses: actions/download-artifact@v8
+        with:
+          name: verify-aws-prod
+          path: verify/prod
+
+      - name: Inspect downloaded artifacts
+        run: |
+          echo "::group::plans/ tree"
+          find plans -maxdepth 3 -print | head -50
+          echo "::endgroup::"
+          echo "::group::verify/ tree"
+          find verify -maxdepth 3 -print | head -50
+          echo "::endgroup::"
+
+      - name: Build and post infra issue comment
+        env:
+          GH_TOKEN:           ${{ secrets.GH_PAT }}
+          ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
+          INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+          INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
+          INFRA_ISSUE_NUMBER: ${{ needs.create-infra-issue.outputs.infra_issue_number }}
+          AWS_REGION:         ${{ needs.resolve-inputs.outputs.aws_region }}
+          PROVISION_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+
+          STATUSES=""
+          TOTAL_ADD=0; TOTAL_CHANGE=0; TOTAL_DESTROY=0
+          TOTAL_PASS=0; TOTAL_FAIL=0
+          for env in $ENVS; do
+            PLAN_FILE="plans/${env}/plan-output.txt"
+            if [[ ! -f "$PLAN_FILE" ]]; then
+              STATUSES+="- \`${env}\` — plan output not available"$'\n'
+            elif grep -qE "^No changes\." "$PLAN_FILE"; then
+              STATUSES+="- \`${env}\` — **no changes** (already up-to-date)"$'\n'
+            else
+              PLAN_LINE=$(grep -E "^Plan: " "$PLAN_FILE" | tail -1 || true)
+              ADD=$(   grep -oE "[0-9]+ to add"     <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              CHANGE=$(grep -oE "[0-9]+ to change"  <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              DESTROY=$(grep -oE "[0-9]+ to destroy" <<<"$PLAN_LINE" | grep -oE "^[0-9]+" || echo 0)
+              TOTAL_ADD=$((TOTAL_ADD + ADD))
+              TOTAL_CHANGE=$((TOTAL_CHANGE + CHANGE))
+              TOTAL_DESTROY=$((TOTAL_DESTROY + DESTROY))
+              if   [[ "$ADD" -gt 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **created** (${ADD} resources added)"$'\n'
+              elif [[ "$ADD" -eq 0 && "$CHANGE" -gt 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **refreshed** (${CHANGE} resources updated)"$'\n'
+              elif [[ "$ADD" -eq 0 && "$CHANGE" -eq 0 && "$DESTROY" -eq 0 ]]; then
+                STATUSES+="- \`${env}\` — **no changes**"$'\n'
+              else
+                STATUSES+="- \`${env}\` — applied (${ADD} added, ${CHANGE} changed, ${DESTROY} destroyed)"$'\n'
+              fi
+            fi
+
+            VERIFY_FILE="verify/${env}/verify-summary.txt"
+            if [[ -f "$VERIFY_FILE" ]]; then
+              ENV_PASS=$(grep -oE '^passed=[0-9]+' "$VERIFY_FILE" | cut -d= -f2 || echo 0)
+              ENV_FAIL=$(grep -oE '^failed=[0-9]+' "$VERIFY_FILE" | cut -d= -f2 || echo 0)
+              TOTAL_PASS=$((TOTAL_PASS + ENV_PASS))
+              TOTAL_FAIL=$((TOTAL_FAIL + ENV_FAIL))
+            fi
+          done
+
+          if [[ "$INFRA_REPO_EXISTED" == "false" ]]; then
+            HEADING="Provision run summary"
+            CLOSING="Infrastructure provisioned and verified. The infra repo is the canonical source of truth — any changes committed there will be applied on the next provision run."
+          else
+            HEADING="Reconcile run summary"
+            CLOSING="Infrastructure reconciled against the current canonical contents of the infra repo. Resources were adjusted as needed; the task definition deployed by CodeDeploy is preserved across reconcile runs."
+          fi
+
+          {
+            echo "## ${HEADING}"
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Provisioning | [#${{ github.run_id }}]($PROVISION_URL) |"
+            echo "| Cloud / region | AWS · \`${AWS_REGION}\` |"
+            echo "| Resources changed | + ${TOTAL_ADD} · ~ ${TOTAL_CHANGE} · - ${TOTAL_DESTROY} |"
+            echo "| Verification tests | passed ${TOTAL_PASS} · failed ${TOTAL_FAIL} |"
+            echo
+            echo "## Environment status"
+            echo
+            printf '%s' "${STATUSES}"
+            echo
+            echo "${CLOSING}"
+          } > /tmp/infra-comment.md
+
+          # Comment on the per-run issue in the infra repo
+          if [[ -n "$INFRA_ISSUE_NUMBER" ]]; then
+            gh issue comment "$INFRA_ISSUE_NUMBER" -R "$INFRA_REPO_FULL" --body-file /tmp/infra-comment.md
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 13. Configure GitHub Environments and variables — one job per environment.
+  #     Always runs (idempotent: PUT for the env, PATCH→POST for each variable)
+  #     so re-invocations can roll out additional envs to an existing app repo.
+  #
+  #     ECS_CLUSTER / ECS_SERVICE follow the infra template's `local.prefix`
+  #     (`<app_name>-<environment>`); both the cluster and the service use it.
+  #     Keep them in sync if the template's naming ever changes.
+  # ────────────────────────────────────────────────────────────────────────────
+  configure-environments:
+    name: "Configure env · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    steps:
+      - name: Create environment and set variables
+        env:
+          GH_TOKEN:   ${{ secrets.GH_PAT }}
+          REPO_FULL:  ${{ needs.create-app-repo.outputs.repo_full }}
+          ENV:        ${{ matrix.environment }}
+          APP_NAME:   ${{ needs.resolve-inputs.outputs.app_name }}
+          REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
+          ROLE_ARN:   ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          ACCOUNT_ID: ${{ needs.resolve-inputs.outputs.aws_account_id }}
+          REGISTRY:   ${{ needs.resolve-inputs.outputs.container_registry_url }}
+        run: |
+          # 1. Create the environment (PUT is idempotent — 200 if it already exists).
+          gh api -X PUT "repos/${REPO_FULL}/environments/${ENV}" --silent
+
+          # 2. Set per-environment variables. Try update first, fall back to create.
+          set_var() {
+            local name="$1" value="$2"
+            if ! gh api -X PATCH "repos/${REPO_FULL}/environments/${ENV}/variables/${name}" \
+                   -f "name=${name}" -f "value=${value}" --silent 2>/dev/null; then
+              gh api -X POST "repos/${REPO_FULL}/environments/${ENV}/variables" \
+                -f "name=${name}" -f "value=${value}" --silent
+            fi
+          }
+
+          set_var AWS_REGION     "$REGION"
+          set_var AWS_ROLE_ARN   "$ROLE_ARN"
+          set_var AWS_ACCOUNT_ID "$ACCOUNT_ID"
+          set_var ECS_CLUSTER    "${APP_NAME}-${ENV}"
+          set_var ECS_SERVICE    "${APP_NAME}-${ENV}"
+          [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
+
+          echo "Environment '${ENV}' configured on ${REPO_FULL}"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 14. Register the app repo's OIDC subject on the IAM role's trust policy so
+  #      tokens issued for the new repo are accepted by STS. Without this,
+  #      deploy.yml in the new repo fails on aws-actions/configure-aws-credentials
+  #      with "Not authorized to perform sts:AssumeRoleWithWebIdentity".
+  #
+  #      This is the AWS analogue of Azure's federated credentials, but with a
+  #      crucial difference: on Azure each credential is its own object, while
+  #      here every subject lives in ONE document that may be shared by other
+  #      applications. So this job is a read-modify-write and is deliberately
+  #      conservative — it only ever ADDS the exact subject for this app+env,
+  #      to an existing GitHub-OIDC statement, and writes nothing when the
+  #      subject is already covered (including by a wildcard).
+  #
+  #      Prerequisite: the role must be allowed to call iam:GetRole and
+  #      iam:UpdateAssumeRolePolicy on itself, and a statement federating
+  #      token.actions.githubusercontent.com must already exist — creating a
+  #      trust statement from scratch is a setup-time decision, not something
+  #      this workflow should guess at.
+  # ────────────────────────────────────────────────────────────────────────────
+  configure-oidc-trust:
+    name: "OIDC trust · ${{ matrix.environment }}"
+    needs: [resolve-inputs, create-app-repo]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # SERIALISED ON PURPOSE. Every environment edits the same trust policy
+      # document; running them in parallel would make the last writer clobber
+      # the others' subjects. Deleting/provisioning two different apps that
+      # share a role concurrently can still race — do those one at a time.
+      max-parallel: 1
+      matrix:
+        environment: ${{ fromJson(needs.resolve-inputs.outputs.environments) }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
+
+      - name: Register OIDC trust subject
+        env:
+          ROLE_ARN:  ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
+          ENV:       ${{ matrix.environment }}
+        run: |
+          set -euo pipefail
+
+          # The ARN was validated in resolve-inputs. `##*/` yields the role name
+          # even when the role sits under an IAM path (arn:…:role/some/path/Name).
+          ROLE_NAME="${ROLE_ARN##*/}"
+          SUBJECT="repo:${REPO_FULL}:environment:${ENV}"
+          echo "Ensuring trust subject '${SUBJECT}' on role '${ROLE_NAME}'…"
+
+          CURRENT=$(aws iam get-role --role-name "$ROLE_NAME" \
+                      --query 'Role.AssumeRolePolicyDocument' --output json)
+
+          # Collect every subject pattern already present, under any condition
+          # operator (StringEquals, StringLike, …), as a bare string or a list.
+          SUBS=$(jq -r '
+            [ .Statement[]?
+              | (.Condition // {}) | to_entries[]
+              | .value | to_entries[]
+              | select(.key | ascii_downcase | endswith("githubusercontent.com:sub"))
+              | .value | if type == "array" then .[] else . end
+            ] | .[]' <<<"$CURRENT")
+
+          # A StringLike entry may already cover this subject via a wildcard
+          # (e.g. `repo:owner/*:environment:*`). bash glob matching in `case`
+          # has the same semantics as IAM's `*` / `?`, and a literal pattern
+          # from a StringEquals entry matches only itself — so one pass covers
+          # both operators.
+          ALREADY=false
+          while IFS= read -r pattern; do
+            [[ -z "$pattern" ]] && continue
+            # shellcheck disable=SC2254  # $pattern is intentionally a glob
+            case "$SUBJECT" in
+              $pattern) ALREADY=true; break ;;
+            esac
+          done <<<"$SUBS"
+
+          if [[ "$ALREADY" == "true" ]]; then
+            echo "Subject '${SUBJECT}' is already trusted by '${ROLE_NAME}' — nothing to do"
+            exit 0
+          fi
+
+          # Append to the FIRST statement that federates GitHub's OIDC provider.
+          # If the role has several (e.g. one StringEquals and one StringLike),
+          # the subject lands in the earliest one; that is sufficient, since STS
+          # accepts the token if ANY statement matches.
+          if ! UPDATED=$(jq --arg s "$SUBJECT" '
+                def has_sub:
+                  (.Condition // {})
+                  | to_entries
+                  | any(.value | to_entries
+                        | any(.key | ascii_downcase | endswith("githubusercontent.com:sub")));
+
+                (.Statement | map(has_sub) | index(true)) as $i
+                | if $i == null then
+                    error("no-github-oidc-statement")
+                  else
+                    .Statement[$i].Condition |= with_entries(
+                      .value |= with_entries(
+                        if (.key | ascii_downcase | endswith("githubusercontent.com:sub"))
+                        then .value |= (((if type == "array" then . else [.] end) + [$s]) | unique)
+                        else . end))
+                  end' <<<"$CURRENT" 2>/dev/null); then
+            echo "::error::Role '${ROLE_NAME}' has no statement federating token.actions.githubusercontent.com. Create the GitHub OIDC provider and the role's trust statement first (one-time AWS setup), then re-run."
+            exit 1
+          fi
+
+          aws iam update-assume-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-document "$UPDATED"
+          echo "Registered trust subject '${SUBJECT}' on role '${ROLE_NAME}'"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 15. Observe the CI run that template-generation auto-triggered.
+  #
+  #     When a repo is created from a template, GitHub pushes the initial
+  #     commit to `main` and any `on: push` workflows fire automatically. So
+  #     we don't dispatch CI ourselves — we just find that auto-run, watch it
+  #     to completion, and propagate its conclusion as this job's status.
+  #
+  #     Contract with the template repo: ci.yml runs build/test AND calls the
+  #     dev-deploy job as a reusable workflow inside the same run. A single
+  #     `success` conclusion means "build + test + dev deploy all passed".
+  #
+  #     Skipped on re-runs: the auto-trigger only happens at creation time.
+  # ────────────────────────────────────────────────────────────────────────────
+  observe-ci:
+    name: Observe CI in app repo
+    needs: [resolve-inputs, create-app-repo, configure-environments, configure-oidc-trust]
+    if: needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-app-repo.outputs.repo_existed == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      ci_run_id:     ${{ steps.ci.outputs.ci_run_id }}
+      ci_run_url:    ${{ steps.ci.outputs.ci_run_url }}
+      ci_conclusion: ${{ steps.ci.outputs.ci_conclusion }}
+    steps:
+      - name: Checkout (for helper script)
+        uses: actions/checkout@v6
+
+      - name: Watch CI run (build + test + dev deploy)
+        id: ci
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          WORKFLOW_FILE: ${{ needs.resolve-inputs.outputs.ci_workflow_file }}
+          SINCE:         ${{ needs.create-app-repo.outputs.created_at }}
+        run: |
+          bash scripts/watch-run.sh \
+            --repo        "$REPO_FULL" \
+            --workflow    "$WORKFLOW_FILE" \
+            --since       "$SINCE" \
+            --output-key  ci \
+            --timeout-min 20
+
+      # watch-run.sh always exits 0 (it reports the conclusion via outputs).
+      # Translate a non-success conclusion into a job failure here so the
+      # platform run reflects reality.
+      - name: Fail on non-success conclusion
+        env:
+          CI_RUN_ID:     ${{ steps.ci.outputs.ci_run_id }}
+          CI_RUN_URL:    ${{ steps.ci.outputs.ci_run_url }}
+          CI_CONCLUSION: ${{ steps.ci.outputs.ci_conclusion }}
+        run: |
+          if [[ "$CI_CONCLUSION" != "success" ]]; then
+            echo "::error::CI run #${CI_RUN_ID:-(unknown)} concluded as '${CI_CONCLUSION:-(unknown)}' — see ${CI_RUN_URL:-(no URL)} for details on the root cause"
+            exit 1
+          fi
+          echo "CI run #${CI_RUN_ID} succeeded: ${CI_RUN_URL}"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 16. Comment on the app repo issue with the app-specific run summary:
+  #     env config result, OIDC trust, CI/CD run. Waits for
+  #     configure-environments and configure-oidc-trust so their results are
+  #     available even on reconcile runs (where observe-ci is skipped and would
+  #     not transitively hold for those jobs).
+  # ────────────────────────────────────────────────────────────────────────────
+  comment-app-issue:
+    name: Comment on app issue
+    needs: [resolve-inputs, create-app-repo, create-run-issue, configure-environments, configure-oidc-trust, observe-ci]
+    # Always runs regardless of whether observe-ci was skipped (reconcile runs).
+    if: always() && needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-run-issue.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build and post app issue comment
+        env:
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
+          REPO_EXISTED:  ${{ needs.create-app-repo.outputs.repo_existed }}
+          ISSUE_NUMBER:  ${{ needs.create-run-issue.outputs.issue_number }}
+          PROVISION_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CI_RUN_ID:     ${{ needs.observe-ci.outputs.ci_run_id }}
+          CI_RUN_URL:    ${{ needs.observe-ci.outputs.ci_run_url }}
+          CI_CONCLUSION: ${{ needs.observe-ci.outputs.ci_conclusion }}
+          ENV_RESULT:    ${{ needs.configure-environments.result }}
+          TRUST_RESULT:  ${{ needs.configure-oidc-trust.result }}
+        run: |
+          fmt() {
+            local url="$1" status="$2"
+            if [[ -n "$url" ]]; then
+              echo "[\`$status\`]($url)"
+            else
+              echo "\`${status:-not run}\`"
+            fi
+          }
+
+          PROV_ROW="| Provisioning | [#${{ github.run_id }}]($PROVISION_URL) |"
+          ENV_ROW="| Environment settings/secrets | \`${ENV_RESULT:-unknown}\` |"
+          TRUST_ROW="| OIDC trust subjects | \`${TRUST_RESULT:-unknown}\` |"
+
+          if [[ "$REPO_EXISTED" == "false" ]]; then
+            HEADING="Bootstrap run summary"
+            CI_ROW="| CI + dev deploy (app repo) | $(fmt "$CI_RUN_URL" "${CI_CONCLUSION:-skipped}")${CI_RUN_ID:+ (run #${CI_RUN_ID})} |"
+            ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$ENV_ROW" "$TRUST_ROW" "$CI_ROW")
+            if [[ "$CI_CONCLUSION" == "success" ]]; then
+              CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
+            else
+              CI_LINK="${CI_RUN_URL:-the CI run}"
+              CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
+            fi
+          else
+            HEADING="Reconcile run summary"
+            ROWS=$(printf '%s\n%s\n%s' "$PROV_ROW" "$ENV_ROW" "$TRUST_ROW")
+            CLOSING="Requested environment(s) reconciled. Environment settings and OIDC trust subjects have been updated. If you need a fresh deploy, run the CI workflow from the app repo's Actions tab."
+          fi
+
+          {
+            echo "## ${HEADING}"
+            echo
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            printf '%s\n' "${ROWS}"
+            echo
+            echo "${CLOSING}"
+          } > /tmp/app-comment.md
+
+          # Comment on the per-run issue in the app repo
+          if [[ -n "$ISSUE_NUMBER" ]]; then
+            gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body-file /tmp/app-comment.md
+          fi
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 17. Write the consolidated platform-side step summary once both issue
+  #     comments have been posted. Links out to the per-repo issues where the
+  #     full run details live.
+  # ────────────────────────────────────────────────────────────────────────────
+  final-summary:
+    name: Final summary
+    needs: [create-run-issue, create-infra-issue, comment-app-issue, comment-infra-issue]
+    if: always() && needs.comment-infra-issue.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write step summary
+        env:
+          PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          APP_ISSUE_URL:   ${{ needs.create-run-issue.outputs.issue_url }}
+          INFRA_ISSUE_URL: ${{ needs.create-infra-issue.outputs.infra_issue_url }}
+        run: |
+          {
+            echo "## Provision Infrastructure (AWS) — run complete"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Provisioning run | [#${{ github.run_id }}]($PROVISION_URL) |"
+            if [[ -n "$APP_ISSUE_URL" ]];   then echo "| App repo issue   | $APP_ISSUE_URL |";   fi
+            if [[ -n "$INFRA_ISSUE_URL" ]]; then echo "| Infra repo issue | $INFRA_ISSUE_URL |"; fi
+          } >> "$GITHUB_STEP_SUMMARY"

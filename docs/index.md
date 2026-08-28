@@ -213,6 +213,7 @@ operator                ┌─────────────────�
 │   ├── pages.md                        # Pages site map & how to enable
 │   ├── provision.html                  # Provisioning entry point — picks a cloud
 │   ├── provision-azure.html            # Self-service provisioning form (Azure)
+│   ├── provision-aws.html              # Self-service provisioning form (AWS)
 │   ├── setup-github.md                 # One-time GitHub setup (every cloud)
 │   └── setup-azure.md                  # One-time Azure setup
 ├── scripts/                            # cloud-specific scripts carry an -azure / -aws suffix
@@ -221,6 +222,7 @@ operator                ┌─────────────────�
 │   ├── tag-app-resources-azure.sh      # Merge an arbitrary tag set onto all app resources
 │   ├── tag-app-resources-aws.sh        # Same, via the Resource Groups Tagging API
 │   ├── trigger-provision-azure.sh      # CLI wrapper around repository_dispatch
+│   ├── trigger-provision-aws.sh        # Same, for the AWS workflow
 │   └── watch-run.sh                    # Poll a remote workflow run + outputs (cloud-agnostic)
 ```
 
@@ -543,8 +545,25 @@ APP_NAME=<app> ENVIRONMENT=<env> AWS_REGION=<region> bash scripts/verify.sh
       staging slot and swap would give zero-downtime promotion
 - [ ] **Workflow input for per-env `app_settings`** — the Terraform var
       exists in the webapp module but isn't surfaced through the workflow
-- [ ] **Custom domain provisioning** — modules already support it, surface
-      it as a workflow input (with cert binding)
+- [ ] **Private registry credentials without platform custody** — the template
+      accepts `container_registry_username` / `container_registry_password` for
+      private non-ACR registries, but surfacing them through the platform puts
+      a secret in the `tfplan` artifact and on the run page. The Key Vault
+      approach needs a spike before anything is built
+
+**AWS archetype**
+
+- [ ] **Private registry support (non-ECR)** — the Fargate template pulls from
+      same-account ECR (task execution role) and public registries only; the
+      task definition carries no `repositoryCredentials` by design, so private
+      Docker Hub / GHCR images cannot be used without mirroring into ECR. Add
+      optional support the AWS-native way: an operator-created Secrets Manager
+      secret (`{"username": …, "password": …}`) referenced by ARN through
+      `repositoryCredentials` in the container definition, with the execution
+      role granted `secretsmanager:GetSecretValue` on that one ARN. Unlike the
+      Azure case above, only the secret's **ARN** travels through the platform
+      — the credential itself never leaves Secrets Manager, so the custody
+      problem in `tempdocs/cr-secret-keyvault.md` does not arise
 
 ## Contributing
 

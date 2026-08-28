@@ -1,0 +1,693 @@
+name: AWS - Detect Drift
+
+# Scheduled (and on-demand / callable) infrastructure drift detection for AWS.
+#
+# "Drift" here means a divergence between what Terraform has recorded in remote
+# state and what actually exists in AWS — i.e. out-of-band changes made by a
+# human in the console, another tool, or a manual `aws` command. We surface it
+# with `terraform plan -refresh-only -detailed-exitcode`, which compares the
+# real resources against the recorded state WITHOUT proposing config-driven
+# changes. Its exit code is the signal:
+#
+#   0 → state matches reality   (no drift)
+#   2 → state differs           (drift detected)
+#   1 → error                   (auth/backend/provider failure)
+#
+# Three entry points:
+#
+#   1. schedule          – weekly cron. `schedule` events cannot carry inputs,
+#                          so the run reads its parameters from repository
+#                          variables (vars.*) — see "Resolve inputs" below.
+#   2. workflow_dispatch – ad-hoc manual run from the GitHub UI.
+#   3. workflow_call     – invoked from another workflow (e.g. a future
+#                          reconcile pipeline). The job FAILS when drift or an
+#                          error is found, so the caller can react.
+#
+# Multiple applications can be checked in one run: `app_names` accepts a
+# comma-separated list and the workflow fans out as a matrix (one job per app).
+# Each app job iterates its environments, and — if any environment drifted or
+# errored — opens a NEW issue in that app's repository and comments on it with
+# the full per-environment findings.
+
+on:
+  schedule:
+    # Weekly, Mondays at 07:00 UTC — one hour after the Azure sweep
+    # (detect-drift.yml) so the two do not contend for runners.
+    #
+    # To change the cadence, edit the `cron` expression below. It CANNOT be
+    # driven by a repository variable or environment variable: GitHub does not
+    # evaluate `${{ }}` expressions anywhere in the `on:` block, so a templated
+    # value is parsed as a literal (malformed) cron and the schedule silently
+    # never fires. The expression must be a hard-coded string in this file.
+    #
+    # Note that GitHub delays scheduled runs under load — often by minutes,
+    # occasionally by more than an hour — and disables them entirely on repos
+    # with 60 days of no activity. Treat the time below as "no earlier than".
+    #
+    # Every OTHER parameter comes from repository variables on schedule runs
+    # (DRIFT_AWS_APP_NAMES, DRIFT_AWS_ENVIRONMENTS, DRIFT_AWS_REGION,
+    # DRIFT_AWS_ROLE_ARN, DRIFT_AWS_MAIN_DOMAIN).
+    - cron: "0 7 * * 1"
+
+  workflow_dispatch:
+    inputs:
+      app_names:
+        description: "Application name(s), comma-separated (e.g. myapp,otherapp)"
+        type: string
+        required: true
+      environment:
+        description: Environment(s) to check
+        type: choice
+        options: [all, dev, staging, prod]
+        required: true
+        default: all
+      aws_region:
+        description: AWS region holding the resources and the tfstate bucket (e.g. eu-west-1)
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        type: string
+        required: true
+      main_domain:
+        description: Root domain the template issued certificates under (e.g. example.com)
+        type: string
+        required: true
+
+  workflow_call:
+    inputs:
+      app_names:
+        description: "Application name(s), comma-separated (e.g. myapp,otherapp)"
+        type: string
+        required: true
+      environment:
+        description: "Environment(s) to check: all, or a comma-separated subset of dev/staging/prod"
+        type: string
+        required: false
+        default: all
+      aws_region:
+        description: AWS region holding the resources and the tfstate bucket
+        type: string
+        required: true
+      aws_role_arn:
+        description: ARN of the IAM role to assume via OIDC
+        type: string
+        required: true
+      main_domain:
+        description: Root domain the template issued certificates under
+        type: string
+        required: true
+    secrets:
+      gh_pat:
+        description: PAT used to checkout the (possibly private) infra repos and open issues. Falls back to the GH_PAT repo secret.
+        required: false
+
+# id-token for OIDC login to AWS; contents:read to checkout this repo. Issue
+# creation goes through the GH_PAT (the default GITHUB_TOKEN cannot write to
+# other repositories).
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  # Never run two drift sweeps concurrently for the same ref — a scheduled run
+  # and a manual run would otherwise race on the same tfstate reads.
+  group: detect-drift-aws-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ────────────────────────────────────────────────────────────────────────────
+  # 1. Resolve & validate inputs from whichever trigger fired, then build the
+  #    per-app matrix and the environment list.
+  # ────────────────────────────────────────────────────────────────────────────
+  resolve-inputs:
+    name: Resolve inputs
+    runs-on: ubuntu-latest
+    outputs:
+      apps:         ${{ steps.params.outputs.apps }}
+      environments: ${{ steps.params.outputs.environments }}
+      aws_region:   ${{ steps.params.outputs.aws_region }}
+      aws_role_arn: ${{ steps.params.outputs.aws_role_arn }}
+      main_domain:  ${{ steps.params.outputs.main_domain }}
+
+    steps:
+      - name: Resolve inputs
+        id: params
+        env:
+          # Typed inputs (workflow_dispatch & workflow_call share `inputs.*`).
+          IN_APPS:     ${{ inputs.app_names }}
+          IN_ENV:      ${{ inputs.environment }}
+          IN_REGION:   ${{ inputs.aws_region }}
+          IN_ROLE_ARN: ${{ inputs.aws_role_arn }}
+          IN_DOMAIN:   ${{ inputs.main_domain }}
+          # Schedule fallbacks (no inputs available on cron runs). All
+          # DRIFT_-prefixed so it is unambiguous they exist solely to drive the
+          # automated weekly drift sweep.
+          VAR_APPS:     ${{ vars.DRIFT_AWS_APP_NAMES }}
+          VAR_ENV:      ${{ vars.DRIFT_AWS_ENVIRONMENTS }}
+          VAR_REGION:   ${{ vars.DRIFT_AWS_REGION }}
+          VAR_ROLE_ARN: ${{ vars.DRIFT_AWS_ROLE_ARN }}
+          VAR_DOMAIN:   ${{ vars.DRIFT_AWS_MAIN_DOMAIN }}
+        run: |
+          set -euo pipefail
+
+          APP_NAMES="${IN_APPS:-$VAR_APPS}"
+          ENVIRONMENT="${IN_ENV:-${VAR_ENV:-all}}"
+          AWS_REGION="${IN_REGION:-$VAR_REGION}"
+          AWS_ROLE_ARN="${IN_ROLE_ARN:-$VAR_ROLE_ARN}"
+          MAIN_DOMAIN="${IN_DOMAIN:-$VAR_DOMAIN}"
+
+          MISSING=()
+          [[ -z "$APP_NAMES"    ]] && MISSING+=(app_names)
+          [[ -z "$AWS_REGION"   ]] && MISSING+=(aws_region)
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING+=(aws_role_arn)
+          [[ -z "$MAIN_DOMAIN"  ]] && MISSING+=(main_domain)
+          if [[ ${#MISSING[@]} -gt 0 ]]; then
+            echo "::error::Missing required parameters: ${MISSING[*]} (on schedule runs these come from repository variables DRIFT_AWS_APP_NAMES / DRIFT_AWS_REGION / DRIFT_AWS_ROLE_ARN / DRIFT_AWS_MAIN_DOMAIN)"
+            exit 1
+          fi
+
+          # Build a JSON array from a comma-separated list, trimming blanks.
+          to_json_array() {
+            local raw="$1" out="[" first=1 item
+            local IFS=','
+            for item in $raw; do
+              item="$(echo "$item" | xargs)"   # trim leading/trailing space
+              [[ -z "$item" ]] && continue
+              [[ $first -eq 0 ]] && out+=","
+              out+="\"$item\""
+              first=0
+            done
+            out+="]"
+            echo "$out"
+          }
+
+          # Validate every app name with the same rule the provisioner enforces.
+          IFS=',' read -ra APP_ARR <<<"$APP_NAMES"
+          for app in "${APP_ARR[@]}"; do
+            app="$(echo "$app" | xargs)"
+            [[ -z "$app" ]] && continue
+            if ! [[ "$app" =~ ^[a-z0-9][a-z0-9-]{1,20}[a-z0-9]$ ]]; then
+              echo "::error::app_name '$app' is invalid — must be 3–22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
+              exit 1
+            fi
+          done
+
+          APPS_JSON="$(to_json_array "$APP_NAMES")"
+          if [[ "$ENVIRONMENT" == "all" ]]; then
+            ENVS_JSON='["dev","staging","prod"]'
+          else
+            ENVS_JSON="$(to_json_array "$ENVIRONMENT")"
+          fi
+
+          # The role ARN and region are identifiers, not secrets in an OIDC
+          # flow; they are NOT masked because GitHub blanks masked values when
+          # they flow through job outputs to downstream jobs.
+          {
+            echo "apps=$APPS_JSON"
+            echo "environments=$ENVS_JSON"
+            echo "aws_region=$AWS_REGION"
+            echo "aws_role_arn=$AWS_ROLE_ARN"
+            echo "main_domain=$MAIN_DOMAIN"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          APPS: ${{ steps.params.outputs.apps }}
+          ENVS: ${{ steps.params.outputs.environments }}
+          RGN:  ${{ steps.params.outputs.aws_region }}
+        run: |
+          {
+            echo "## Drift detection (AWS) — sweep parameters"
+            echo
+            echo "| Parameter    | Value |"
+            echo "|--------------|-------|"
+            echo "| Trigger      | \`${{ github.event_name }}\` |"
+            echo "| Applications | \`$APPS\` |"
+            echo "| Environments | \`$ENVS\` |"
+            echo "| Region       | \`$RGN\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 2. Per-application drift check. One job per app (matrix), each iterating its
+  #    environments. We deliberately do NOT bind a GitHub Environment: drift is
+  #    read-only and runs on the default branch, so the branch-scoped OIDC trust
+  #    policy (repo:<org>/<repo>:ref:refs/heads/main) authenticates the role
+  #    assumption for every environment without per-env approval gates.
+  # ────────────────────────────────────────────────────────────────────────────
+  drift:
+    name: "Drift · ${{ matrix.app }}"
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false   # check every app even if one drifts or errors
+      matrix:
+        app: ${{ fromJson(needs.resolve-inputs.outputs.apps) }}
+
+    env:
+      AWS_REGION: ${{ needs.resolve-inputs.outputs.aws_region }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
+
+      # The state bucket name embeds the account ID, which is only known after
+      # the role has been assumed — so this runs after the login step, unlike
+      # the Azure workflow where the subscription ID is an input.
+      - name: Derive repo and tfstate names
+        id: names
+        env:
+          APP_NAME: ${{ matrix.app }}
+          OWNER:    ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+          # Must match the formula in scripts/bootstrap-tfstate-aws.sh exactly.
+          APP_SHORT=$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | tr -d '_' | cut -c1-20)
+          ACCT_SHORT=$(echo "$ACCOUNT_ID" | cut -c1-8)
+          {
+            echo "infra_repo=${OWNER}/${APP_NAME}-infra"
+            echo "tfstate_bucket=tf-state-${APP_SHORT}-${ACCT_SHORT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout infrastructure repo
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ steps.names.outputs.infra_repo }}
+          path:       infra-repo
+          token:      ${{ secrets.gh_pat || secrets.GH_PAT || github.token }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: "~1.9"
+          terraform_wrapper:  false
+
+      - name: Detect drift
+        id: detect
+        env:
+          APP_NAME:          ${{ matrix.app }}
+          ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
+          TFSTATE_BUCKET:    ${{ steps.names.outputs.tfstate_bucket }}
+          # Required, like aws_region: the template gates its ACM/Route 53
+          # resources on `var.main_domain != ""`, so an empty value would make
+          # the refresh-only plan skip those resources and silently under-report
+          # drift on them. A WRONG value fails the plan outright with "no
+          # matching Route53Zone found" — loud, and preferable to a quiet gap.
+          MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
+        run: |
+          # GitHub invokes `run:` steps as `bash --noprofile --norc -e -o
+          # pipefail {0}`, so errexit (-e) is ON by default. This step
+          # DELIBERATELY inspects terraform's own exit codes — in particular
+          # `terraform plan -refresh-only -detailed-exitcode` returns 2 when it
+          # finds drift, which is a SUCCESS for us, not a failure. With errexit
+          # on, that 2 would abort the step before we capture it (the symptom:
+          # "Process completed with exit code 2" and no further output, because
+          # terraform's stdout/stderr is redirected to a file). So disable
+          # errexit here and keep nounset + pipefail.
+          set +e -u -o pipefail
+
+          # Read the env list into an array WITHOUT mapfile (keeps the step
+          # portable to older bash and easy to validate locally). jq ships on
+          # ubuntu-latest.
+          ENVS=()
+          while IFS= read -r env_line; do
+            [[ -n "$env_line" ]] && ENVS+=("$env_line")
+          done < <(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
+
+          # ── Drift summarisers (written inline so the step is self-contained;
+          #    this job checks out only the infra repo, not the platform repo).
+          #    They turn the refresh-only plan JSON (`terraform show -json`) into
+          #    a readable breakdown and a compact count line. The plan JSON
+          #    schema is provider-agnostic, so these are identical to the Azure
+          #    workflow's. Only attribute NAMES and resource ADDRESSES are
+          #    emitted — never values — so the summary cannot leak secrets.
+          #
+          #    Refresh-only drift lives under `.resource_drift[]`, each entry an
+          #    action on a resource detected between prior state and reality:
+          #      update            → attributes changed outside Terraform
+          #      delete            → resource removed outside Terraform
+          #      create            → resource appeared (rare for refresh)
+          #      [create,delete]   → replacement
+          #    A "tag-only" update is one whose sole differing top-level
+          #    attribute is `tags` (or `tags_all`, which the AWS provider
+          #    computes from provider default_tags + resource tags).
+          cat > /tmp/drift.jq <<'JQEOF'
+          def addr_list($items):
+            ($items | map("    - `\(.)`") | join("\n"));
+          def is_tag_only($changed):
+            ($changed | length) > 0 and ($changed | all(. == "tags" or . == "tags_all"));
+          [ .resource_drift[]? | select((.change.actions // []) != ["no-op"]) ] as $d
+          | ( [ $d[] | select(.change.actions == ["create"]) | .address ] ) as $created
+          | ( [ $d[] | select(.change.actions == ["delete"]) | .address ] ) as $deleted
+          | ( [ $d[] | select((.change.actions|sort) == ["create","delete"]) | .address ] ) as $replaced
+          | ( [ $d[] | select(.change.actions == ["update"])
+                  | { address: .address,
+                      changed: ( (.change.before // {}) as $b
+                                 | (.change.after  // {}) as $a
+                                 | (($b|keys) + ($a|keys) | unique)
+                                 | map(select($b[.] != $a[.])) ) } ] ) as $upd
+          | ( [ $upd[] | select(is_tag_only(.changed)) | .address ] ) as $tagonly
+          | ( [ $upd[] | select(is_tag_only(.changed) | not) ] ) as $modified
+          | ( "**Breakdown:** \($created|length) added · \($deleted|length) removed · \($replaced|length) replaced · \($modified|length) modified · \($tagonly|length) tag-only\n" )
+          + ( if ($created|length) > 0 then "\n- ➕ **Added** (in AWS, absent from state):\n" + addr_list($created) + "\n" else "" end )
+          + ( if ($deleted|length) > 0 then "\n- ➖ **Removed** (in state, absent from AWS):\n" + addr_list($deleted) + "\n" else "" end )
+          + ( if ($replaced|length) > 0 then "\n- 🔁 **Replaced**:\n" + addr_list($replaced) + "\n" else "" end )
+          + ( if ($modified|length) > 0 then "\n- ✏️ **Modified** (non-tag attributes):\n" + ($modified | map("    - `\(.address)` — changed: " + (.changed | join(", "))) | join("\n")) + "\n" else "" end )
+          + ( if ($tagonly|length) > 0 then "\n- 🏷️ **Tag-only changes**:\n" + addr_list($tagonly) + "\n" else "" end )
+          JQEOF
+          cat > /tmp/drift-counts.jq <<'JQEOF'
+          def is_tag_only($changed):
+            ($changed | length) > 0 and ($changed | all(. == "tags" or . == "tags_all"));
+          [ .resource_drift[]? | select((.change.actions // []) != ["no-op"]) ] as $d
+          | ( [ $d[] | select(.change.actions == ["create"]) ] | length ) as $created
+          | ( [ $d[] | select(.change.actions == ["delete"]) ] | length ) as $deleted
+          | ( [ $d[] | select((.change.actions|sort) == ["create","delete"]) ] | length ) as $replaced
+          | ( [ $d[] | select(.change.actions == ["update"])
+                  | ( (.change.before // {}) as $b | (.change.after // {}) as $a
+                      | (($b|keys)+($a|keys)|unique) | map(select($b[.] != $a[.])) ) ] ) as $updchanges
+          | ( [ $updchanges[] | select(is_tag_only(.)) ] | length ) as $tagonly
+          | ( [ $updchanges[] | select(is_tag_only(.) | not) ] | length ) as $modified
+          | "\($created) \($deleted) \($replaced) \($modified) \($tagonly)"
+          JQEOF
+
+          # Collected terraform/aws outputs are uploaded as a workflow artifact.
+          ARTIFACT_ROOT="${GITHUB_WORKSPACE:-$PWD}/drift-artifacts"
+          mkdir -p "$ARTIFACT_ROOT"
+
+          SUMMARY=""          # short per-env status lines (issue body)
+          DETAILS=""          # full findings per env (issue comment)
+          DRIFTED_ENVS=()
+          ERRORED_ENVS=()
+          SKIPPED_ENVS=()     # envs genuinely never provisioned (no managed
+                              # state AND no live resources) — not an error.
+
+          # Drift is decided by the (managed state × live resources) matrix:
+          #
+          #   state \ live   none live                 some live
+          #   ───────────────────────────────────────────────────────────────
+          #   no state       skip (never provisioned)  DRIFT (unmanaged)
+          #   has state      DRIFT (all missing)       refresh-only plan
+          #
+          # "managed state" = terraform state list reports ≥1 resource (covers
+          # both a missing state object and an empty one). The bottom-right cell
+          # is the classic case and uses `plan -refresh-only -detailed-exitcode`.
+          #
+          # NOTE on the "live" side: unlike Azure, an AWS resource group is only
+          # a SAVED TAG QUERY, not a container — it can exist while matching
+          # nothing, and resources can exist without it. So we do not ask
+          # whether `rg-<app>-<env>` exists; we count the resources carrying the
+          # environment's tags via the Resource Groups Tagging API, which is
+          # what the group's query resolves to anyway.
+          for env in "${ENVS[@]}"; do
+            DIR="infra-repo/terraform/environments/${env}"
+            if [[ ! -d "$DIR" ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ environment directory not found in infra repo"$'\n'
+              ERRORED_ENVS+=("$env")
+              continue
+            fi
+
+            # Per-env artifact folder collecting every output below.
+            ENV_ART="${ARTIFACT_ROOT}/${env}"
+            mkdir -p "$ENV_ART"
+
+            # 1. How many live resources carry this environment's tags? Capture
+            #    the call and check its status BEFORE parsing: piping a failed
+            #    AWS call straight into jq would turn its error text into
+            #    "resources". Tag keys match the template's provider
+            #    default_tags (application / environment).
+            LIVE_RAW=$(aws resourcegroupstaggingapi get-resources \
+              --region "$AWS_REGION" \
+              --tag-filters "Key=application,Values=${APP_NAME}" "Key=environment,Values=${env}" \
+              --output json 2> tag-err-${env}.txt)
+            TAG_CODE=$?
+            if [[ $TAG_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not query tagged resources)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — resource query error"$'\n\n```\n'"$(cat tag-err-${env}.txt)"$'\n```\n'
+              continue
+            fi
+            if ! jq -e '(.ResourceTagMappingList | type) == "array"' >/dev/null 2>&1 <<<"$LIVE_RAW"; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (unexpected tagging API response)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — unexpected tagging API response"$'\n\n```\n'"$(head -c 2000 <<<"$LIVE_RAW")"$'\n```\n'
+              continue
+            fi
+            LIVE_COUNT=$(jq '.ResourceTagMappingList | length' <<<"$LIVE_RAW")
+            LIVE_PRESENT=false; [[ "$LIVE_COUNT" -gt 0 ]] && LIVE_PRESENT=true
+
+            # 2. Initialise Terraform and read how many resources the recorded
+            #    state manages. `init` only touches the tfstate bucket, never
+            #    the environment's resources, so it is safe even when nothing is
+            #    deployed. A missing or empty state object yields zero.
+            pushd "$DIR" >/dev/null
+
+            # Required vars. For a refresh-only plan the image value is
+            # immaterial (no config changes are proposed), but the providers
+            # still need every required variable to initialise. Both aws_region
+            # and main_domain are validated as mandatory in resolve-inputs, so
+            # neither can arrive empty here.
+            printf 'aws_region      = "%s"\n' "$AWS_REGION"  >  terraform.tfvars
+            printf 'app_name        = "%s"\n' "$APP_NAME"    >> terraform.tfvars
+            printf 'container_image = "%s"\n' "public.ecr.aws/nginx/nginx:stable-alpine" >> terraform.tfvars
+            printf 'main_domain     = "%s"\n' "$MAIN_DOMAIN" >> terraform.tfvars
+
+            terraform init \
+              -input=false \
+              -backend-config="bucket=${TFSTATE_BUCKET}" \
+              -backend-config="key=${env}/terraform.tfstate" \
+              -backend-config="region=${AWS_REGION}" \
+              -backend-config="encrypt=true" \
+              > init-output.txt 2>&1
+            INIT_CODE=$?
+            if [[ $INIT_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform init failed)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — init error"$'\n\n```\n'"$(cat init-output.txt)"$'\n```\n'
+              cp -f init-output.txt "$ENV_ART/" 2>/dev/null || true
+              popd >/dev/null
+              continue
+            fi
+
+            # stdout = resource addresses (counted); stderr kept separate so a
+            # warning can't inflate the count.
+            terraform state list > state-list.txt 2> state-err.txt
+            STATE_CODE=$?
+            if [[ $STATE_CODE -ne 0 ]]; then
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not read terraform state)"$'\n'
+              ERRORED_ENVS+=("$env")
+              DETAILS+=$'\n'"### \`${env}\` — state read error"$'\n\n```\n'"$(cat state-err.txt)"$'\n```\n'
+              popd >/dev/null
+              continue
+            fi
+            STATE_COUNT=$(grep -c . state-list.txt)
+            popd >/dev/null
+
+            STATE_PRESENT=false; [[ "$STATE_COUNT" -gt 0 ]] && STATE_PRESENT=true
+
+            # 3. Classify using the (state × live resources) matrix.
+            if [[ "$STATE_PRESENT" == "false" && "$LIVE_PRESENT" == "false" ]]; then
+              # Neither managed state nor live resources: genuinely never
+              # provisioned. Not drift, not an error.
+              SUMMARY+="- \`${env}\` — ⏭️ skipped (not provisioned — no state, no tagged resources)"$'\n'
+              SKIPPED_ENVS+=("$env")
+
+            elif [[ "$STATE_PRESENT" == "false" && "$LIVE_PRESENT" == "true" ]]; then
+              # Resources exist that Terraform doesn't manage — orphans.
+              SUMMARY+="- \`${env}\` — 🔴 **drift detected** (${LIVE_COUNT} tagged resources exist but are unmanaged — state is empty)"$'\n'
+              DRIFTED_ENVS+=("$env")
+              jq -r '.ResourceTagMappingList[].ResourceARN' <<<"$LIVE_RAW" > orphan-${env}.txt
+              cp -f "orphan-${env}.txt" "$ENV_ART/" 2>/dev/null || true
+              DETAILS+=$'\n'"### \`${env}\` — unmanaged resources (state empty, resources present)"$'\n\n'"**Breakdown:** all ${LIVE_COUNT} resources tagged \`application=${APP_NAME}\`, \`environment=${env}\` are unmanaged (exist in AWS, absent from Terraform state)."$'\n\n'"<details><summary>unmanaged resource ARNs</summary>"$'\n\n```\n'"$(cat orphan-${env}.txt)"$'\n```\n\n</details>\n'
+
+            elif [[ "$STATE_PRESENT" == "true" && "$LIVE_PRESENT" == "false" ]]; then
+              # State says this env is provisioned, but nothing carries its tags
+              # any more — every managed resource is missing.
+              SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state has ${STATE_COUNT} resources but no tagged resources exist in AWS)"$'\n'
+              DRIFTED_ENVS+=("$env")
+              cp -f "${DIR}/state-list.txt" "$ENV_ART/" 2>/dev/null || true
+              DETAILS+=$'\n'"### \`${env}\` — all resources missing (state present, nothing live)"$'\n\n'"**Breakdown:** all ${STATE_COUNT} managed resources are missing (nothing tagged \`application=${APP_NAME}\`, \`environment=${env}\` exists in ${AWS_REGION})."$'\n\n'"<details><summary>managed resources expected to exist</summary>"$'\n\n```\n'"$(cat "${DIR}/state-list.txt")"$'\n```\n\n</details>\n'
+
+            else
+              # Both present: classic Terraform refresh-only drift detection.
+              # Save a binary plan so we can render it as JSON and parse a
+              # structured breakdown. -detailed-exitcode: 0 = no drift, 2 =
+              # drift, 1 = error. -no-color keeps the raw log readable.
+              pushd "$DIR" >/dev/null
+              terraform plan \
+                -refresh-only \
+                -detailed-exitcode \
+                -no-color \
+                -input=false \
+                -out=tfplan.bin \
+                > plan-output.txt 2>&1
+              PLAN_CODE=$?
+              # Render JSON for parsing (only meaningful when a plan was saved).
+              if [[ -f tfplan.bin ]]; then
+                terraform show -json tfplan.bin > plan.json 2> show-err.txt || true
+              fi
+              popd >/dev/null
+
+              # Always archive whatever terraform produced for this env.
+              cp -f "${DIR}/plan-output.txt" "$ENV_ART/" 2>/dev/null || true
+              cp -f "${DIR}/tfplan.bin"      "$ENV_ART/" 2>/dev/null || true
+              cp -f "${DIR}/plan.json"       "$ENV_ART/" 2>/dev/null || true
+
+              case "$PLAN_CODE" in
+                0)
+                  SUMMARY+="- \`${env}\` — ✅ no drift (state matches AWS)"$'\n'
+                  ;;
+                2)
+                  # Build the structured breakdown from the plan JSON. Fall back
+                  # to the raw log if the JSON is missing or cannot be parsed.
+                  DRIFT_MD=""
+                  COUNTS=""
+                  if [[ -s "${DIR}/plan.json" ]]; then
+                    DRIFT_MD=$(jq -r -f /tmp/drift.jq "${DIR}/plan.json" 2>/dev/null)
+                    COUNTS=$(jq -r -f /tmp/drift-counts.jq "${DIR}/plan.json" 2>/dev/null)
+                  fi
+                  if [[ -n "$COUNTS" ]]; then
+                    read -r C_ADD C_DEL C_REP C_MOD C_TAG <<<"$COUNTS"
+                    SUMMARY+="- \`${env}\` — 🔴 **drift detected** (${C_ADD} added, ${C_DEL} removed, ${C_REP} replaced, ${C_MOD} modified, ${C_TAG} tag-only)"$'\n'
+                  else
+                    SUMMARY+="- \`${env}\` — 🔴 **drift detected** (state differs from AWS)"$'\n'
+                  fi
+                  if [[ -z "$DRIFT_MD" ]]; then
+                    DRIFT_MD="_Could not parse plan JSON; see the raw output below and the workflow artifact._"
+                  fi
+                  DRIFTED_ENVS+=("$env")
+                  DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n'"${DRIFT_MD}"$'\n\n'"<details><summary>raw refresh-only plan output</summary>"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
+                  ;;
+                *)
+                  SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
+                  ERRORED_ENVS+=("$env")
+                  DETAILS+=$'\n'"### \`${env}\` — plan error"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n'
+                  ;;
+              esac
+            fi
+          done
+
+          # Persist body fragments for the reporting step (multiline-safe).
+          printf '%s' "$SUMMARY" > /tmp/drift-summary.md
+          printf '%s' "$DETAILS" > /tmp/drift-details.md
+
+          DRIFT_DETECTED=false; [[ ${#DRIFTED_ENVS[@]} -gt 0 ]] && DRIFT_DETECTED=true
+          ERROR_DETECTED=false; [[ ${#ERRORED_ENVS[@]} -gt 0 ]] && ERROR_DETECTED=true
+
+          {
+            echo "drift_detected=$DRIFT_DETECTED"
+            echo "error_detected=$ERROR_DETECTED"
+            echo "drifted_envs=${DRIFTED_ENVS[*]:-}"
+            echo "errored_envs=${ERRORED_ENVS[*]:-}"
+            echo "skipped_envs=${SKIPPED_ENVS[*]:-}"
+          } >> "$GITHUB_OUTPUT"
+
+          # Always surface the per-app result in the job step summary: the
+          # short status lines first, then the full structured breakdown.
+          {
+            echo "## Drift · \`${APP_NAME}\`"
+            echo
+            cat /tmp/drift-summary.md
+            if [[ -s /tmp/drift-details.md ]]; then
+              echo
+              echo "### Details"
+              cat /tmp/drift-details.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Archive the raw terraform/aws outputs (plan log, binary plan, plan JSON,
+      # state list, orphan ARN listing) so operators can inspect the full drift
+      # offline. Runs always() so error runs upload their logs too.
+      - name: Upload drift artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              drift-aws-${{ matrix.app }}
+          path:              drift-artifacts/
+          retention-days:    14
+          if-no-files-found: ignore
+
+      # Open a fresh issue (per app) and comment on it with the full findings
+      # whenever this run found drift or an error. No-drift runs stay quiet.
+      - name: Report drift
+        if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
+        env:
+          GH_TOKEN:   ${{ secrets.gh_pat || secrets.GH_PAT }}
+          APP_NAME:   ${{ matrix.app }}
+          INFRA_REPO: ${{ steps.names.outputs.infra_repo }}
+          DRIFTED:    ${{ steps.detect.outputs.drifted_envs }}
+          ERRORED:    ${{ steps.detect.outputs.errored_envs }}
+          RUN_URL:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          DATE_UTC="$(date -u +%Y-%m-%d)"
+
+          if [[ -n "$DRIFTED" ]]; then
+            TITLE="Infrastructure drift detected (AWS) — ${APP_NAME} — ${DATE_UTC}"
+          else
+            TITLE="Drift detection error (AWS) — ${APP_NAME} — ${DATE_UTC}"
+          fi
+
+          # Issue body: high-level summary + per-environment status.
+          {
+            echo "# Drift detection (AWS) — \`${APP_NAME}\`"
+            echo
+            echo "Detected by drift sweep [#${{ github.run_id }}](${RUN_URL})."
+            echo
+            echo "Compared recorded Terraform state against the live AWS resources"
+            echo "(\`terraform plan -refresh-only\`) in \`${AWS_REGION}\` for infra repo"
+            echo "[\`${INFRA_REPO}\`](https://github.com/${INFRA_REPO})."
+            echo
+            echo "## Environment status"
+            echo
+            cat /tmp/drift-summary.md
+            echo
+            echo "A per-environment breakdown (added / removed / replaced / modified / tag-only) is in the comment below. The raw \`terraform\` plan output, binary plan and plan JSON are attached to the [workflow run](${RUN_URL}) as the \`drift-aws-${APP_NAME}\` artifact."
+          } > /tmp/issue-body.md
+
+          ISSUE_URL=$(gh issue create -R "$INFRA_REPO" \
+            --title "$TITLE" \
+            --body-file /tmp/issue-body.md)
+          ISSUE_NUMBER="${ISSUE_URL##*/}"
+          echo "Opened $ISSUE_URL"
+
+          # Comment with the detailed findings (kept out of the body so the
+          # summary stays scannable).
+          {
+            echo "## Detailed findings"
+            echo
+            if [[ -s /tmp/drift-details.md ]]; then
+              cat /tmp/drift-details.md
+            else
+              echo "_No detailed output captured._"
+            fi
+          } > /tmp/issue-comment.md
+
+          gh issue comment "$ISSUE_NUMBER" -R "$INFRA_REPO" --body-file /tmp/issue-comment.md
+
+          {
+            echo
+            echo "Drift issue opened: $ISSUE_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Drift is an expected, reportable condition — NOT a workflow failure.
+      # When drift is found we open the issue (above) and leave the run green.
+      # The run only goes red when the check itself could not run (errored
+      # env: init/plan failure, missing directory), so a real problem with the
+      # drift sweep is visible and any workflow_call caller can react.
+      - name: Conclude
+        if: steps.detect.outputs.drift_detected == 'true' || steps.detect.outputs.error_detected == 'true'
+        env:
+          APP_NAME: ${{ matrix.app }}
+          DRIFTED:  ${{ steps.detect.outputs.drifted_envs }}
+          ERRORED:  ${{ steps.detect.outputs.errored_envs }}
+        run: |
+          [[ -n "$DRIFTED" ]] && echo "::notice::Drift detected for '${APP_NAME}' in: ${DRIFTED} (reported via issue; run not failed)"
+          if [[ -n "$ERRORED" ]]; then
+            echo "::error::Drift check errored for '${APP_NAME}' in: ${ERRORED}"
+            exit 1
+          fi
