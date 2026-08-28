@@ -204,12 +204,37 @@ registered automatically, by the provisioning workflow, and only when an
 application template repo was supplied — an infra-only run never registers
 app-repo subjects.
 
-### Azure — `AADSTS70021: No matching federated identity record found`
+### Both clouds — the subject has `@<numbers>` in it (repos created after July 15, 2026)
+
+On top of the three shapes there are two subject **formats**. Repositories
+created (or renamed/transferred) after July 15, 2026 present immutable-ID
+subjects — `repo:<owner>@<owner-id>/<repo>@<repo-id>:…` instead of
+`repo:<owner>/<repo>:…` — and both Entra and IAM match subjects verbatim, so
+a credential registered in one format never matches a token minted in the
+other. The tell is the assertion subject quoted in the error containing
+`@<numbers>`, e.g.:
+
+> AADSTS700213: No matching federated identity record found for presented
+> assertion subject 'repo:deors@4376867/test-webapp@1349999312:environment:dev'.
+
+The provisioning workflows handle this themselves: they ask GitHub which
+prefix the new app repo actually presents
+(`gh api repos/<owner>/<repo>/actions/oidc/customization/sub`) before
+registering its subjects, and the decommission workflows remove either
+format. Where it can still bite you is the **platform repo's own** manually
+registered subjects: if you stand up a fresh platform repo after the cutover,
+query its prefix with the same API call and register the four setup-guide
+subjects with that prefix.
+
+### Azure — `AADSTS70021` / `AADSTS700213`: `No matching federated identity record found`
 
 The token's subject doesn't match any federated credential on the App
 Registration. Re-check:
 
 - The repo slug is exactly `<org>/<repo>` — case-sensitive.
+- The subject **format** matches: if the quoted assertion subject contains
+  `@<numbers>`, see the previous section — the repo presents immutable-ID
+  subjects and the credential was registered in the legacy format.
 - For environment subjects, the GitHub Environment exists with the exact
   name (`dev`, `staging`, `prod`) and the job runs against it.
 - If you triggered the workflow from a branch other than `main`, the
@@ -250,9 +275,13 @@ Check, in order:
    aws iam get-role --role-name <role> --query 'Role.AssumeRolePolicyDocument'
    ```
 
-2. Did the `configure-oidc-trust` job run, or was it skipped? Skipped means it
+2. Does the subject **format** match? A repo created after July 15, 2026
+   presents `repo:<owner>@<owner-id>/<app>@<repo-id>:environment:<env>` —
+   a legacy-format entry (or a `repo:<owner>/*` wildcard) never matches it.
+   See the format section above.
+3. Did the `configure-oidc-trust` job run, or was it skipped? Skipped means it
    was an infra-only run.
-3. Did it fail with *"has no statement federating
+4. Did it fail with *"has no statement federating
    token.actions.githubusercontent.com"*? Then the one-time AWS setup was
    never completed: the GitHub OIDC identity provider and the role's trust
    statement must exist before the workflow can add subjects to them. The

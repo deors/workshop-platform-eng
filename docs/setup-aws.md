@@ -100,6 +100,22 @@ policy. You need **four** subjects because two different formats apply:
 | `repo:<org>/<repo>:environment:staging` | same set of jobs, pinned to `environment: staging` |
 | `repo:<org>/<repo>:environment:prod` | same set of jobs, pinned to `environment: prod` |
 
+> **Check your repo's subject format first.** GitHub embeds immutable IDs in
+> the subject claim of any repository created (or renamed/transferred) after
+> July 15, 2026: the prefix becomes `repo:<org>@<owner-id>/<repo>@<repo-id>`
+> instead of `repo:<org>/<repo>`, and `StringEquals` matches subjects
+> verbatim. Query the exact prefix your platform repo presents and use it in
+> the four subjects below:
+>
+> ```bash
+> gh api "repos/$REPO/actions/oidc/customization/sub" --jq .sub_claim_prefix
+> ```
+>
+> The snippet below assumes the legacy prefix, which is what a platform repo
+> created before that date presents. The *app* repos the platform creates
+> need no such care from you — the `configure-oidc-trust` job queries each
+> new repo's actual prefix before appending its subjects.
+
 Unlike Azure — where each federated credential is its own object — all four
 subjects live in **one trust-policy document** on the role:
 
@@ -141,13 +157,20 @@ echo $AWS_ROLE_ARN
 
 > **Keep the GitHub subjects in this one statement.** After the platform
 > provisions a new app, the `configure-oidc-trust` job **appends** the app
-> repo's per-environment subjects (`repo:<owner>/<app>:environment:{dev,staging,prod}`)
+> repo's per-environment subjects (`repo:<owner>/<app>:environment:{dev,staging,prod}`,
+> or the immutable-ID variant for repos GitHub creates after July 15, 2026 —
+> the job registers whichever prefix the new repo actually presents)
 > to the existing GitHub-OIDC statement — it deliberately refuses to create a
 > trust statement from scratch, so the run fails with a clear error if none
-> exists. The decommission workflow later removes exactly those subjects.
+> exists. The decommission workflow later removes exactly those subjects, in
+> either format.
 > If your organisation prefers wildcard trust (`StringLike` with
-> `repo:<your-org>/*`), that works too — the workflow detects that a subject
-> is already covered by a wildcard and skips the write.
+> `repo:<your-org>/*`), that works for pre-cutover repos — the workflow
+> detects that a subject is already covered by a wildcard and skips the
+> write. Note that such a wildcard does **not** match immutable-ID subjects
+> (`repo:<your-org>@<owner-id>/…`), so for app repos created after the
+> cutover the job appends their exact subjects as usual; a wildcard covering
+> the new format would be `repo:<your-org>@<owner-id>/*`.
 
 ---
 

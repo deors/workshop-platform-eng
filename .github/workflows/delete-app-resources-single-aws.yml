@@ -303,7 +303,8 @@ jobs:
       # The AWS analogue is the GitHub OIDC subject inside the IAM role's trust
       # policy. This is a read-modify-write of a document that may be SHARED by
       # other applications, so it is deliberately conservative: it removes only
-      # the exact subject for this app+environment, drops a statement solely if
+      # this app+environment's subject (in either GitHub subject format —
+      # legacy or immutable-ID), drops a statement solely if
       # that leaves it with no subjects at all (an empty subject list would
       # match nothing and is worse than no statement), and writes nothing back
       # when the document is unchanged.
@@ -321,8 +322,21 @@ jobs:
           set -euo pipefail
 
           ROLE_NAME="${ROLE_ARN##*/}"
+
+          # The registered subject may be in the legacy form
+          # (repo:owner/name:environment:env) or the immutable-ID form GitHub
+          # uses for repos created after 2026-07-15
+          # (repo:owner@123/name@456:environment:env). The app repo may
+          # already be deleted here, so its actual format cannot be queried —
+          # instead the jq below strips the @<id> markers before comparing,
+          # so one pass removes either variant (or both, if a re-provision
+          # left the stale legacy subject behind alongside the new one). '@'
+          # cannot appear in owner, repo or environment names, so the rewrite
+          # cannot touch anything else; wildcard (StringLike) patterns keep
+          # matching only if their canonical form equals the exact subject,
+          # i.e. broader hand-written patterns are still never removed.
           SUBJECT="repo:${APP_REPO_FULL}:environment:${TARGET_ENV}"
-          echo "Looking for trust subject '${SUBJECT}' on role '${ROLE_NAME}'…"
+          echo "Looking for trust subject '${SUBJECT}' (either subject format) on role '${ROLE_NAME}'…"
 
           if ! CURRENT=$(aws iam get-role --role-name "$ROLE_NAME" \
                           --query 'Role.AssumeRolePolicyDocument' --output json 2>/dev/null); then
@@ -333,11 +347,12 @@ jobs:
           # Strip the subject wherever it appears, as a bare string or in a list,
           # under any condition operator (StringEquals / StringLike / ...).
           UPDATED=$(jq --arg s "$SUBJECT" '
+            def canon: gsub("@[0-9]+"; "");
             def strip_sub:
               with_entries(
                 if (.key | ascii_downcase | endswith("githubusercontent.com:sub"))
-                then .value |= (if type == "array" then map(select(. != $s))
-                                elif . == $s then []
+                then .value |= (if type == "array" then map(select(canon != $s))
+                                elif canon == $s then []
                                 else . end)
                 else . end
               );

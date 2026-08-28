@@ -1133,9 +1133,14 @@ jobs:
   # 14. Register federated credentials on the platform-eng App Registration so
   #      OIDC tokens issued for the new app repo are accepted by Entra ID.
   #      Without these, deploy.yml in the new repo fails on `azure/login` with
-  #      AADSTS70021 ("No matching federated identity record found").
+  #      AADSTS700213 ("No matching federated identity record found").
   #      Always runs (idempotent: skips if the subject already has a
   #      credential) so re-invocations can register additional environments.
+  #
+  #      The subject prefix is queried from GitHub rather than assembled from
+  #      the repo name: repos created after 2026-07-15 present immutable-ID
+  #      subjects (repo:owner@123/name@456:...), older repos the legacy
+  #      repo:owner/name form, and Entra matches subjects verbatim.
   #
   #      Prerequisite: the SP itself must be an Owner of its own App
   #      Registration AND hold Application.ReadWrite.OwnedBy on Microsoft
@@ -1161,11 +1166,25 @@ jobs:
 
       - name: Register federated credential
         env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
           APP_ID:    ${{ needs.resolve-inputs.outputs.azure_client_id }}
           REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
           ENV:       ${{ matrix.environment }}
         run: |
-          SUBJECT="repo:${REPO_FULL}:environment:${ENV}"
+          # GitHub decides the token's subject format per repository: repos
+          # created (or renamed/transferred) after 2026-07-15 embed immutable
+          # IDs (repo:owner@123/name@456:...), while older repos keep the
+          # plain repo:owner/name form. Ask GitHub for the repo's actual
+          # prefix instead of assuming either form — registering the wrong
+          # one only fails later, at azure/login in the app repo's deploy,
+          # with AADSTS700213.
+          PREFIX=$(gh api "repos/${REPO_FULL}/actions/oidc/customization/sub" \
+                     --jq '.sub_claim_prefix // empty' 2>/dev/null || true)
+          if [[ -z "$PREFIX" ]]; then
+            echo "::error::Could not read the OIDC subject prefix of ${REPO_FULL} (GET repos/${REPO_FULL}/actions/oidc/customization/sub returned nothing). Registering a guessed subject would break the app repo's deploy, so failing here instead. Check that GH_PAT can read the repo's Actions OIDC settings."
+            exit 1
+          fi
+          SUBJECT="${PREFIX}:environment:${ENV}"
 
           # Idempotent: skip if a credential with this exact subject already exists.
           EXISTING=$(az ad app federated-credential list --id "$APP_ID" \

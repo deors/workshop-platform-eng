@@ -114,6 +114,22 @@ You need **four** credentials because two different subject formats apply:
 | Environment `staging` | same set of jobs, pinned to `environment: staging` | `repo:<org>/<repo>:environment:staging` |
 | Environment `prod` | same set of jobs, pinned to `environment: prod` | `repo:<org>/<repo>:environment:prod` |
 
+> **Check your repo's subject format first.** GitHub embeds immutable IDs in
+> the subject claim of any repository created (or renamed/transferred) after
+> July 15, 2026: the prefix becomes `repo:<org>@<owner-id>/<repo>@<repo-id>`
+> instead of `repo:<org>/<repo>`, and Entra matches subjects verbatim. Query
+> the exact prefix your platform repo presents and use it in the four
+> subjects below:
+>
+> ```bash
+> gh api "repos/$REPO/actions/oidc/customization/sub" --jq .sub_claim_prefix
+> ```
+>
+> The snippets below assume the legacy prefix, which is what a platform repo
+> created before that date presents. The *app* repos the platform creates
+> need no such care from you — the `configure-federated-credentials` job
+> queries each new repo's actual prefix before registering its credentials.
+
 Create all four:
 
 ```bash
@@ -206,8 +222,11 @@ User Access Administrator
 After the platform provisions infrastructure for a new app, it must register
 **three additional federated credentials** on this same App Registration —
 one per environment, scoped to the new app repo (subjects
-`repo:<owner>/<app>:environment:{dev,staging,prod}`). Without these, deploy
-workflows in the new repo fail at `azure/login` with `AADSTS70021`.
+`repo:<owner>/<app>:environment:{dev,staging,prod}`, or the immutable-ID
+variant `repo:<owner>@<id>/<app>@<id>:environment:{…}` that GitHub mints for
+repos created after July 15, 2026 — the workflow queries the new repo for
+whichever prefix it actually presents). Without these, deploy workflows in
+the new repo fail at `azure/login` with `AADSTS700213`.
 
 The platform workflow does this automatically (see job
 `configure-federated-credentials`), but the SP needs **two** things to be

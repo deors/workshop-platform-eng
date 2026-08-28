@@ -1189,6 +1189,13 @@ jobs:
   #      token.actions.githubusercontent.com must already exist — creating a
   #      trust statement from scratch is a setup-time decision, not something
   #      this workflow should guess at.
+  #
+  #      The subject prefix is queried from GitHub rather than assembled from
+  #      the repo name: repos created after 2026-07-15 present immutable-ID
+  #      subjects (repo:owner@123/name@456:...), older repos the legacy
+  #      repo:owner/name form. Note that a repo:owner/* wildcard in the trust
+  #      policy does NOT cover immutable-ID subjects — the coverage check
+  #      below correctly falls through and appends the exact subject.
   # ────────────────────────────────────────────────────────────────────────────
   configure-oidc-trust:
     name: "OIDC trust · ${{ matrix.environment }}"
@@ -1213,6 +1220,7 @@ jobs:
 
       - name: Register OIDC trust subject
         env:
+          GH_TOKEN:  ${{ secrets.GH_PAT }}
           ROLE_ARN:  ${{ needs.resolve-inputs.outputs.aws_role_arn }}
           REPO_FULL: ${{ needs.create-app-repo.outputs.repo_full }}
           ENV:       ${{ matrix.environment }}
@@ -1222,7 +1230,22 @@ jobs:
           # The ARN was validated in resolve-inputs. `##*/` yields the role name
           # even when the role sits under an IAM path (arn:…:role/some/path/Name).
           ROLE_NAME="${ROLE_ARN##*/}"
-          SUBJECT="repo:${REPO_FULL}:environment:${ENV}"
+
+          # GitHub decides the token's subject format per repository: repos
+          # created (or renamed/transferred) after 2026-07-15 embed immutable
+          # IDs (repo:owner@123/name@456:...), while older repos keep the
+          # plain repo:owner/name form. Ask GitHub for the repo's actual
+          # prefix instead of assuming either form — registering the wrong
+          # one only fails later, at configure-aws-credentials in the app
+          # repo's deploy, with "Not authorized to perform
+          # sts:AssumeRoleWithWebIdentity".
+          PREFIX=$(gh api "repos/${REPO_FULL}/actions/oidc/customization/sub" \
+                     --jq '.sub_claim_prefix // empty' 2>/dev/null || true)
+          if [[ -z "$PREFIX" ]]; then
+            echo "::error::Could not read the OIDC subject prefix of ${REPO_FULL} (GET repos/${REPO_FULL}/actions/oidc/customization/sub returned nothing). Registering a guessed subject would break the app repo's deploy, so failing here instead. Check that GH_PAT can read the repo's Actions OIDC settings."
+            exit 1
+          fi
+          SUBJECT="${PREFIX}:environment:${ENV}"
           echo "Ensuring trust subject '${SUBJECT}' on role '${ROLE_NAME}'…"
 
           CURRENT=$(aws iam get-role --role-name "$ROLE_NAME" \

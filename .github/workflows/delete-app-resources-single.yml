@@ -264,8 +264,20 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The registered subject may be in the legacy form
+          # (repo:owner/name:environment:env) or the immutable-ID form GitHub
+          # uses for repos created after 2026-07-15
+          # (repo:owner@123/name@456:environment:env). The app repo may
+          # already be deleted here, so its actual format cannot be queried —
+          # instead, stripping the @<id> markers canonicalises the immutable
+          # form into the legacy one, and a single comparison matches both.
+          # '@' cannot appear in owner, repo or environment names, so the
+          # rewrite cannot touch anything else.
           SUBJECT="repo:${APP_REPO_FULL}:environment:${TARGET_ENV}"
-          IDS=$(az ad app federated-credential list --id "$APP_ID" --query "[?subject=='${SUBJECT}'].id" -o tsv 2>/dev/null || true)
+          IDS=$(az ad app federated-credential list --id "$APP_ID" -o json 2>/dev/null \
+                  | jq -r --arg s "$SUBJECT" \
+                      '.[] | select(((.subject // "") | gsub("@[0-9]+"; "")) == $s) | .id' \
+                  || true)
           if [[ -n "$IDS" ]]; then
             while IFS= read -r fid; do
               [[ -z "$fid" ]] && continue
