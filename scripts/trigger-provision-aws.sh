@@ -40,15 +40,8 @@ Optional:
   --app-template-ref       <ref>         APP_TEMPLATE_REF
                                            (same, for the app template)
   --container-image        <ref>         CONTAINER_IMAGE
-                                           (default: public.ecr.aws/nginx/nginx:stable-alpine;
-                                            a placeholder ECS can pull anonymously — CodeDeploy
-                                            overwrites it on first deploy; ignored on reconcile runs)
-  --container-port         <1-65535>     CONTAINER_PORT
-                                           (default: 80, matching the nginx placeholder;
-                                            use 8080 for a real application)
-  --health-check-path      <path>        HEALTH_CHECK_PATH
-                                           (default: /, matching the nginx placeholder;
-                                            use /health for a real application)
+                                           (default: the workflow's reference image; ignored on
+                                            reconcile runs — CodeDeploy keeps the task definition)
   --ci-workflow-file       <name>        CI_WORKFLOW_FILE
                                            (default: ci.yml)
   --repo                   <owner/name>  PLATFORM_REPO
@@ -81,8 +74,6 @@ INFRA_TEMPLATE_REF="${INFRA_TEMPLATE_REF:-}"
 APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
 APP_TEMPLATE_REF="${APP_TEMPLATE_REF:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
-CONTAINER_PORT="${CONTAINER_PORT:-}"
-HEALTH_CHECK_PATH="${HEALTH_CHECK_PATH:-}"
 CI_WORKFLOW_FILE="${CI_WORKFLOW_FILE:-}"
 PLATFORM_REPO="${PLATFORM_REPO:-}"
 
@@ -98,8 +89,6 @@ while [[ $# -gt 0 ]]; do
     --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
     --app-template-ref)       APP_TEMPLATE_REF="$2";       shift 2 ;;
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
-    --container-port)         CONTAINER_PORT="$2";         shift 2 ;;
-    --health-check-path)      HEALTH_CHECK_PATH="$2";      shift 2 ;;
     --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
     --repo)                   PLATFORM_REPO="$2";          shift 2 ;;
     -h|--help)                usage; exit 0 ;;
@@ -141,14 +130,6 @@ esac
 if ! [[ "$AWS_ROLE_ARN" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$ ]]; then
   INVALID+=("aws_role_arn must be a full IAM role ARN, e.g. arn:aws:iam::123456789012:role/GitHubActionsRole — got '${AWS_ROLE_ARN}'")
 fi
-if [[ -n "$CONTAINER_PORT" ]] \
-   && { ! [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] || (( CONTAINER_PORT < 1 || CONTAINER_PORT > 65535 )); }; then
-  INVALID+=("container_port must be an integer between 1 and 65535 — got '${CONTAINER_PORT}'")
-fi
-if [[ -n "$HEALTH_CHECK_PATH" && "$HEALTH_CHECK_PATH" != /* ]]; then
-  INVALID+=("health_check_path must start with '/' — got '${HEALTH_CHECK_PATH}'")
-fi
-
 if [[ ${#INVALID[@]} -gt 0 ]]; then
   echo "ERROR: invalid value(s):" >&2
   printf '  - %s\n' "${INVALID[@]}" >&2
@@ -182,8 +163,6 @@ PAYLOAD=$(jq -nc \
   --arg app_tmpl    "$APP_TEMPLATE_REPO" \
   --arg app_ref     "$APP_TEMPLATE_REF" \
   --arg image       "$CONTAINER_IMAGE" \
-  --arg port        "$CONTAINER_PORT" \
-  --arg health      "$HEALTH_CHECK_PATH" \
   --arg ci          "$CI_WORKFLOW_FILE" \
   '{
     event_type:     "aws-provision-infrastructure",
@@ -199,8 +178,6 @@ PAYLOAD=$(jq -nc \
     + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
     + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)
     + (if $image     != "" then {container_image:        $image}     else {} end)
-    + (if $port      != "" then {container_port:         $port}      else {} end)
-    + (if $health    != "" then {health_check_path:      $health}    else {} end)
     + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
   }')
 
