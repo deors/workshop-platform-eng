@@ -295,18 +295,12 @@ Resources → Run workflow**, and provide:
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
 | `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
 | `app_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the app template |
-| `container_image` | no | `public.ecr.aws/nginx/nginx:stable-alpine` |
-| `container_port` | no | _(leave empty — defaults to `80`, matching the nginx placeholder; a real app passes its own port, e.g. `8080`)_ |
-| `health_check_path` | no | _(leave empty — defaults to `/`, matching the nginx placeholder; a real app passes e.g. `/health`)_ |
+| `container_image` | no | _(leave empty — uses the workflow's reference image)_ The archetype fixes the container contract — port 8080, health endpoint `/health`; the image specified here must follow that contract |
 | `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
 
 > **Reconcile caveat.** `container_image` only matters on the first apply —
 > afterwards the ECS service's `lifecycle.ignore_changes` keeps whatever
-> CodeDeploy deployed. `container_port` and `health_check_path` are
-> different: they drive the ALB target group, which no deployment tool owns,
-> so a real application must pass its own values on **every** run — a
-> reconcile with the defaults would point the health check back at the
-> placeholder's port and path.
+> CodeDeploy deployed.
 
 ### What you should observe
 
@@ -451,8 +445,7 @@ With the first run green end-to-end, the typical follow-up workshop topics are:
   fire subsequent runs from the [AWS form](provision-aws.html) at
   `https://<owner>.github.io/<repo>/`. The page works for *provision* (new
   env on an existing app) and *reconcile* runs too, not just first-time
-  bootstrap — remember the reconcile caveat on `container_port` /
-  `health_check_path` above.
+  bootstrap.
 - **Pick the next item from the roadmap** — cost reporting, budget alerts,
   and private-registry support via Secrets Manager `repositoryCredentials`
   are the most-requested next steps on the AWS side.

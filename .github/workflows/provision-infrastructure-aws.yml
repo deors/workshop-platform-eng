@@ -1,21 +1,5 @@
 name: AWS - Provision & Reconcile Application Resources
 
-# AWS counterpart of provision-infrastructure.yml. The job graph is deliberately
-# identical so the two clouds stay comparable; only the cloud-specific mechanics
-# differ. The four substantive differences from the Azure orchestrator are:
-#
-#   1. Identity — one IAM role assumed via OIDC (`aws_role_arn`) replaces the
-#      tenant/subscription/client triple. The AWS account ID is derived from the
-#      role ARN rather than passed separately.
-#   2. State backend — an S3 bucket (`tf-state-<app>-<account8>`) instead of a
-#      storage account + container.
-#   3. Trust registration — the Azure "federated credential" per environment is
-#      a subject inside the IAM role's assume-role policy on AWS, so that job is
-#      a read-modify-write of a SHARED document and must not run in parallel.
-#   4. Template inputs — the AWS Fargate template additionally requires
-#      `main_domain` (it issues an ACM certificate and a Route 53 record) and
-#      accepts `container_port` / `health_check_path`.
-
 on:
   workflow_dispatch:
     inputs:
@@ -64,17 +48,9 @@ on:
         description: "Container image reference (ignored in reconcile runs — the ECS service's lifecycle keeps the task definition last set by CodeDeploy)"
         type: string
         required: false
-        default: "public.ecr.aws/nginx/nginx:stable-alpine"
-      container_port:
-        description: "TCP port the container listens on. Default 80 matches the nginx placeholder above; set 8080 (the template's own default) for a real application."
-        type: string
-        required: false
-        default: "80"
-      health_check_path:
-        description: "HTTP path the ALB health check polls. Default / matches the nginx placeholder; set /health for a real application."
-        type: string
-        required: false
-        default: "/"
+        # TODO: replace with the published cloud-agnostic reference image
+        # (listens on PORT, default 8080; returns 200 on /health and /).
+        default: "<REFERENCE_IMAGE>"
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -92,9 +68,6 @@ permissions:
   security-events: write
 
 concurrency:
-  # Distinct from the Azure group so an AWS run for an app is never queued
-  # behind that app's Azure run — they touch different clouds and different
-  # state, and only share the app name.
   group: provision-aws-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
   cancel-in-progress: false   # never cancel an in-flight provision
 
@@ -118,8 +91,6 @@ jobs:
       app_template_ref:        ${{ steps.params.outputs.app_template_ref }}
       with_app_repo:           ${{ steps.params.outputs.with_app_repo }}
       container_image:         ${{ steps.params.outputs.container_image }}
-      container_port:          ${{ steps.params.outputs.container_port }}
-      health_check_path:       ${{ steps.params.outputs.health_check_path }}
       ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
       tfstate_bucket:          ${{ steps.tfstate_names.outputs.bucket }}
       infra_repo_full:         ${{ steps.params.outputs.infra_repo_full }}
@@ -140,8 +111,6 @@ jobs:
           WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
           WD_APP_TEMPLATE_REF:   ${{ github.event.inputs.app_template_ref }}
           WD_IMAGE:              ${{ github.event.inputs.container_image }}
-          WD_PORT:               ${{ github.event.inputs.container_port }}
-          WD_HEALTH_PATH:        ${{ github.event.inputs.health_check_path }}
           WD_CI_FILE:            ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
           RD_APP:                ${{ github.event.client_payload.app_name }}
@@ -154,8 +123,6 @@ jobs:
           RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
           RD_APP_TEMPLATE_REF:   ${{ github.event.client_payload.app_template_ref }}
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
-          RD_PORT:               ${{ github.event.client_payload.container_port }}
-          RD_HEALTH_PATH:        ${{ github.event.client_payload.health_check_path }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
@@ -168,9 +135,9 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-public.ecr.aws/nginx/nginx:stable-alpine}}"
-          CONTAINER_PORT="${WD_PORT:-${RD_PORT:-80}}"
-          HEALTH_CHECK_PATH="${WD_HEALTH_PATH:-${RD_HEALTH_PATH:-/}}"
+          # TODO: replace with the published cloud-agnostic reference image
+          # (keep in sync with the workflow_dispatch default above).
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-<REFERENCE_IMAGE>}}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
@@ -209,15 +176,6 @@ jobs:
           # `aws sts get-caller-identity` would return, without needing a login.
           AWS_ACCOUNT_ID=$(cut -d: -f5 <<<"$AWS_ROLE_ARN")
 
-          if ! [[ "$CONTAINER_PORT" =~ ^[0-9]+$ ]] || (( CONTAINER_PORT < 1 || CONTAINER_PORT > 65535 )); then
-            echo "::error::container_port must be an integer between 1 and 65535 — got '${CONTAINER_PORT}'"
-            exit 1
-          fi
-          if [[ "$HEALTH_CHECK_PATH" != /* ]]; then
-            echo "::error::health_check_path must start with '/' — got '${HEALTH_CHECK_PATH}'"
-            exit 1
-          fi
-
           # Note: aws_role_arn and the account ID identify AWS principals. They
           # are not secrets in an OIDC flow (security comes from the role's
           # trust policy subject condition). They are NOT masked here because
@@ -236,8 +194,6 @@ jobs:
           echo "app_template_ref=$APP_TEMPLATE_REF"             >> "$GITHUB_OUTPUT"
           echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
-          echo "container_port=$CONTAINER_PORT"                 >> "$GITHUB_OUTPUT"
-          echo "health_check_path=$HEALTH_CHECK_PATH"           >> "$GITHUB_OUTPUT"
           echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
           echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
           echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
@@ -587,18 +543,12 @@ jobs:
           APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
           AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
           CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
-          CONTAINER_PORT:    ${{ needs.resolve-inputs.outputs.container_port }}
-          HEALTH_CHECK_PATH: ${{ needs.resolve-inputs.outputs.health_check_path }}
           MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
         run: |
           # Write tfvars using printf to avoid shell interpolation of HCL syntax.
-          # container_port is a number in the template's variables.tf, so it is
-          # written unquoted; everything else is a string.
           printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
           printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
           printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
-          printf 'container_port    = %s\n'   "$CONTAINER_PORT"    >> terraform.tfvars
-          printf 'health_check_path = "%s"\n' "$HEALTH_CHECK_PATH" >> terraform.tfvars
           printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
 
       - name: Terraform init
@@ -700,8 +650,6 @@ jobs:
           APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
           AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
           CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
-          CONTAINER_PORT:    ${{ needs.resolve-inputs.outputs.container_port }}
-          HEALTH_CHECK_PATH: ${{ needs.resolve-inputs.outputs.health_check_path }}
           MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
         run: |
           # Must match the plan job's tfvars exactly — an `aws_region` that
@@ -710,8 +658,6 @@ jobs:
           printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
           printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
           printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
-          printf 'container_port    = %s\n'   "$CONTAINER_PORT"    >> terraform.tfvars
-          printf 'health_check_path = "%s"\n' "$HEALTH_CHECK_PATH" >> terraform.tfvars
           printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
 
       - name: Terraform init

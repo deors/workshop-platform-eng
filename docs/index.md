@@ -296,8 +296,7 @@ scripts/trigger-provision-aws.sh \
 
 Flags fall back to upper-case env vars (`ENVIRONMENT`, `APP_NAME`, …) and the
 scripts auto-detect the platform repo from the current git remote. `--help`
-for the full reference, including the AWS-only `--container-port` and
-`--health-check-path` options.
+for the full reference.
 
 ### GitHub UI
 
@@ -336,9 +335,7 @@ curl -X POST \
 ```
 
 And the AWS equivalent — same endpoint, different `event_type` and identity
-parameters (`main_domain` is required; `container_port` and
-`health_check_path` are optional and default to the nginx placeholder's
-`80` / `/`):
+parameters (`main_domain` is required):
 
 ```bash
 curl -X POST \
@@ -357,9 +354,7 @@ curl -X POST \
                   "infra_template_ref":  "main",
                   "app_template_repo":   "your-org/template-helloworld-express",
                   "app_template_ref":    "main",
-                  "container_image":     "public.ecr.aws/nginx/nginx:stable-alpine",
-                  "container_port":      "80",
-                  "health_check_path":   "/"
+                  "container_image":     "<REFERENCE_IMAGE>"
             }
       }'
 ```
