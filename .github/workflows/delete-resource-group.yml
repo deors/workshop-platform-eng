@@ -48,7 +48,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ -z "$RESOURCE_GROUP_NAME" ]] && { echo "::error::resource_group_name is required"; exit 1; }
+          if [[ -z "$RESOURCE_GROUP_NAME" ]]; then
+            echo "::error::resource_group_name is required"
+            exit 1
+          fi
           if [[ "$WAIT_FOR_COMPLETION" != "true" && "$WAIT_FOR_COMPLETION" != "false" ]]; then
             echo "::error::wait_for_completion must be either true or false"
             exit 1

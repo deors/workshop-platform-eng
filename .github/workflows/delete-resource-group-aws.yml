@@ -57,8 +57,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ -z "$RESOURCE_GROUP_NAME" ]] && { echo "::error::resource_group_name is required"; exit 1; }
-          [[ -z "$AWS_REGION"          ]] && { echo "::error::aws_region is required"; exit 1; }
+          if [[ -z "$RESOURCE_GROUP_NAME" ]]; then
+            echo "::error::resource_group_name is required"
+            exit 1
+          fi
+          if [[ -z "$AWS_REGION" ]]; then
+            echo "::error::aws_region is required"
+            exit 1
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
