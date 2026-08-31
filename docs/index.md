@@ -559,6 +559,12 @@ the infrastructure when new requirements arise.
       e2e acceptance/regression tests (UI tests, API tests) as a quality gate
       in the release workflow: to deploy to staging e2e tests must pass in
       dev, and similarly to deploy to prod tests must pass in staging
+- [ ] **Move workflows to OpenTofu** — CI currently runs `terraform` via
+      `hashicorp/setup-terraform` (`~1.9`) while local development uses
+      OpenTofu (`tofu`), so the two toolchains can drift. Switch the
+      workflows to `opentofu/setup-opentofu` and `tofu` commands across all
+      provisioning, verification, drift-detection, and teardown workflows,
+      keeping the version pin and `wrapper: false` behavior equivalent
 
 **Azure archetype**
 
