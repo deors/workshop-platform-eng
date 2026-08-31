@@ -49,15 +49,15 @@ on:
         required: false
         default: ""
       container_image:
-        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/deploy)"
+        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows)"
         type: string
         required: false
-        default: "appsvc/staticsite:latest"
+        default: "deors/template-helloworld-express:sha-af53b68"
       container_registry_url:
         description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
         type: string
         required: false
-        default: "mcr.microsoft.com"
+        default: "ghcr.io"
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -149,13 +149,8 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          # container_image is optional. The placeholder is what Terraform
-          # writes on the first apply; thereafter the lifecycle.ignore_changes
-          # on site_config[0].application_stack means whatever CI/deploy
-          # put there stays put. Reconcile runs therefore don't need a real
-          # image value.
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-mcr.microsoft.com/appsvc/staticsite:latest}}"
-          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-deors/template-helloworld-express:sha-af53b68}}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-${RD_REGISTRY:-ghcr.io}}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
@@ -201,14 +196,14 @@ jobs:
           echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
           echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
-          echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
           echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
+          echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
           echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
 
       - name: Derive tfstate resource names
         id: tfstate_names
         env:
-          APP_NAME:        ${{ steps.params.outputs.app_name }}
+          APP_NAME:              ${{ steps.params.outputs.app_name }}
           AZURE_SUBSCRIPTION_ID: ${{ steps.params.outputs.azure_subscription_id }}
         run: |
           # Must match the formula in scripts/bootstrap-tfstate-azure.sh exactly
@@ -394,12 +389,14 @@ jobs:
             echo
             echo "${REPO_LINE}"
             echo
+            echo "Cloud: Azure."
+            echo
             echo "Environments in scope: ${ENV_LIST}."
             echo
             echo "_Infrastructure apply and verify results will be added in a follow-up comment._"
           } > /tmp/infra-issue-body.md
 
-          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE_PREFIX} (Azure) — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
 
       - name: Open issue
         id: issue
