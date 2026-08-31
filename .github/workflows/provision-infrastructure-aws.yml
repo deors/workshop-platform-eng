@@ -45,12 +45,15 @@ on:
         required: false
         default: ""
       container_image:
-        description: "Container image reference (ignored in reconcile runs — the ECS service's lifecycle keeps the task definition last set by CodeDeploy)"
+        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows)"
         type: string
         required: false
-        # TODO: replace with the published cloud-agnostic reference image
-        # (listens on PORT, default 8080; returns 200 on /health and /).
-        default: "<REFERENCE_IMAGE>"
+        default: "deors/template-helloworld-express:sha-af53b68"
+      container_registry_url:
+        description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
+        type: string
+        required: false
+        default: "ghcr.io"
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -91,6 +94,7 @@ jobs:
       app_template_ref:        ${{ steps.params.outputs.app_template_ref }}
       with_app_repo:           ${{ steps.params.outputs.with_app_repo }}
       container_image:         ${{ steps.params.outputs.container_image }}
+      container_registry_url:  ${{ steps.params.outputs.container_registry_url }}
       ci_workflow_file:        ${{ steps.params.outputs.ci_workflow_file }}
       tfstate_bucket:          ${{ steps.tfstate_names.outputs.bucket }}
       infra_repo_full:         ${{ steps.params.outputs.infra_repo_full }}
@@ -111,6 +115,7 @@ jobs:
           WD_APP_TEMPLATE:       ${{ github.event.inputs.app_template_repo }}
           WD_APP_TEMPLATE_REF:   ${{ github.event.inputs.app_template_ref }}
           WD_IMAGE:              ${{ github.event.inputs.container_image }}
+          WD_REGISTRY:           ${{ github.event.inputs.container_registry_url }}
           WD_CI_FILE:            ${{ github.event.inputs.ci_workflow_file }}
           # repository_dispatch values (client_payload)
           RD_APP:                ${{ github.event.client_payload.app_name }}
@@ -123,6 +128,7 @@ jobs:
           RD_APP_TEMPLATE:       ${{ github.event.client_payload.app_template_repo }}
           RD_APP_TEMPLATE_REF:   ${{ github.event.client_payload.app_template_ref }}
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
+          RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
@@ -135,9 +141,11 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          # TODO: replace with the published cloud-agnostic reference image
-          # (keep in sync with the workflow_dispatch default above).
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-<REFERENCE_IMAGE>}}"
+          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-deors/template-helloworld-express:sha-af53b68}}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-${RD_REGISTRY:-ghcr.io}}"
+          # Prepend the registry when provided; the Fargate template receives
+          # a single full image reference (registry/image:tag).
+          [[ -n "$CONTAINER_REGISTRY_URL" ]] && CONTAINER_IMAGE="${CONTAINER_REGISTRY_URL}/${CONTAINER_IMAGE}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
@@ -194,6 +202,7 @@ jobs:
           echo "app_template_ref=$APP_TEMPLATE_REF"             >> "$GITHUB_OUTPUT"
           echo "with_app_repo=$WITH_APP_REPO"                   >> "$GITHUB_OUTPUT"
           echo "container_image=$CONTAINER_IMAGE"               >> "$GITHUB_OUTPUT"
+          echo "container_registry_url=$CONTAINER_REGISTRY_URL" >> "$GITHUB_OUTPUT"
           echo "ci_workflow_file=$CI_WORKFLOW_FILE"             >> "$GITHUB_OUTPUT"
           echo "infra_repo_full=${OWNER}/${APP_NAME}-infra"     >> "$GITHUB_OUTPUT"
           echo "app_repo_full=${OWNER}/${APP_NAME}"             >> "$GITHUB_OUTPUT"
@@ -226,6 +235,7 @@ jobs:
           ENVIRONMENT:    ${{ steps.params.outputs.environment }}
           REGION:         ${{ steps.params.outputs.aws_region }}
           IMAGE:          ${{ steps.params.outputs.container_image }}
+          REGISTRY:       ${{ steps.params.outputs.container_registry_url }}
           TRIGGER:        ${{ github.event_name }}
           WITH_APP_REPO:  ${{ steps.params.outputs.with_app_repo }}
         run: |
@@ -239,6 +249,7 @@ jobs:
           | Environment      | \`$ENVIRONMENT\`    |
           | Region           | \`$REGION\`         |
           | Image            | \`$IMAGE\`          |
+          | Registry         | \`$REGISTRY\`       |
           | App repo phase   | \`$WITH_APP_REPO\`  |
           EOF
 
@@ -453,9 +464,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file:      checkov-results.sarif
-          # Distinct from the Azure category so findings from the two clouds
-          # do not overwrite each other in the Security tab.
-          category:        checkov-terraform-aws-${{ matrix.environment }}
+          category:        checkov-terraform-${{ matrix.environment }}
 
   # ────────────────────────────────────────────────────────────────────────────
   # 5. Terraform format check (once, not per-environment)
