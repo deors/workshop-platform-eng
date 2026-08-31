@@ -4,8 +4,6 @@ title: Setup Guide for GitHub
 
 [← back to home](index.md)
 
-# Setup Guide for GitHub
-
 The platform's setup splits in two halves:
 
 1. **This guide** — the GitHub side, identical whichever cloud you target:

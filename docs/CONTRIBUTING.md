@@ -10,8 +10,6 @@ the GitHub Pages documentation site.
 
 [← back to home](index.md)
 
-# Contributing
-
 Thanks for your interest in improving this platform. This document explains
 how to propose changes, the standards we hold the code to, and what reviewers
 will look for.

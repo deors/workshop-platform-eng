@@ -5,8 +5,6 @@ description: Self-service provisioning & reconciling application resources, mult
 
 [← back to home](index.md)
 
-# Troubleshooting
-
 Where a problem is documented follows who owns it:
 
 | Area | Owner | Covered in |

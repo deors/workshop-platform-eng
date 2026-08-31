@@ -4,8 +4,6 @@ title: Setup Guide for AWS
 
 [← back to home](index.md)
 
-# Setup Guide for AWS
-
 Wires this platform to an **AWS account**: the identity it authenticates with,
 the permissions it needs, and the S3 bucket that holds Terraform state. When
 you finish, the platform is ready for its first

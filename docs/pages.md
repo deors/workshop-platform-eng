@@ -4,8 +4,6 @@ title: Pages site
 
 [← back to home](index.md)
 
-# Pages site — structure and setup
-
 This `docs/` directory is published as a **GitHub Pages** site rendered by
 Jekyll. It serves as the platform's public documentation hub and hosts the
 self-service provisioning forms.

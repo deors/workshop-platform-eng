@@ -4,8 +4,6 @@ title: Setup Guide for Azure
 
 [← back to home](index.md)
 
-# Setup Guide for Azure
-
 Wires this platform to an **Azure subscription**: the identity it authenticates
 with, the permissions it needs, and the storage account that holds Terraform
 state. When you finish, the platform is ready for its first
