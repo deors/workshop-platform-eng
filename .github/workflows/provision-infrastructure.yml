@@ -306,7 +306,10 @@ jobs:
           # Pin the repo contents to a specific template ref if requested.
           # GitHub's generate endpoint always seeds from the template's default
           # branch; to honour a pinned tag/branch/SHA we clone the template at
-          # that exact ref and force-push it onto the new repo's default branch.
+          # that exact ref and force-push its content onto the new repo's
+          # default branch — squashed to a single parentless commit, so the
+          # repo keeps the one-commit shape the generate endpoint produces
+          # instead of inheriting the template's full history.
           if [[ -n "$TEMPLATE_REF" ]]; then
             echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
             git clone \
@@ -315,9 +318,18 @@ jobs:
             git -C /tmp/template-infra-pin checkout "${TEMPLATE_REF}"
             git -C /tmp/template-infra-pin remote add target \
               "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            # commit-tree builds the parentless commit; the resolved SHA in
+            # its message records exactly which template commit the content
+            # came from, even if the pinned ref was a branch or tag that
+            # later moves.
+            git -C /tmp/template-infra-pin config user.name  "github-actions[bot]"
+            git -C /tmp/template-infra-pin config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            PIN_SHA=$(git -C /tmp/template-infra-pin rev-parse HEAD)
+            PIN_COMMIT=$(git -C /tmp/template-infra-pin commit-tree "HEAD^{tree}" \
+              -m "Initial commit from ${TEMPLATE}@${PIN_SHA} (requested ref: ${TEMPLATE_REF})")
             git -C /tmp/template-infra-pin push --force target \
-              "HEAD:refs/heads/${DEFAULT_BRANCH}"
-            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
+              "${PIN_COMMIT}:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template commit ${PIN_SHA}, squashed to a single commit"
           fi
 
           echo "repo_existed=false" >> "$GITHUB_OUTPUT"
@@ -828,7 +840,10 @@ jobs:
           # Pin the repo contents to a specific template ref if requested.
           # GitHub's generate endpoint always seeds from the template's default
           # branch; to honour a pinned tag/branch/SHA we clone the template at
-          # that exact ref and force-push it onto the new repo's default branch.
+          # that exact ref and force-push its content onto the new repo's
+          # default branch — squashed to a single parentless commit, so the
+          # repo keeps the one-commit shape the generate endpoint produces
+          # instead of inheriting the template's full history.
           if [[ -n "$TEMPLATE_REF" ]]; then
             echo "Pinning ${REPO_FULL} to template ref ${TEMPLATE_REF}…"
             git clone \
@@ -837,9 +852,18 @@ jobs:
             git -C /tmp/template-app-pin checkout "${TEMPLATE_REF}"
             git -C /tmp/template-app-pin remote add target \
               "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL}.git"
+            # commit-tree builds the parentless commit; the resolved SHA in
+            # its message records exactly which template commit the content
+            # came from, even if the pinned ref was a branch or tag that
+            # later moves.
+            git -C /tmp/template-app-pin config user.name  "github-actions[bot]"
+            git -C /tmp/template-app-pin config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            PIN_SHA=$(git -C /tmp/template-app-pin rev-parse HEAD)
+            PIN_COMMIT=$(git -C /tmp/template-app-pin commit-tree "HEAD^{tree}" \
+              -m "Initial commit from ${TEMPLATE}@${PIN_SHA} (requested ref: ${TEMPLATE_REF})")
             git -C /tmp/template-app-pin push --force target \
-              "HEAD:refs/heads/${DEFAULT_BRANCH}"
-            echo "Pinned ${REPO_FULL} default branch to template ref ${TEMPLATE_REF}"
+              "${PIN_COMMIT}:refs/heads/${DEFAULT_BRANCH}"
+            echo "Pinned ${REPO_FULL} default branch to template commit ${PIN_SHA}, squashed to a single commit"
           fi
 
           echo "repo_existed=false" >> "$GITHUB_OUTPUT"
