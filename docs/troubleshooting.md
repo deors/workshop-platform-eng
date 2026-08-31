@@ -241,6 +241,25 @@ Registration. Re-check:
   branch-scoped credential won't match. Either trigger from `main` or add
   another federated credential for that branch.
 
+### Azure — federated credential already exists with a stale subject
+
+The `Federated credential · <env>` job fails reporting that the credential
+named `<owner>-<app>-<env>` already exists but holds a different subject than
+the app repo now presents. App names are not reused, so this almost always
+means the app repo was **deleted and recreated** (e.g. while troubleshooting
+an initial provisioning): GitHub embeds an immutable repo ID in OIDC
+subjects, so the recreated repo presents a new subject and the stale
+registration can never match a token again.
+
+The workflow deliberately never repoints or deletes an existing identity
+credential — that is an operator's decision. The job summary shows both
+subjects side by side. Typically the fix is to remove the stale registration
+and re-run:
+
+```bash
+az ad app federated-credential delete --id <azure_client_id> --federated-credential-id <owner>-<app>-<env>
+```
+
 ### Azure — `Insufficient privileges to complete the operation` registering a federated credential
 
 The `configure-federated-credentials` job calls

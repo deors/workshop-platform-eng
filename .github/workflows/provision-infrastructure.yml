@@ -1229,6 +1229,45 @@ jobs:
           # Name: alphanumeric + hyphens, ≤120 chars. owner-app-env is unique.
           NAME="${REPO_FULL//\//-}-${ENV}"
 
+          # The name slot may already hold a credential with a DIFFERENT
+          # subject. App names are never reused (they are unique in the
+          # CMDB), so in practice this means the repo was deleted and
+          # recreated while troubleshooting an initial provisioning — GitHub
+          # mints a new immutable repo ID on recreation, so the stored
+          # subject can never be presented again. This workflow deliberately
+          # does not repoint or delete an existing identity credential;
+          # that is an operator's decision. Fail with everything the team
+          # needs to make it.
+          STALE_SUBJECT=$(az ad app federated-credential list --id "$APP_ID" \
+            --query "[?name=='${NAME}'].subject | [0]" -o tsv 2>/dev/null || true)
+          if [[ -n "$STALE_SUBJECT" ]]; then
+            {
+              echo "## Federated credential conflict — \`${ENV}\`"
+              echo ""
+              echo "The App Registration already has a federated credential named \`${NAME}\`,"
+              echo "but it holds a different subject than the one ${REPO_FULL} now presents:"
+              echo ""
+              echo "| | Subject |"
+              echo "|---|---|"
+              echo "| Registered (stale) | \`${STALE_SUBJECT}\` |"
+              echo "| Required by the repo | \`${SUBJECT}\` |"
+              echo ""
+              echo "This typically means the app repo was deleted and recreated (e.g. while"
+              echo "troubleshooting an initial provisioning): GitHub embeds an immutable repo ID"
+              echo "in OIDC subjects, so the recreated repo presents a new subject and the stale"
+              echo "registration can never match a token again."
+              echo ""
+              echo "This workflow does not modify or remove existing identity credentials — decide"
+              echo "how to proceed. Typically, remove the stale registration and re-run:"
+              echo ""
+              echo '```bash'
+              echo "az ad app federated-credential delete --id <azure_client_id> --federated-credential-id ${NAME}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::Federated credential '${NAME}' already exists with a stale subject '${STALE_SUBJECT}' (the repo now presents '${SUBJECT}' — it was likely deleted and recreated). This workflow never repoints existing credentials. See the job summary for details; typically: remove the stale registration (az ad app federated-credential delete --id <azure_client_id> --federated-credential-id ${NAME}) and re-run."
+            exit 1
+          fi
+
           az ad app federated-credential create --id "$APP_ID" --parameters @<(cat <<JSON
           {
             "name":      "${NAME}",
