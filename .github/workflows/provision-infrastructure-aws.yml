@@ -1167,7 +1167,7 @@ jobs:
           APP_NAME:   ${{ needs.resolve-inputs.outputs.app_name }}
           REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
           ROLE_ARN:   ${{ needs.resolve-inputs.outputs.aws_role_arn }}
-          ACCOUNT_ID: ${{ needs.resolve-inputs.outputs.aws_account_id }}
+          DOMAIN:     ${{ needs.resolve-inputs.outputs.main_domain }}
         run: |
           # 1. Create the environment (PUT is idempotent — 200 if it already exists).
           gh api -X PUT "repos/${REPO_FULL}/environments/${ENV}" --silent
@@ -1182,15 +1182,26 @@ jobs:
             fi
           }
 
-          # Only variables with a real downstream consumer are set. There is
-          # no CONTAINER_REGISTRY_URL here: ECS pulls by full image reference
-          # (IAM-authenticated for ECR, anonymous for public registries), so a
-          # registry variable would have nothing to configure.
-          set_var AWS_REGION     "$REGION"
-          set_var AWS_ROLE_ARN   "$ROLE_ARN"
-          set_var AWS_ACCOUNT_ID "$ACCOUNT_ID"
-          set_var ECS_CLUSTER    "${APP_NAME}-${ENV}"
-          set_var ECS_SERVICE    "${APP_NAME}-${ENV}"
+          # Only variables with a real downstream consumer are set — the
+          # contract is the header of deploy-aws.yml in the app template
+          # (AWS_ROLE_ARN, AWS_REGION, AWS_ECS_CLUSTER, AWS_ECS_SERVICE,
+          # AWS_APP_URL). There is no CONTAINER_REGISTRY_URL here: ECS pulls
+          # by full image reference (IAM-authenticated for ECR, anonymous for
+          # public registries), so a registry variable would have nothing to
+          # configure. And no AWS_ACCOUNT_ID: nothing in the app template
+          # reads it.
+          #
+          # AWS_APP_URL is the public base URL the template smoke-tests in
+          # dev (<app>.<env>.<main_domain> is the FQDN the infra template
+          # publishes in Route 53, behind TLS). Staging/prod ingress is
+          # VPC-private, so the template uses control-plane assertions there
+          # instead — the variable is still set for every environment, as it
+          # names the (internal) endpoint all the same.
+          set_var AWS_REGION      "$REGION"
+          set_var AWS_ROLE_ARN    "$ROLE_ARN"
+          set_var AWS_ECS_CLUSTER "${APP_NAME}-${ENV}"
+          set_var AWS_ECS_SERVICE "${APP_NAME}-${ENV}"
+          set_var AWS_APP_URL     "https://${APP_NAME}.${ENV}.${DOMAIN}"
 
           # The app repo's deploy router (deploy.yml) picks its cloud-specific
           # reusable workflow from this environment-scoped variable, so each
