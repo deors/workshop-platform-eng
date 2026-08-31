@@ -359,7 +359,7 @@ The `detect-drift-aws.yml` workflow compares the recorded Terraform state
 against the live AWS resources (`terraform plan -refresh-only`) and opens an
 issue in the affected application's **infrastructure repo** (`<app>-infra`)
 when it finds drift or an error. It has three entry points: a weekly
-`schedule` (Mondays at 07:00 UTC — one hour after the Azure sweep, so the two
+`schedule` (Mondays at 06:23 UTC — one hour after the Azure sweep, so the two
 never contend for runners), manual `workflow_dispatch`, and `workflow_call`.
 
 For each environment the workflow classifies the result from the

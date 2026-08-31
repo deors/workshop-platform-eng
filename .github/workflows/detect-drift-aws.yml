@@ -31,7 +31,7 @@ name: AWS - Detect Drift
 
 on:
   schedule:
-    # Weekly, Mondays at 07:00 UTC — one hour after the Azure sweep
+    # Weekly, Mondays at 06:23 UTC — one hour after the Azure sweep
     # (detect-drift.yml) so the two do not contend for runners.
     #
     # To change the cadence, edit the `cron` expression below. It CANNOT be
@@ -47,7 +47,10 @@ on:
     # Every OTHER parameter comes from repository variables on schedule runs
     # (DRIFT_AWS_APP_NAMES, DRIFT_AWS_ENVIRONMENTS, DRIFT_AWS_REGION,
     # DRIFT_AWS_ROLE_ARN, DRIFT_AWS_MAIN_DOMAIN).
-    - cron: "0 7 * * 1"
+    # Off-peak minute on purpose: GitHub's scheduler is best-effort and
+    # top-of-hour slots are the most contended (delays of minutes to hours).
+    # An odd minute doesn't guarantee punctuality, but avoids the worst of it.
+    - cron: "23 6 * * 1"
 
   workflow_dispatch:
     inputs:

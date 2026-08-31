@@ -457,7 +457,8 @@ The `detect-drift.yml` workflow compares the recorded Terraform state against
 the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
 the affected application's **infrastructure repo** (`<app>-infra`) when it finds
 drift or an error. It has three entry points: a weekly `schedule` (Mondays at
-06:00 UTC), manual `workflow_dispatch`, and `workflow_call` (so other workflows
+05:23 UTC — an off-peak minute, since GitHub delays top-of-the-hour schedules
+the most), manual `workflow_dispatch`, and `workflow_call` (so other workflows
 can reuse it).
 
 To change the cadence, edit the `cron` expression in `detect-drift.yml`. It

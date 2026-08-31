@@ -31,7 +31,7 @@ name: Azure - Detect Drift
 
 on:
   schedule:
-    # Weekly, Mondays at 06:00 UTC.
+    # Weekly, Mondays at 05:23 UTC.
     #
     # To change the cadence, edit the `cron` expression below. It CANNOT be
     # driven by a repository variable or environment variable: GitHub does not
@@ -47,7 +47,10 @@ on:
     # (DRIFT_AZURE_APP_NAMES, DRIFT_AZURE_ENVIRONMENTS, DRIFT_AZURE_TENANT_ID,
     # DRIFT_AZURE_SUBSCRIPTION_ID, DRIFT_AZURE_CLIENT_ID,
     # DRIFT_AZURE_LOCATION).
-    - cron: "0 6 * * 1"
+    # Off-peak minute on purpose: GitHub's scheduler is best-effort and
+    # top-of-hour slots are the most contended (delays of minutes to hours).
+    # An odd minute doesn't guarantee punctuality, but avoids the worst of it.
+    - cron: "23 5 * * 1"
 
   workflow_dispatch:
     inputs:
