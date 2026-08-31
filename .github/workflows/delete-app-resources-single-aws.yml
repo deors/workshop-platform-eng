@@ -168,7 +168,8 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     outputs:
-      destroy_status: ${{ steps.destroy.outputs.destroy_status }}
+      destroy_status:  ${{ steps.destroy.outputs.destroy_status }}
+      task_def_status: ${{ steps.deregister_task_defs.outputs.task_def_status }}
 
     steps:
       - name: Checkout infrastructure repo
@@ -252,6 +253,59 @@ jobs:
             exit 1
           fi
           echo "destroy_status=Destroyed (${STATE_COUNT} resources)" >> "$GITHUB_OUTPUT"
+
+      - name: Deregister orphaned ECS task definition revisions
+        id: deregister_task_defs
+        env:
+          APP_NAME:    ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT: ${{ needs.validate.outputs.environment }}
+          AWS_REGION:  ${{ inputs.aws_region || github.event.inputs.aws_region }}
+        run: |
+          set -euo pipefail
+
+          # Terraform destroy deregisters the revision it created (revision 1).
+          # CodeDeploy registers additional revisions (e.g. revision 2) each time
+          # the app is deployed; those are never in Terraform state and are left
+          # behind after destroy. This step cleans them up.
+          FAMILY="${APP_NAME}-${ENVIRONMENT}"
+
+          # The CLI auto-paginates, so all revisions are returned in one call.
+          ARNS=$(aws ecs list-task-definitions \
+            --family-prefix "$FAMILY" \
+            --status ACTIVE \
+            --query 'taskDefinitionArns' \
+            --output json \
+            --region "$AWS_REGION" 2>/dev/null || echo '[]')
+
+          COUNT=$(echo "$ARNS" | jq 'length')
+          if [[ "$COUNT" -eq 0 ]]; then
+            echo "No active task definition revisions found for family '${FAMILY}'. Skipping."
+            echo "task_def_status=None remaining" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Found ${COUNT} active revision(s) for family '${FAMILY}':"
+          DEREGISTERED=0
+          while IFS= read -r ARN; do
+            [[ -z "$ARN" ]] && continue
+            # Verify exact family from ARN (arn:...:task-definition/FAMILY:REVISION)
+            ARN_FAMILY="${ARN##*/task-definition/}"
+            ARN_FAMILY="${ARN_FAMILY%:*}"
+            if [[ "$ARN_FAMILY" != "$FAMILY" ]]; then
+              echo "  Skipping '${ARN}' (different family: '${ARN_FAMILY}')"
+              continue
+            fi
+            echo "  Deregistering ${ARN}…"
+            aws ecs deregister-task-definition \
+              --task-definition "$ARN" \
+              --region "$AWS_REGION" \
+              --output text \
+              --query 'taskDefinition.status' > /dev/null
+            (( DEREGISTERED++ )) || true
+          done < <(echo "$ARNS" | jq -r '.[]')
+
+          echo "Deregistered ${DEREGISTERED} revision(s)."
+          echo "task_def_status=Deregistered ${DEREGISTERED} revision(s)" >> "$GITHUB_OUTPUT"
 
   # The group object only becomes safe to remove once its resources are gone.
   delete-rg:
@@ -391,11 +445,12 @@ jobs:
       - name: Summary
         if: always()
         env:
-          APP_NAME:       ${{ needs.validate.outputs.app_name }}
-          ENVIRONMENT:    ${{ needs.validate.outputs.environment }}
-          RESOURCE_GROUP: ${{ needs.validate.outputs.resource_group_name }}
-          DESTROY_STATUS: ${{ needs.destroy.outputs.destroy_status }}
-          RG_STATUS:      ${{ needs.delete-rg.outputs.resource_group_status }}
+          APP_NAME:        ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT:     ${{ needs.validate.outputs.environment }}
+          RESOURCE_GROUP:  ${{ needs.validate.outputs.resource_group_name }}
+          DESTROY_STATUS:  ${{ needs.destroy.outputs.destroy_status }}
+          TASK_DEF_STATUS: ${{ needs.destroy.outputs.task_def_status }}
+          RG_STATUS:       ${{ needs.delete-rg.outputs.resource_group_status }}
         run: |
           {
             echo "## Delete App Resources (AWS)"
@@ -403,6 +458,7 @@ jobs:
             echo "- App name: $APP_NAME"
             echo "- Environment: $ENVIRONMENT"
             echo "- Terraform destroy: ${DESTROY_STATUS:-Unknown}"
+            echo "- ECS task definition cleanup: ${TASK_DEF_STATUS:-Unknown}"
             echo "- Resource group: $RESOURCE_GROUP"
             echo "- Resource group delete status: ${RG_STATUS:-Unknown}"
             echo "- GitHub environment cleanup: executed (environment and its variables; repository untouched)"
