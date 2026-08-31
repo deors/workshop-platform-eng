@@ -1168,6 +1168,14 @@ jobs:
           set_var ECS_CLUSTER    "${APP_NAME}-${ENV}"
           set_var ECS_SERVICE    "${APP_NAME}-${ENV}"
 
+          # The app repo's deploy router (deploy.yml) picks its cloud-specific
+          # reusable workflow from this environment-scoped variable, so each
+          # environment can live on a different cloud. This run provisions
+          # AWS for exactly the environments in its matrix, so it stamps
+          # those — and only those — as aws. A reconcile run by another
+          # cloud's workflow re-stamps the environments it owns.
+          set_var DEPLOY_TARGET_CLOUD "aws"
+
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 
   # ────────────────────────────────────────────────────────────────────────────

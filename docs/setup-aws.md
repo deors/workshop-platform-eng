@@ -343,7 +343,10 @@ against the live infrastructure.
 When `app_template_repo` is provided, the run also creates the application
 repository from your template, configures its GitHub Environments + variables
 (`AWS_REGION`, `AWS_ROLE_ARN`, `AWS_ACCOUNT_ID`, `ECS_CLUSTER`,
-`ECS_SERVICE`), appends the per-env OIDC subjects to the role's trust policy,
+`ECS_SERVICE`, and `DEPLOY_TARGET_CLOUD=aws` — the environment-scoped switch
+the app repo's deploy router reads to pick its cloud, so different
+environments of one app can target different clouds), appends the per-env
+OIDC subjects to the role's trust policy,
 observes the auto-triggered CI in the new repo, and posts a summary comment on
 the per-run tracking issue. When `app_template_repo` is omitted, all of those
 steps are skipped and only the infra issue and final summary are written.

@@ -1125,6 +1125,14 @@ jobs:
           set_var AZURE_CLIENT_ID       "$CID"
           set_var AZURE_RESOURCE_GROUP  "rg-${APP_NAME}-${ENV}"
           set_var AZURE_WEBAPP_NAME     "app-${APP_NAME}-${ENV}"
+
+          # The app repo's deploy router (deploy.yml) picks its cloud-specific
+          # reusable workflow from this environment-scoped variable, so each
+          # environment can live on a different cloud. This run provisions
+          # Azure for exactly the environments in its matrix, so it stamps
+          # those — and only those — as azure. A reconcile run by another
+          # cloud's workflow re-stamps the environments it owns.
+          set_var DEPLOY_TARGET_CLOUD   "azure"
           [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
 
           echo "Environment '${ENV}' configured on ${REPO_FULL}"

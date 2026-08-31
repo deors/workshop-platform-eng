@@ -438,7 +438,12 @@ the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
 
 When `app_template_repo` is provided, the run also creates the application
-repository from your template, configures its GitHub Environments + variables,
+repository from your template, configures its GitHub Environments + variables
+(`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_CLIENT_ID`,
+`AZURE_RESOURCE_GROUP`, `AZURE_WEBAPP_NAME`, `CONTAINER_REGISTRY_URL` when a
+registry was supplied, and `DEPLOY_TARGET_CLOUD=azure` — the
+environment-scoped switch the app repo's deploy router reads to pick its
+cloud, so different environments of one app can target different clouds),
 registers the per-env federated credentials on the platform SP, observes the
 auto-triggered CI in the new repo, and posts a summary comment on the per-run
 tracking issue. When `app_template_repo` is omitted, all of those steps are
