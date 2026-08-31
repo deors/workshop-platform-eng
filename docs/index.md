@@ -14,7 +14,7 @@ and does not duplicate the content below.
 [Setup: GitHub](setup-github.md) ·
 [Setup: Azure](setup-azure.md) ·
 [Setup: AWS](setup-aws.md) ·
-[Roadmap](roadmap.md) ·
+[Roadmap](https://github.com/deors/workshop-platform-eng/issues) ·
 [Troubleshooting](troubleshooting.md) ·
 [Contributing](CONTRIBUTING.md) ·
 [Pages info](pages.md) ·
@@ -41,7 +41,7 @@ The platform supports two operating modes in a single workflow:
 > **Status:** functional end-to-end. Plan → apply → verify, application repo
 > creation from template, GitHub Environments + variables, OIDC federated
 > credentials, CI observation and per-run tracking issue are all wired. See
-> [Roadmap](#roadmap) for what's next.
+> [Roadmap](https://github.com/deors/workshop-platform-eng/issues) for what's next.
 
 ---
 
@@ -482,7 +482,7 @@ the infrastructure when new requirements arise.
 
 ## Roadmap
 
-See [Roadmap](roadmap.md) for the current and planned features.
+See the [issue tracker](https://github.com/deors/workshop-platform-eng/issues) for the current and planned features.
 
 ## Contributing
 
