@@ -409,6 +409,12 @@ is read-only and never binds a GitHub Environment, so no extra OIDC subject
 is needed. Issue creation in the `<app>-infra` repo uses the same `GH_PAT`
 secret configured in the [GitHub setup guide](setup-github.md).
 
+The `DRIFT_AWS_*` variables are the opt-in for the scheduled sweep — the
+schedule itself ships with the workflow file. If **none** of them are set,
+a scheduled run skips cleanly with a notice in its summary. If only **some**
+are set (or any other required input is missing), the run fails fast with a
+clear error: partial configuration is a mistake, and silence would hide it.
+
 ---
 
 ## Troubleshooting

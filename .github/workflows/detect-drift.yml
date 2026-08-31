@@ -132,6 +132,7 @@ jobs:
     name: Resolve inputs
     runs-on: ubuntu-latest
     outputs:
+      configured:            ${{ steps.params.outputs.configured }}
       apps:                  ${{ steps.params.outputs.apps }}
       environments:          ${{ steps.params.outputs.environments }}
       azure_tenant_id:       ${{ steps.params.outputs.azure_tenant_id }}
@@ -159,6 +160,7 @@ jobs:
           VAR_SUB:      ${{ vars.DRIFT_AZURE_SUBSCRIPTION_ID }}
           VAR_CLIENT:   ${{ vars.DRIFT_AZURE_CLIENT_ID }}
           VAR_LOCATION: ${{ vars.DRIFT_AZURE_LOCATION }}
+          EVENT:        ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -168,6 +170,30 @@ jobs:
           AZURE_SUBSCRIPTION_ID="${IN_SUB:-$VAR_SUB}"
           AZURE_CLIENT_ID="${IN_CLIENT:-$VAR_CLIENT}"
           LOCATION="${IN_LOCATION:-$VAR_LOCATION}"
+
+          # A scheduled run on a repo where automated drift detection was
+          # never set up (NO DRIFT_AZURE_* variable configured at all) is a
+          # normal situation, not an error — the schedule ships with the
+          # workflow file, the variables are the opt-in. Skip cleanly with a
+          # notice. Anything PARTIALLY configured still fails loudly below:
+          # that is a misconfiguration, and silence would hide it.
+          if [[ "$EVENT" == "schedule" && -z "$APP_NAMES" && -z "$AZURE_TENANT_ID" \
+                && -z "$AZURE_SUBSCRIPTION_ID" && -z "$AZURE_CLIENT_ID" && -z "$LOCATION" ]]; then
+            echo "Automated drift detection is not configured — skipping the scheduled sweep."
+            {
+              echo "## Drift detection — skipped"
+              echo
+              echo "Automated drift detection is not configured in this repository, so the"
+              echo "scheduled sweep did nothing. To enable it, set the \`DRIFT_AZURE_*\`"
+              echo "repository variables (see the Azure setup guide, drift detection step)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "configured=false"
+              echo "apps=[]"
+              echo "environments=[]"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           MISSING=()
           [[ -z "$APP_NAMES"            ]] && MISSING+=(app_names)
@@ -217,6 +243,7 @@ jobs:
           # OIDC flow; they are NOT masked because GitHub blanks masked values
           # when they flow through job outputs to downstream jobs.
           {
+            echo "configured=true"
             echo "apps=$APPS_JSON"
             echo "environments=$ENVS_JSON"
             echo "azure_tenant_id=$AZURE_TENANT_ID"
@@ -226,6 +253,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: steps.params.outputs.configured == 'true'
         env:
           APPS: ${{ steps.params.outputs.apps }}
           ENVS: ${{ steps.params.outputs.environments }}
@@ -252,6 +280,8 @@ jobs:
   drift:
     name: "Drift · ${{ matrix.app }}"
     needs: resolve-inputs
+    # Skipped (not failed) when a scheduled run finds drift detection unconfigured.
+    if: needs.resolve-inputs.outputs.configured == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false   # check every app even if one drifts or errors

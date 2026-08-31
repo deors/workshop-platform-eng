@@ -124,6 +124,7 @@ jobs:
     name: Resolve inputs
     runs-on: ubuntu-latest
     outputs:
+      configured:   ${{ steps.params.outputs.configured }}
       apps:         ${{ steps.params.outputs.apps }}
       environments: ${{ steps.params.outputs.environments }}
       aws_region:   ${{ steps.params.outputs.aws_region }}
@@ -148,6 +149,7 @@ jobs:
           VAR_REGION:   ${{ vars.DRIFT_AWS_REGION }}
           VAR_ROLE_ARN: ${{ vars.DRIFT_AWS_ROLE_ARN }}
           VAR_DOMAIN:   ${{ vars.DRIFT_AWS_MAIN_DOMAIN }}
+          EVENT:        ${{ github.event_name }}
         run: |
           set -euo pipefail
 
@@ -156,6 +158,30 @@ jobs:
           AWS_REGION="${IN_REGION:-$VAR_REGION}"
           AWS_ROLE_ARN="${IN_ROLE_ARN:-$VAR_ROLE_ARN}"
           MAIN_DOMAIN="${IN_DOMAIN:-$VAR_DOMAIN}"
+
+          # A scheduled run on a repo where automated drift detection was
+          # never set up (NO DRIFT_AWS_* variable configured at all) is a
+          # normal situation, not an error — the schedule ships with the
+          # workflow file, the variables are the opt-in. Skip cleanly with a
+          # notice. Anything PARTIALLY configured still fails loudly below:
+          # that is a misconfiguration, and silence would hide it.
+          if [[ "$EVENT" == "schedule" && -z "$APP_NAMES" && -z "$AWS_REGION" \
+                && -z "$AWS_ROLE_ARN" && -z "$MAIN_DOMAIN" ]]; then
+            echo "Automated drift detection is not configured — skipping the scheduled sweep."
+            {
+              echo "## Drift detection — skipped"
+              echo
+              echo "Automated drift detection is not configured in this repository, so the"
+              echo "scheduled sweep did nothing. To enable it, set the \`DRIFT_AWS_*\`"
+              echo "repository variables (see the AWS setup guide, drift detection step)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "configured=false"
+              echo "apps=[]"
+              echo "environments=[]"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           MISSING=()
           [[ -z "$APP_NAMES"    ]] && MISSING+=(app_names)
@@ -204,6 +230,7 @@ jobs:
           # flow; they are NOT masked because GitHub blanks masked values when
           # they flow through job outputs to downstream jobs.
           {
+            echo "configured=true"
             echo "apps=$APPS_JSON"
             echo "environments=$ENVS_JSON"
             echo "aws_region=$AWS_REGION"
@@ -212,6 +239,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Summary
+        if: steps.params.outputs.configured == 'true'
         env:
           APPS: ${{ steps.params.outputs.apps }}
           ENVS: ${{ steps.params.outputs.environments }}
@@ -238,6 +266,8 @@ jobs:
   drift:
     name: "Drift · ${{ matrix.app }}"
     needs: resolve-inputs
+    # Skipped (not failed) when a scheduled run finds drift detection unconfigured.
+    if: needs.resolve-inputs.outputs.configured == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false   # check every app even if one drifts or errors

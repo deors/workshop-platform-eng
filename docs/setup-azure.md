@@ -518,8 +518,11 @@ needed. Issue creation in the `<app>-infra` repo uses the same `GH_PAT` secret
 configured in the
 [GitHub setup guide](setup-github.md).
 
-If `DRIFT_AZURE_APP_NAMES` or any required input is missing, the scheduled
-run fails fast with a clear error instead of silently doing nothing.
+The `DRIFT_AZURE_*` variables are the opt-in for the scheduled sweep — the
+schedule itself ships with the workflow file. If **none** of them are set,
+a scheduled run skips cleanly with a notice in its summary. If only **some**
+are set (or any other required input is missing), the run fails fast with a
+clear error: partial configuration is a mistake, and silence would hide it.
 
 ---
 
