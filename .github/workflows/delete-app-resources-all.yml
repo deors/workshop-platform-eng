@@ -1,5 +1,16 @@
 name: Azure - Delete Application Resources (All Environments + tfstate)
 
+# Retires an entire application on Azure, mirroring delete-app-resources-all-aws.yml
+# on the AWS side: every environment in turn, then the Terraform state backend.
+#
+# The application and infrastructure REPOSITORIES are never deleted — only the
+# GitHub Environments inside the app repo, matching the AWS behaviour.
+#
+# Ordering matters and is enforced by `needs`: the state backend is deleted
+# LAST, because every per-environment cleanup deletes its state blob from the
+# storage account inside the tfstate resource group. Removing that resource
+# group concurrently would race those deletions with spurious errors.
+
 on:
   workflow_dispatch:
     inputs:
@@ -23,6 +34,12 @@ on:
         description: Repeat the exact application name to confirm destructive deletion
         type: string
         required: true
+      delete_tfstate:
+        description: Also delete the Terraform state resource group (irreversible — the state history is unrecoverable)
+        type: choice
+        options: ["true", "false"]
+        default: "true"
+        required: true
       wait_for_completion:
         description: Wait until Azure confirms all resource groups are fully deleted
         type: choice
@@ -39,7 +56,8 @@ jobs:
     name: Validate request
     runs-on: ubuntu-latest
     outputs:
-      app_name: ${{ steps.validate.outputs.app_name }}
+      app_name:            ${{ steps.validate.outputs.app_name }}
+      delete_tfstate:      ${{ steps.validate.outputs.delete_tfstate }}
       wait_for_completion: ${{ steps.validate.outputs.wait_for_completion }}
     steps:
       - name: Validate inputs
@@ -47,6 +65,7 @@ jobs:
         env:
           APP_NAME:              ${{ github.event.inputs.app_name }}
           CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
+          DELETE_TFSTATE:        ${{ github.event.inputs.delete_tfstate }}
           WAIT_FOR_COMPLETION:   ${{ github.event.inputs.wait_for_completion }}
         run: |
           set -euo pipefail
@@ -60,16 +79,25 @@ jobs:
             echo "::error::app_name must be 3-22 chars, lowercase alphanumeric and hyphens, no leading/trailing hyphen"
             exit 1
           fi
+          if [[ "$DELETE_TFSTATE" != "true" && "$DELETE_TFSTATE" != "false" ]]; then
+            echo "::error::delete_tfstate must be either true or false"
+            exit 1
+          fi
           if [[ "$WAIT_FOR_COMPLETION" != "true" && "$WAIT_FOR_COMPLETION" != "false" ]]; then
             echo "::error::wait_for_completion must be either true or false"
             exit 1
           fi
 
-          echo "app_name=$APP_NAME" >> "$GITHUB_OUTPUT"
+          echo "app_name=$APP_NAME"                       >> "$GITHUB_OUTPUT"
+          echo "delete_tfstate=$DELETE_TFSTATE"           >> "$GITHUB_OUTPUT"
           echo "wait_for_completion=$WAIT_FOR_COMPLETION" >> "$GITHUB_OUTPUT"
 
-  delete-env-resource-groups:
-    name: "Delete env RG · ${{ matrix.environment }}"
+  # One environment at a time (max-parallel: 1). Serialising is not just
+  # tidiness: the environments share the platform App Registration whose
+  # federated credentials are removed during cleanup, and a sequential
+  # teardown keeps the per-environment summaries readable.
+  delete-env-resources:
+    name: "Delete env · ${{ matrix.environment }}"
     needs: validate
     strategy:
       fail-fast: false
@@ -88,9 +116,14 @@ jobs:
       wait_for_completion:       ${{ needs.validate.outputs.wait_for_completion }}
     secrets: inherit
 
+  # ────────────────────────────────────────────────────────────────────────────
+  # The state backend, last. Skipped entirely when delete_tfstate is false, so
+  # an app can be torn down while keeping its state history for forensics.
+  # ────────────────────────────────────────────────────────────────────────────
   delete-tfstate-resource-group:
     name: Delete tfstate RG
-    needs: validate
+    needs: [validate, delete-env-resources]
+    if: needs.validate.outputs.delete_tfstate == 'true'
     uses: ./.github/workflows/delete-resource-group.yml
     with:
       resource_group_name:   rg-${{ needs.validate.outputs.app_name }}-tfstate
@@ -98,3 +131,27 @@ jobs:
       azure_subscription_id: ${{ github.event.inputs.azure_subscription_id }}
       azure_client_id:       ${{ github.event.inputs.azure_client_id }}
       wait_for_completion:   ${{ needs.validate.outputs.wait_for_completion }}
+
+  summary:
+    name: Summary
+    needs: [validate, delete-env-resources, delete-tfstate-resource-group]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write summary
+        env:
+          APP_NAME:       ${{ needs.validate.outputs.app_name }}
+          DELETE_TFSTATE: ${{ needs.validate.outputs.delete_tfstate }}
+          ENV_RESULT:     ${{ needs.delete-env-resources.result }}
+          RG_STATUS:      ${{ needs.delete-tfstate-resource-group.outputs.resource_group_status }}
+        run: |
+          {
+            echo "## Delete Application Resources — Azure (all environments)"
+            echo ""
+            echo "- App name: $APP_NAME"
+            echo "- Environments (dev, staging, prod): ${ENV_RESULT:-Unknown}"
+            echo "- Delete tfstate requested: $DELETE_TFSTATE"
+            echo "- tfstate resource group: ${RG_STATUS:-Skipped}"
+            echo ""
+            echo "> Application and infrastructure repositories were not deleted."
+          } >> "$GITHUB_STEP_SUMMARY"
