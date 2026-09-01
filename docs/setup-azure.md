@@ -107,7 +107,7 @@ You need **four** credentials because two different subject formats apply:
 
 | Credential | Used by | Subject |
 |------------|---------|---------|
-| Branch-scoped | every job in `provision-infrastructure.yml` **without** an `environment:` key — `resolve-inputs`, `fmt`, `checkov`, `bootstrap-tfstate`, `create-app-repo`, `create-run-issue`, `configure-environments`, `configure-federated-credentials`, `observe-ci`, `finalize`; and the standalone `bootstrap-tfstate.yml` | `repo:<org>/<repo>:ref:refs/heads/main` |
+| Branch-scoped | every job in `provision-infrastructure.yml` **without** an `environment:` key — `resolve-inputs`, `preflight`, `fmt`, `checkov`, `bootstrap-tfstate`, `create-app-repo`, `create-run-issue`, `configure-environments`, `configure-federated-credentials`, `observe-ci`, `finalize`; and the standalone `bootstrap-tfstate.yml` | `repo:<org>/<repo>:ref:refs/heads/main` |
 | Environment `dev` | every job pinned to `environment: dev` — `plan`, `apply`, the `verify-infrastructure.yml` reusable workflow | `repo:<org>/<repo>:environment:dev` |
 | Environment `staging` | same set of jobs, pinned to `environment: staging` | `repo:<org>/<repo>:environment:staging` |
 | Environment `prod` | same set of jobs, pinned to `environment: prod` | `repo:<org>/<repo>:environment:prod` |
@@ -412,6 +412,7 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 
 ```
 Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
+Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable
 Checkov · {env}                   ✓ no findings
 Terraform fmt check               ✓ formatting clean
 Bootstrap tfstate storage         ✓ rg-test-webapp-tfstate + storage account + container

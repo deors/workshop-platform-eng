@@ -222,6 +222,7 @@ operator                ┌─────────────────�
 ├── scripts/                                 # cloud-specific scripts carry an -azure / -aws suffix
 │   ├── bootstrap-tfstate-azure.sh           # Idempotent az-cli state bootstrap (storage account)
 │   ├── bootstrap-tfstate-aws.sh             # Idempotent aws-cli state bootstrap (S3 bucket)
+│   ├── preflight-inputs.sh                  # Existence checks for template repos + container image (cloud-agnostic)
 │   ├── tag-app-resources-azure.sh           # Merge an arbitrary tag set onto all app resources
 │   ├── tag-app-resources-aws.sh             # Same, via the Resource Groups Tagging API
 │   ├── trigger-provision-azure.sh           # CLI wrapper around repository_dispatch

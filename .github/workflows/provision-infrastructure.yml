@@ -248,11 +248,45 @@ jobs:
           EOF
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 2. Create infrastructure repository from template (idempotent)
+  # 2. Preflight existence checks — confirm the template repos (and any
+  #    pinned refs) exist and the container image is anonymously pullable
+  #    BEFORE anything is created. A mistyped value otherwise only surfaces
+  #    as a checkout failure mid-run — or worse, as a service waiting forever
+  #    for an image it can never pull. All findings are reported together in
+  #    the job summary. Gating create-infra-repo gates the entire downstream
+  #    graph, so nothing runs on bad inputs.
+  #
+  #    The repo checks use GH_PAT when configured (proving the accessibility
+  #    the app phase will need) and fall back to the workflow token, keeping
+  #    infra-only setups PAT-free as documented in setup-github.md.
+  # ────────────────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight checks
+    needs: resolve-inputs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (for helper script)
+        uses: actions/checkout@v6
+
+      - name: Verify template repos and container image
+        env:
+          GH_TOKEN:            ${{ secrets.GH_PAT || github.token }}
+          INFRA_TEMPLATE_REPO: ${{ needs.resolve-inputs.outputs.infra_template_repo }}
+          INFRA_TEMPLATE_REF:  ${{ needs.resolve-inputs.outputs.infra_template_ref }}
+          APP_TEMPLATE_REPO:   ${{ needs.resolve-inputs.outputs.app_template_repo }}
+          APP_TEMPLATE_REF:    ${{ needs.resolve-inputs.outputs.app_template_ref }}
+          IMAGE:               ${{ needs.resolve-inputs.outputs.container_image }}
+          REGISTRY:            ${{ needs.resolve-inputs.outputs.container_registry_url }}
+        run: |
+          export CONTAINER_IMAGE_FULL="${REGISTRY:+${REGISTRY}/}${IMAGE}"
+          scripts/preflight-inputs.sh
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # 3. Create infrastructure repository from template (idempotent)
   # ────────────────────────────────────────────────────────────────────────────
   create-infra-repo:
     name: Create infrastructure repo
-    needs: resolve-inputs
+    needs: [resolve-inputs, preflight]
     runs-on: ubuntu-latest
     outputs:
       infra_repo_existed: ${{ steps.create.outputs.repo_existed }}
@@ -348,7 +382,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 3. Open a per-run tracking issue in the infrastructure repository.
+  # 4. Open a per-run tracking issue in the infrastructure repository.
   #     Created right after the infra repo is available (new or existing). A
   #     follow-up comment with the full infrastructure summary (plan results,
   #     verify counts) is posted by comment-infra-issue after apply + verify.
@@ -416,7 +450,7 @@ jobs:
           echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 4. Checkov – security and compliance scan, per target environment
+  # 5. Checkov – security and compliance scan, per target environment
   #    Per-env scoping lets us keep prod-strict baselines (zone redundancy, min
   #    instance count) while allowing dev/staging to run lighter footprints.
   # ────────────────────────────────────────────────────────────────────────────
@@ -458,7 +492,7 @@ jobs:
           category:        checkov-terraform-${{ matrix.environment }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 5. Terraform format check (once, not per-environment)
+  # 6. Terraform format check (once, not per-environment)
   # ────────────────────────────────────────────────────────────────────────────
   fmt:
     name: Terraform fmt check
@@ -483,7 +517,7 @@ jobs:
         run: terraform fmt -check -recursive infra-repo/terraform/
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 6. Bootstrap remote state storage (idempotent – safe to run every time).
+  # 7. Bootstrap remote state storage (idempotent – safe to run every time).
   #    Delegates to the reusable bootstrap-tfstate.yml workflow so the same
   #    logic can be triggered standalone.
   # ────────────────────────────────────────────────────────────────────────────
@@ -499,7 +533,7 @@ jobs:
       azure_location:        ${{ needs.resolve-inputs.outputs.azure_location }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 7. Terraform plan – one job per target environment, after scan passes
+  # 8. Terraform plan – one job per target environment, after scan passes
   # ────────────────────────────────────────────────────────────────────────────
   plan:
     name: "Plan · ${{ matrix.environment }}"
@@ -626,7 +660,7 @@ jobs:
             infra-repo/terraform/environments/${{ matrix.environment }}/plan-output.txt
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 8. Terraform apply – consume the plan artifact and provision per environment
+  # 9. Terraform apply – consume the plan artifact and provision per environment
   # ────────────────────────────────────────────────────────────────────────────
   apply:
     name: "Apply · ${{ matrix.environment }}"
@@ -731,7 +765,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 9. Verify – delegates to the reusable verify-infrastructure.yml workflow.
+  # 10. Verify – delegates to the reusable verify-infrastructure.yml workflow.
   #    The reusable workflow owns the GitHub Environment binding and the
   #    OIDC login, so federated credential matching stays consistent whether
   #    verify runs from here or is triggered standalone.
@@ -759,7 +793,7 @@ jobs:
       gh_pat: ${{ secrets.GH_PAT }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 10. Application repository – create from template (idempotent).
+  # 11. Application repository – create from template (idempotent).
   #
   #    The workflow can be re-invoked any number of times — typically once per
   #    environment as it is rolled out. On re-runs the repo already exists and
@@ -900,7 +934,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 11. Per-run tracking issue in the application repository. Covers only
+  # 12. Per-run tracking issue in the application repository. Covers only
   #     app-specific outcomes: whether the repo was created or already existed,
   #     and (via a follow-up comment from finalize) env config and CI/CD results.
   #     Infrastructure details are tracked separately in the infra repo issue.
@@ -969,7 +1003,7 @@ jobs:
           echo "number=$NUMBER"  >> "$GITHUB_OUTPUT"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 12. Comment on the infra repo issue with the full infrastructure summary:
+  # 13. Comment on the infra repo issue with the full infrastructure summary:
   #      per-env terraform plan results, verification test counts, and whether
   #      this run was a provision or reconcile. Runs after apply + verify.
   # ────────────────────────────────────────────────────────────────────────────
@@ -1110,7 +1144,7 @@ jobs:
           fi
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 13. Configure GitHub Environments and variables — one job per environment.
+  # 14. Configure GitHub Environments and variables — one job per environment.
   #     Always runs (idempotent: PUT for the env, PATCH→POST for each variable)
   #     so re-invocations can roll out additional envs to an existing app repo.
   # ────────────────────────────────────────────────────────────────────────────
@@ -1165,7 +1199,7 @@ jobs:
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 14. Register federated credentials on the platform-eng App Registration so
+  # 15. Register federated credentials on the platform-eng App Registration so
   #      OIDC tokens issued for the new app repo are accepted by Entra ID.
   #      Without these, deploy.yml in the new repo fails on `azure/login` with
   #      AADSTS700213 ("No matching federated identity record found").
@@ -1283,7 +1317,7 @@ jobs:
           echo "Registered federated credential '${NAME}' for subject '${SUBJECT}'"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 15. Observe the CI run that template-generation auto-triggered.
+  # 16. Observe the CI run that template-generation auto-triggered.
   #
   #     When a repo is created from a template, GitHub pushes the initial
   #     commit to `main` and any `on: push` workflows fire automatically. So
@@ -1340,7 +1374,7 @@ jobs:
           echo "CI run #${CI_RUN_ID} succeeded: ${CI_RUN_URL}"
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 16. Comment on the app repo issue with the app-specific run summary:
+  # 17. Comment on the app repo issue with the app-specific run summary:
   #     env config result, federated credentials, CI/CD run. Waits for
   #     configure-environments and configure-federated-credentials so their
   #     results are available even on reconcile runs (where observe-ci is
@@ -1411,7 +1445,7 @@ jobs:
           fi
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 17. Write the consolidated platform-side step summary once both issue
+  # 18. Write the consolidated platform-side step summary once both issue
   #     comments have been posted. Links out to the per-repo issues where the
   #     full run details live.
   # ────────────────────────────────────────────────────────────────────────────
