@@ -93,7 +93,7 @@ policy. You need **four** subjects because two different formats apply:
 
 | Subject | Used by |
 |---------|---------|
-| `repo:<org>/<repo>:ref:refs/heads/main` | every job in `provision-infrastructure-aws.yml` **without** an `environment:` key — `resolve-inputs`, `fmt`, `checkov`, `bootstrap-tfstate`, `create-app-repo`, `create-run-issue`, `configure-environments`, `configure-oidc-trust`, `observe-ci`, `final-summary`; and the standalone `bootstrap-tfstate-aws.yml`, `detect-drift-aws.yml`, `tag-app-resources-aws.yml` and delete workflows |
+| `repo:<org>/<repo>:ref:refs/heads/main` | every job in `provision-infrastructure-aws.yml` **without** an `environment:` key — `resolve-inputs`, `preflight`, `fmt`, `checkov`, `bootstrap-tfstate`, `create-app-repo`, `create-run-issue`, `configure-environments`, `configure-oidc-trust`, `observe-ci`, `final-summary`; and the standalone `bootstrap-tfstate-aws.yml`, `detect-drift-aws.yml`, `tag-app-resources-aws.yml` and delete workflows |
 | `repo:<org>/<repo>:environment:dev` | every job pinned to `environment: dev` — `plan`, `apply`, the `verify-infrastructure-aws.yml` reusable workflow |
 | `repo:<org>/<repo>:environment:staging` | same set of jobs, pinned to `environment: staging` |
 | `repo:<org>/<repo>:environment:prod` | same set of jobs, pinned to `environment: prod` |
@@ -310,6 +310,7 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 
 ```
 Resolve inputs                    ✓ validated inputs, derived tf-state-<app>-<acct8> from the role ARN
+Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable
 Checkov · {env}                   ✓ no findings
 Terraform fmt check               ✓ formatting clean
 Bootstrap tfstate bucket          ✓ S3 bucket + rg-test-webapp-tfstate resource group
