@@ -318,6 +318,25 @@ jobs:
           ENVS=$(jq -r '.[]' <<<"$ENVS_JSON")
           in_set() { grep -qx "$1" <<<"$ENVS"; }
 
+          # Evidence: every verdict lands in the job summary, pass or fail,
+          # in the same table style as the other preflight checks.
+          ROWS=()
+          GATE_RC=0
+          note() { ROWS+=("$1	$2	$3"); }
+          summary() {
+            {
+              echo "## Environment promotion gate"
+              echo ""
+              echo "| Result | Environment | Detail |"
+              echo "|--------|-------------|--------|"
+              local ROW S E D
+              for ROW in "${ROWS[@]}"; do
+                IFS=$'\t' read -r S E D <<<"$ROW"
+                echo "| $S | $E | $D |"
+              done
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          }
+
           exists() {
             local KEY="$1/terraform.tfstate" OUT N
             # Classify failures: a missing bucket/object means "not
@@ -327,6 +346,9 @@ jobs:
               if grep -qiE "404|Not Found|NoSuchBucket|NoSuchKey" <<<"$OUT"; then
                 return 1
               fi
+              OUT=$(tr '\n' ' ' <<<"$OUT" | tr '|' '/')
+              note "❌" "$1" "state backend query failed: ${OUT}"
+              summary
               echo "::error::Environment promotion gate could not check '$1' (state backend query failed): ${OUT}"
               exit 1
             fi
@@ -342,24 +364,38 @@ jobs:
           require() {
             local TARGET="$1"; shift
             in_set "$TARGET" || return 0
-            local MISSING=()
+            local DETAIL=() MISSING=() P
             for P in "$@"; do
-              in_set "$P" && continue
-              exists "$P" && continue
-              MISSING+=("$P")
+              if in_set "$P"; then
+                DETAIL+=("'$P' provisioned in this same run")
+              elif exists "$P"; then
+                DETAIL+=("'$P' already provisioned")
+              else
+                MISSING+=("$P")
+              fi
             done
-            [[ ${#MISSING[@]} -eq 0 ]] && return 0
+            if [[ ${#MISSING[@]} -eq 0 ]]; then
+              local JOINED; JOINED=$(printf '%s; ' "${DETAIL[@]}"); JOINED="${JOINED%; }"
+              note "✅" "$TARGET" "$JOINED"
+              return 0
+            fi
             if exists "$TARGET"; then
+              note "✅" "$TARGET" "already provisioned — reconcile allowed although prerequisite(s) no longer exist: ${MISSING[*]}"
               echo "'$TARGET' is already provisioned — reconcile allowed although prerequisite(s) no longer exist: ${MISSING[*]}"
               return 0
             fi
+            note "❌" "$TARGET" "prerequisite environment(s) not provisioned yet: ${MISSING[*]} — provision ${MISSING[*]} first, or request 'all'"
             echo "::error::Environment promotion gate: '$TARGET' requested, but prerequisite environment(s) not provisioned yet: ${MISSING[*]}. Provision ${MISSING[*]} first, or request 'all'."
-            exit 1
+            GATE_RC=1
           }
 
+          in_set dev && note "✅" "dev" "no prerequisites — promotion order starts here"
           require staging dev
           require prod dev staging
-          echo "Environment promotion gate passed."
+
+          summary
+          [[ "$GATE_RC" -eq 0 ]] && echo "Environment promotion gate passed."
+          exit "$GATE_RC"
 
   # ────────────────────────────────────────────────────────────────────────────
   # 3. Create infrastructure repository from template (idempotent)
