@@ -4,25 +4,25 @@ on:
   workflow_dispatch:
     inputs:
       app_name:
-        description: Application name (short, lowercase, no spaces)
+        description: "Application name (short, lowercase, no spaces)"
         type: string
         required: true
       environment:
-        description: Target environment
+        description: "Target environment"
         type: choice
         options: [dev, staging, prod, all]
         required: true
         default: dev
       aws_region:
-        description: AWS region for all the resources and the tfstate bucket (e.g. eu-west-1)
+        description: "AWS region for all the resources and the tfstate bucket (e.g. eu-west-1)"
         type: string
         required: true
       aws_role_arn:
-        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)"
         type: string
         required: true
       main_domain:
-        description: Root domain managed in Route 53 (e.g. example.com). The template issues a certificate for <app>.<env>.<main_domain>.
+        description: "Root domain managed in Route 53 (e.g. example.com). The template issues a certificate for <app>.<env>.<main_domain>"
         type: string
         required: true
       infra_template_repo:
@@ -45,15 +45,13 @@ on:
         required: false
         default: ""
       container_image:
-        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows)"
+        description: "Container image reference, without the registry host (org/container:tag, e.g. deors/template-helloworld-express:sha-af53b68); ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows"
         type: string
-        required: false
-        default: "deors/template-helloworld-express:sha-af53b68"
+        required: true
       container_registry_url:
-        description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
+        description: "Container registry URL (e.g. ghcr.io; leave empty for public Docker Hub images); ignored in reconcile runs"
         type: string
-        required: false
-        default: "ghcr.io"
+        required: true
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -141,24 +139,27 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-deors/template-helloworld-express:sha-af53b68}}"
-          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-${RD_REGISTRY:-ghcr.io}}"
-          # Prepend the registry when provided; the Fargate template receives
-          # a single full image reference (registry/image:tag).
-          [[ -n "$CONTAINER_REGISTRY_URL" ]] && CONTAINER_IMAGE="${CONTAINER_REGISTRY_URL}/${CONTAINER_IMAGE}"
+          CONTAINER_IMAGE="${WD_IMAGE:-$RD_IMAGE}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
-          [[ -z "$APP_NAME"            ]] && MISSING+=(app_name)
-          [[ -z "$ENVIRONMENT"         ]] && MISSING+=(environment)
-          [[ -z "$AWS_REGION"          ]] && MISSING+=(aws_region)
-          [[ -z "$AWS_ROLE_ARN"        ]] && MISSING+=(aws_role_arn)
-          [[ -z "$MAIN_DOMAIN"         ]] && MISSING+=(main_domain)
-          [[ -z "$INFRA_TEMPLATE_REPO" ]] && MISSING+=(infra_template_repo)
+          [[ -z "$APP_NAME"               ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"            ]] && MISSING+=(environment)
+          [[ -z "$AWS_REGION"             ]] && MISSING+=(aws_region)
+          [[ -z "$AWS_ROLE_ARN"           ]] && MISSING+=(aws_role_arn)
+          [[ -z "$MAIN_DOMAIN"            ]] && MISSING+=(main_domain)
+          [[ -z "$INFRA_TEMPLATE_REPO"    ]] && MISSING+=(infra_template_repo)
+          [[ -z "$CONTAINER_IMAGE"        ]] && MISSING+=(container_image)
+          [[ -z "$CONTAINER_REGISTRY_URL" ]] && MISSING+=(container_registry_url)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
           fi
+
+          # Prepend the registry when provided; the Fargate template receives
+          # a single full image reference (registry/image:tag).
+          [[ -n "$CONTAINER_REGISTRY_URL" ]] && CONTAINER_IMAGE="${CONTAINER_REGISTRY_URL}/${CONTAINER_IMAGE}"
 
           # Presence of app_template_repo controls whether the application
           # repository phase runs; omitting it provisions infra only.
@@ -398,9 +399,9 @@ jobs:
             echo
             echo "${REPO_LINE}"
             echo
-            echo "Cloud: AWS, region \`${AWS_REGION}\`."
+            echo "Cloud: AWS · Region: \`${AWS_REGION}\`"
             echo
-            echo "Environments in scope: ${ENV_LIST}."
+            echo "Environments in scope: ${ENV_LIST}"
             echo
             echo "_Infrastructure apply and verify results will be added in a follow-up comment._"
           } > /tmp/infra-issue-body.md
@@ -448,16 +449,14 @@ jobs:
         id: checkov
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory:             infra-repo/terraform/environments/${{ matrix.environment }}
-          framework:             terraform
+          directory:                 infra-repo/terraform/environments/${{ matrix.environment }}
+          framework:                 terraform
           # Prod uses the strict baseline; dev/staging use the relaxed config
-          # that additionally skips CKV_AWS_150, CKV_AWS_260, CKV2_AWS_5 and
-          # CKV2_AWS_19.
-          config_file: ${{ matrix.environment == 'prod' && 'infra-repo/.checkov.yaml' || 'infra-repo/.checkov.nonprod.yaml' }}
-          output_format:         cli,sarif
-          output_file_path:      console,checkov-results.sarif
+          config_file:               ${{ matrix.environment == 'prod' && 'infra-repo/.checkov.yaml' || 'infra-repo/.checkov.nonprod.yaml' }}
+          output_format:             cli,sarif
+          output_file_path:          console,checkov-results.sarif
           download_external_modules: false
-          soft_fail:             false
+          soft_fail:                 false
 
       - name: Upload SARIF to GitHub Security tab
         if: always()   # upload even when checkov fails so findings are visible
@@ -504,9 +503,6 @@ jobs:
       app_name:       ${{ needs.resolve-inputs.outputs.app_name }}
       aws_region:     ${{ needs.resolve-inputs.outputs.aws_region }}
       aws_role_arn:   ${{ needs.resolve-inputs.outputs.aws_role_arn }}
-      # Already derived from the role ARN, so the reusable workflow can skip
-      # its STS lookup — and the bucket it creates is guaranteed to be the one
-      # plan/apply below will init against.
       aws_account_id: ${{ needs.resolve-inputs.outputs.aws_account_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -930,9 +926,9 @@ jobs:
             echo
             echo "${APP_REPO_LINE}"
             echo
-            echo "Cloud: AWS, region \`${AWS_REGION}\`."
+            echo "Cloud: AWS · region \`${AWS_REGION}\`"
             echo
-            echo "Environments in scope: ${ENV_LIST}."
+            echo "Environments in scope: ${ENV_LIST}"
             echo
             echo "_Environment settings, CI/CD details, and a run summary will be added in a follow-up comment._"
           } > /tmp/app-issue-body.md
@@ -985,7 +981,6 @@ jobs:
           name: tfplan-aws-${{ needs.resolve-inputs.outputs.app_name }}-prod
           path: plans/prod
 
-      # Artifact names are fixed by verify-infrastructure-aws.yml.
       - name: Download verify summary (dev)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
@@ -1099,10 +1094,6 @@ jobs:
   # 13. Configure GitHub Environments and variables — one job per environment.
   #     Always runs (idempotent: PUT for the env, PATCH→POST for each variable)
   #     so re-invocations can roll out additional envs to an existing app repo.
-  #
-  #     ECS_CLUSTER / ECS_SERVICE follow the infra template's `local.prefix`
-  #     (`<app_name>-<environment>`); both the cluster and the service use it.
-  #     Keep them in sync if the template's naming ever changes.
   # ────────────────────────────────────────────────────────────────────────────
   configure-environments:
     name: "Configure env · ${{ matrix.environment }}"
@@ -1137,21 +1128,6 @@ jobs:
             fi
           }
 
-          # Only variables with a real downstream consumer are set — the
-          # contract is the header of deploy-aws.yml in the app template
-          # (AWS_ROLE_ARN, AWS_REGION, AWS_ECS_CLUSTER, AWS_ECS_SERVICE,
-          # AWS_APP_URL). There is no CONTAINER_REGISTRY_URL here: ECS pulls
-          # by full image reference (IAM-authenticated for ECR, anonymous for
-          # public registries), so a registry variable would have nothing to
-          # configure. And no AWS_ACCOUNT_ID: nothing in the app template
-          # reads it.
-          #
-          # AWS_APP_URL is the public base URL the template smoke-tests in
-          # dev (<app>.<env>.<main_domain> is the FQDN the infra template
-          # publishes in Route 53, behind TLS). Staging/prod ingress is
-          # VPC-private, so the template uses control-plane assertions there
-          # instead — the variable is still set for every environment, as it
-          # names the (internal) endpoint all the same.
           set_var AWS_REGION      "$REGION"
           set_var AWS_ROLE_ARN    "$ROLE_ARN"
           set_var AWS_ECS_CLUSTER "${APP_NAME}-${ENV}"

@@ -4,29 +4,29 @@ on:
   workflow_dispatch:
     inputs:
       app_name:
-        description: Application name (short, lowercase, no spaces)
+        description: "Application name (short, lowercase, no spaces)"
         type: string
         required: true
       environment:
-        description: Target environment
+        description: "Target environment"
         type: choice
         options: [dev, staging, prod, all]
         required: true
         default: dev
       azure_tenant_id:
-        description: Azure Tenant ID
+        description: "Azure Tenant ID"
         type: string
         required: true
       azure_subscription_id:
-        description: Azure Subscription ID
+        description: "Azure Subscription ID"
         type: string
         required: true
       azure_client_id:
-        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        description: "Client ID of the Azure service principal / managed identity used for OIDC login"
         type: string
         required: true
       azure_location:
-        description: Azure region for all the resources (e.g. westeurope)
+        description: "Azure region for all the resources (e.g. westeurope)"
         type: string
         required: true
       infra_template_repo:
@@ -49,15 +49,13 @@ on:
         required: false
         default: ""
       container_image:
-        description: "Container image reference (ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows)"
+        description: "Container image reference, without the registry host (org/container:tag, e.g. deors/template-helloworld-express:sha-af53b68); ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows"
         type: string
-        required: false
-        default: "deors/template-helloworld-express:sha-af53b68"
+        required: true
       container_registry_url:
-        description: Container registry URL (leave empty for public Docker Hub images; ignored in reconcile runs)
+        description: "Container registry URL (e.g. ghcr.io; leave empty for public Docker Hub images); ignored in reconcile runs"
         type: string
-        required: false
-        default: "ghcr.io"
+        required: true
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -75,7 +73,7 @@ permissions:
   security-events: write
 
 concurrency:
-  group: provision-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
+  group: provision-azure-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
   cancel-in-progress: false   # never cancel an in-flight provision
 
 jobs:
@@ -137,7 +135,7 @@ jobs:
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
           RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
-          OWNER:             ${{ github.repository_owner }}
+          OWNER:                 ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
@@ -149,18 +147,20 @@ jobs:
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
-          CONTAINER_IMAGE="${WD_IMAGE:-${RD_IMAGE:-deors/template-helloworld-express:sha-af53b68}}"
-          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-${RD_REGISTRY:-ghcr.io}}"
+          CONTAINER_IMAGE="${WD_IMAGE:-$RD_IMAGE}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
-          [[ -z "$APP_NAME"              ]] && MISSING+=(app_name)
-          [[ -z "$ENVIRONMENT"           ]] && MISSING+=(environment)
-          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=(azure_tenant_id)
-          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=(azure_subscription_id)
-          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=(azure_client_id)
-          [[ -z "$AZURE_LOCATION"        ]] && MISSING+=(azure_location)
-          [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=(infra_template_repo)
+          [[ -z "$APP_NAME"               ]] && MISSING+=(app_name)
+          [[ -z "$ENVIRONMENT"            ]] && MISSING+=(environment)
+          [[ -z "$AZURE_TENANT_ID"        ]] && MISSING+=(azure_tenant_id)
+          [[ -z "$AZURE_SUBSCRIPTION_ID"  ]] && MISSING+=(azure_subscription_id)
+          [[ -z "$AZURE_CLIENT_ID"        ]] && MISSING+=(azure_client_id)
+          [[ -z "$AZURE_LOCATION"         ]] && MISSING+=(azure_location)
+          [[ -z "$INFRA_TEMPLATE_REPO"    ]] && MISSING+=(infra_template_repo)
+          [[ -z "$CONTAINER_IMAGE"        ]] && MISSING+=(container_image)
+          [[ -z "$CONTAINER_REGISTRY_URL" ]] && MISSING+=(container_registry_url)
           if [[ ${#MISSING[@]} -gt 0 ]]; then
             echo "::error::Missing required parameters: ${MISSING[*]}"
             exit 1
@@ -184,11 +184,11 @@ jobs:
           # flow through job outputs to downstream jobs.
 
           echo "app_name=$APP_NAME"                             >> "$GITHUB_OUTPUT"
-          echo "azure_location=$AZURE_LOCATION"                 >> "$GITHUB_OUTPUT"
           echo "environment=$ENVIRONMENT"                       >> "$GITHUB_OUTPUT"
           echo "azure_tenant_id=$AZURE_TENANT_ID"               >> "$GITHUB_OUTPUT"
           echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID"   >> "$GITHUB_OUTPUT"
           echo "azure_client_id=$AZURE_CLIENT_ID"               >> "$GITHUB_OUTPUT"
+          echo "azure_location=$AZURE_LOCATION"                 >> "$GITHUB_OUTPUT"
           echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
           echo "infra_template_ref=$INFRA_TEMPLATE_REF"         >> "$GITHUB_OUTPUT"
           echo "app_template_repo=$APP_TEMPLATE_REPO"           >> "$GITHUB_OUTPUT"
@@ -227,19 +227,21 @@ jobs:
         env:
           APP_NAME:       ${{ steps.params.outputs.app_name }}
           ENVIRONMENT:    ${{ steps.params.outputs.environment }}
+          LOCATION:       ${{ steps.params.outputs.azure_location }}
           IMAGE:          ${{ steps.params.outputs.container_image }}
           REGISTRY:       ${{ steps.params.outputs.container_registry_url }}
           TRIGGER:        ${{ github.event_name }}
           WITH_APP_REPO:  ${{ steps.params.outputs.with_app_repo }}
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<EOF
-          ## Provision Infrastructure
+          ## Provision Infrastructure (Azure)
 
           | Parameter        | Value               |
           |------------------|---------------------|
           | Trigger          | \`$TRIGGER\`        |
           | App name         | \`$APP_NAME\`       |
           | Environment      | \`$ENVIRONMENT\`    |
+          | Location         | \`$LOCATION\`       |
           | Image            | \`$IMAGE\`          |
           | Registry         | \`$REGISTRY\`       |
           | App repo phase   | \`$WITH_APP_REPO\`  |
@@ -364,6 +366,7 @@ jobs:
         env:
           ENVIRONMENTS_JSON:  ${{ needs.resolve-inputs.outputs.environments }}
           APP_NAME:           ${{ needs.resolve-inputs.outputs.app_name }}
+          AZURE_LOCATION:     ${{ needs.resolve-inputs.outputs.azure_location }}
           INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
           INFRA_TEMPLATE:     ${{ needs.resolve-inputs.outputs.infra_template_repo }}
           INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
@@ -389,9 +392,9 @@ jobs:
             echo
             echo "${REPO_LINE}"
             echo
-            echo "Cloud: Azure."
+            echo "Cloud: Azure · Location: \`${AZURE_LOCATION}\`"
             echo
-            echo "Environments in scope: ${ENV_LIST}."
+            echo "Environments in scope: ${ENV_LIST}"
             echo
             echo "_Infrastructure apply and verify results will be added in a follow-up comment._"
           } > /tmp/infra-issue-body.md
@@ -438,15 +441,14 @@ jobs:
         id: checkov
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory:             infra-repo/terraform/environments/${{ matrix.environment }}
-          framework:             terraform
+          directory:                 infra-repo/terraform/environments/${{ matrix.environment }}
+          framework:                 terraform
           # Prod uses the strict baseline; dev/staging use the relaxed config
-          # that additionally skips CKV_AZURE_212 and CKV_AZURE_225.
-          config_file: ${{ matrix.environment == 'prod' && 'infra-repo/.checkov.yaml' || 'infra-repo/.checkov.nonprod.yaml' }}
-          output_format:         cli,sarif
-          output_file_path:      console,checkov-results.sarif
+          config_file:               ${{ matrix.environment == 'prod' && 'infra-repo/.checkov.yaml' || 'infra-repo/.checkov.nonprod.yaml' }}
+          output_format:             cli,sarif
+          output_file_path:          console,checkov-results.sarif
           download_external_modules: false
-          soft_fail:             false
+          soft_fail:                 false
 
       - name: Upload SARIF to GitHub Security tab
         if: always()   # upload even when checkov fails so findings are visible
@@ -616,7 +618,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name:              tfplan-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          name:              tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
           retention-days:    7
           if-no-files-found: error
           path: |
@@ -700,7 +702,7 @@ jobs:
       - name: Download tfplan
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
+          name: tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
           path: infra-repo/terraform/environments/${{ matrix.environment }}
 
       - name: Terraform apply
@@ -917,6 +919,7 @@ jobs:
         env:
           ENVIRONMENTS_JSON: ${{ needs.resolve-inputs.outputs.environments }}
           APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
+          LOCATION:          ${{ needs.resolve-inputs.outputs.azure_location }}
           APP_TEMPLATE:      ${{ needs.resolve-inputs.outputs.app_template_repo }}
           APP_REPO_FULL:     ${{ needs.create-app-repo.outputs.repo_full }}
           REPO_EXISTED:      ${{ needs.create-app-repo.outputs.repo_existed }}
@@ -942,12 +945,14 @@ jobs:
             echo
             echo "${APP_REPO_LINE}"
             echo
-            echo "Environments in scope: ${ENV_LIST}."
+            echo "Cloud: Azure · Location: \`${LOCATION}\`"
+            echo
+            echo "Environments in scope: ${ENV_LIST}"
             echo
             echo "_Environment settings, CI/CD details, and a run summary will be added in a follow-up comment._"
           } > /tmp/app-issue-body.md
 
-          echo "title=${TITLE_PREFIX} — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
+          echo "title=${TITLE_PREFIX} (Azure) — ${ENV_LIST}" >> "$GITHUB_OUTPUT"
 
       - name: Open issue
         id: issue
@@ -978,42 +983,42 @@ jobs:
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-dev
+          name: tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-dev
           path: plans/dev
 
       - name: Download plan artifact (staging)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-staging
+          name: tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-staging
           path: plans/staging
 
       - name: Download plan artifact (prod)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
         uses: actions/download-artifact@v8
         with:
-          name: tfplan-${{ needs.resolve-inputs.outputs.app_name }}-prod
+          name: tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-prod
           path: plans/prod
 
       - name: Download verify summary (dev)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'dev')
         uses: actions/download-artifact@v8
         with:
-          name: verify-dev
+          name: verify-azure-dev
           path: verify/dev
 
       - name: Download verify summary (staging)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'staging')
         uses: actions/download-artifact@v8
         with:
-          name: verify-staging
+          name: verify-azure-staging
           path: verify/staging
 
       - name: Download verify summary (prod)
         if: contains(fromJson(needs.resolve-inputs.outputs.environments), 'prod')
         uses: actions/download-artifact@v8
         with:
-          name: verify-prod
+          name: verify-azure-prod
           path: verify/prod
 
       - name: Inspect downloaded artifacts
@@ -1032,6 +1037,7 @@ jobs:
           INFRA_REPO_FULL:    ${{ needs.resolve-inputs.outputs.infra_repo_full }}
           INFRA_REPO_EXISTED: ${{ needs.create-infra-repo.outputs.infra_repo_existed }}
           INFRA_ISSUE_NUMBER: ${{ needs.create-infra-issue.outputs.infra_issue_number }}
+          LOCATION:           ${{ needs.resolve-inputs.outputs.azure_location }}
           PROVISION_URL:      ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           ENVS=$(jq -r '.[]' <<<"$ENVIRONMENTS_JSON")
@@ -1087,6 +1093,7 @@ jobs:
             echo "| Stage | Result |"
             echo "|---|---|"
             echo "| Provisioning | [#${{ github.run_id }}]($PROVISION_URL) |"
+            echo "| Cloud / region | Azure / \`${LOCATION}\` |"
             echo "| Resources changed | + ${TOTAL_ADD} · ~ ${TOTAL_CHANGE} · - ${TOTAL_DESTROY} |"
             echo "| Verification tests | passed ${TOTAL_PASS} · failed ${TOTAL_FAIL} |"
             echo
@@ -1154,7 +1161,6 @@ jobs:
           # those — and only those — as azure. A reconcile run by another
           # cloud's workflow re-stamps the environments it owns.
           set_var DEPLOY_TARGET_CLOUD   "azure"
-          [[ -n "$REGISTRY" ]] && set_var CONTAINER_REGISTRY_URL "$REGISTRY"
 
           echo "Environment '${ENV}' configured on ${REPO_FULL}"
 
@@ -1422,7 +1428,7 @@ jobs:
           INFRA_ISSUE_URL: ${{ needs.create-infra-issue.outputs.infra_issue_url }}
         run: |
           {
-            echo "## Provision Infrastructure — run complete"
+            echo "## Provision Infrastructure (Azure) — run complete"
             echo
             echo "| | |"
             echo "|---|---|"

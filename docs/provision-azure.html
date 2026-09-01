@@ -140,7 +140,7 @@
   <section>
     <h2>What is this?</h2>
     <p>
-      This form fires the <strong>Azure - Provision & Reconcile Application Resources</strong> GitHub Actions
+      This form fires the <strong>Azure - Provision &amp; Reconcile Application Resources</strong> GitHub Actions
       workflow on this repository via the <code>repository_dispatch</code> trigger. The workflow runs the full
       pipeline: Terraform plan + apply against Azure, and — when an <strong>Application template repo</strong>
       is provided — GitHub Environments + variables on the application repo, OIDC federated credentials on
@@ -292,17 +292,18 @@
         </div>
 
         <div>
-          <label for="container_image">Container image <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="container_image" name="container_image"
-                 placeholder="mcr.microsoft.com/appsvc/staticsite:latest" />
-          <span class="hint">Ignored on reconcile runs. Default placeholder used if blank.</span>
+          <label for="container_image">Container image <span class="req">*</span></label>
+          <input type="text" id="container_image" name="container_image" required
+                 placeholder="deors/template-helloworld-express:sha-af53b68" />
+          <span class="hint">Image reference <em>without</em> the registry host. Ignored on reconcile runs. The archetype fixes the container contract — port 8080, health endpoint <code>/health</code>; the image must follow it.</span>
+          <div class="field-error" data-for="container_image">Required.</div>
         </div>
 
         <div>
           <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="container_registry_url" name="container_registry_url"
-                 placeholder="mcr.microsoft.com" />
-          <span class="hint">Leave empty for public images / GHCR.</span>
+          <input type="text" id="container_registry_url" name="container_registry_url" required
+                 placeholder="ghcr.io" />
+          <span class="hint">Registry host for the image. Ignored on reconcile runs.</span>
         </div>
 
         <div>
@@ -402,10 +403,12 @@
         azure_client_id: v('azure_client_id'),
         azure_location: v('azure_location'),
         infra_template_repo: v('infra_template_repo'),
+        container_image: v('container_image'),
+        container_registry_url: v('container_registry_url')
       }
     };
-    ['infra_template_ref', 'app_template_repo', 'app_template_ref', 'container_image',
-     'container_registry_url', 'ci_workflow_file'].forEach(id => {
+    ['infra_template_ref', 'app_template_repo', 'app_template_ref',
+     'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
     });
     return payload;

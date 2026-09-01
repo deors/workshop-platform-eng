@@ -29,6 +29,11 @@ Required (flag OR env var):
   --aws-role-arn        <arn>                     AWS_ROLE_ARN
   --main-domain         <domain>                  MAIN_DOMAIN
   --infra-template-repo <owner/name>              INFRA_TEMPLATE_REPO
+  --container-image     <ref>                     CONTAINER_IMAGE
+                                                    (e.g. deors/template-helloworld-express:sha-af53b68,
+                                                     WITHOUT the registry host. No default — the right
+                                                     image is coupled to the app archetype. Ignored on
+                                                     reconcile runs)
 
 Optional:
   --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
@@ -39,9 +44,9 @@ Optional:
                                             template; default: its default branch)
   --app-template-ref       <ref>         APP_TEMPLATE_REF
                                            (same, for the app template)
-  --container-image        <ref>         CONTAINER_IMAGE
-                                           (default: the workflow's reference image; ignored on
-                                            reconcile runs — CodeDeploy keeps the task definition)
+  --container-registry-url <host>        CONTAINER_REGISTRY_URL
+                                           (registry host prepended to the image;
+                                            default: ghcr.io)
   --ci-workflow-file       <name>        CI_WORKFLOW_FILE
                                            (default: ci.yml)
   --repo                   <owner/name>  PLATFORM_REPO
@@ -58,7 +63,8 @@ Example:
     --aws-role-arn        arn:aws:iam::123456789012:role/GitHubActionsRole \
     --main-domain         example.com \
     --infra-template-repo deors/template-terraform-aws-fargate \
-    --app-template-repo   deors/template-helloworld-express
+    --app-template-repo   deors/template-helloworld-express \
+    --container-image     deors/template-helloworld-express:sha-af53b68
 USAGE
 }
 
@@ -74,6 +80,7 @@ INFRA_TEMPLATE_REF="${INFRA_TEMPLATE_REF:-}"
 APP_TEMPLATE_REPO="${APP_TEMPLATE_REPO:-}"
 APP_TEMPLATE_REF="${APP_TEMPLATE_REF:-}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-}"
+CONTAINER_REGISTRY_URL="${CONTAINER_REGISTRY_URL:-}"
 CI_WORKFLOW_FILE="${CI_WORKFLOW_FILE:-}"
 PLATFORM_REPO="${PLATFORM_REPO:-}"
 
@@ -89,6 +96,7 @@ while [[ $# -gt 0 ]]; do
     --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
     --app-template-ref)       APP_TEMPLATE_REF="$2";       shift 2 ;;
     --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
+    --container-registry-url) CONTAINER_REGISTRY_URL="$2"; shift 2 ;;
     --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
     --repo)                   PLATFORM_REPO="$2";          shift 2 ;;
     -h|--help)                usage; exit 0 ;;
@@ -106,6 +114,7 @@ MISSING=()
 [[ -z "$AWS_ROLE_ARN"        ]] && MISSING+=("--aws-role-arn / AWS_ROLE_ARN")
 [[ -z "$MAIN_DOMAIN"         ]] && MISSING+=("--main-domain / MAIN_DOMAIN")
 [[ -z "$INFRA_TEMPLATE_REPO" ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
+[[ -z "$CONTAINER_IMAGE"     ]] && MISSING+=("--container-image / CONTAINER_IMAGE")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: missing required value(s):" >&2
@@ -163,6 +172,7 @@ PAYLOAD=$(jq -nc \
   --arg app_tmpl    "$APP_TEMPLATE_REPO" \
   --arg app_ref     "$APP_TEMPLATE_REF" \
   --arg image       "$CONTAINER_IMAGE" \
+  --arg registry    "$CONTAINER_REGISTRY_URL" \
   --arg ci          "$CI_WORKFLOW_FILE" \
   '{
     event_type:     "aws-provision-infrastructure",
@@ -172,12 +182,13 @@ PAYLOAD=$(jq -nc \
       aws_region:          $region,
       aws_role_arn:        $role,
       main_domain:         $domain,
-      infra_template_repo: $infra_tmpl
+      infra_template_repo: $infra_tmpl,
+      container_image:     $image
     }
     + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
     + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
     + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)
-    + (if $image     != "" then {container_image:        $image}     else {} end)
+    + (if $registry  != "" then {container_registry_url: $registry}  else {} end)
     + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
   }')
 

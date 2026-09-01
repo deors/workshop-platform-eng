@@ -295,7 +295,8 @@ Resources → Run workflow**, and provide:
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
 | `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
 | `app_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the app template |
-| `container_image` | no | _(leave empty — uses the workflow's reference image)_ The archetype fixes the container contract — port 8080, health endpoint `/health`; the image specified here must follow that contract |
+| `container_image` | yes | image reference **without** the registry host, e.g. `deors/template-helloworld-express:sha-af53b68`. The archetype fixes the container contract — port 8080, health endpoint `/health`; the image must follow it |
+| `container_registry_url` | yes | the registry host |
 | `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
 
 > **Reconcile caveat.** `container_image` only matters on the first apply —

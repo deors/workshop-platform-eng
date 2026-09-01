@@ -276,12 +276,13 @@ scripts/trigger-provision-azure.sh \
       --azure-tenant-id        $AZURE_TENANT_ID \
       --azure-subscription-id  $AZURE_SUBSCRIPTION_ID \
       --azure-client-id        $AZURE_CLIENT_ID \
+      --azure-location         westeurope \
       --infra-template-repo    your-org/template-terraform-azure-webapp \
-      --app-template-repo      your-org/template-helloworld-express
+      --app-template-repo      your-org/template-helloworld-express \
+      --container-image        your-org/template-helloworld-express:sha-af53b68
 ```
 
-And for AWS — `--main-domain` is required, since it drives the ACM
-certificate and Route 53 records:
+For AWS:
 
 ```bash
 scripts/trigger-provision-aws.sh \
@@ -291,7 +292,8 @@ scripts/trigger-provision-aws.sh \
       --aws-role-arn        arn:aws:iam::$AWS_ACCOUNT_ID:role/GitHubActionsRole \
       --main-domain         example.com \
       --infra-template-repo your-org/template-terraform-aws-fargate \
-      --app-template-repo   your-org/template-helloworld-express
+      --app-template-repo   your-org/template-helloworld-express \
+      --container-image     your-org/template-helloworld-express:sha-af53b68
 ```
 
 Flags fall back to upper-case env vars (`ENVIRONMENT`, `APP_NAME`, …) and the
@@ -328,14 +330,13 @@ curl -X POST \
                   "infra_template_ref":     "main",
                   "app_template_repo":      "your-org/template-helloworld-express",
                   "app_template_ref":       "main",
-                  "container_image":        "appsvc/staticsite:latest",
-                  "container_registry_url": "mcr.microsoft.com"
+                  "container_image":        "your-org/template-helloworld-express:sha-af53b68",
+                  "container_registry_url": "ghcr.io"
             }
       }'
 ```
 
-And the AWS equivalent — same endpoint, different `event_type` and identity
-parameters (`main_domain` is required):
+And the AWS equivalent:
 
 ```bash
 curl -X POST \
@@ -354,7 +355,7 @@ curl -X POST \
                   "infra_template_ref":  "main",
                   "app_template_repo":   "your-org/template-helloworld-express",
                   "app_template_ref":    "main",
-                  "container_image":     "<REFERENCE_IMAGE>"
+                  "container_image":     "your-org/template-helloworld-express:sha-af53b68"
             }
       }'
 ```

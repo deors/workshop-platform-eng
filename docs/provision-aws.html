@@ -265,7 +265,7 @@
 
         <div>
           <label for="infra_template_ref">Infrastructure template ref <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="infra_template_ref" name="infra_template_ref" placeholder="v1.0.0" />
+          <input type="text" id="infra_template_ref" name="infra_template_ref" placeholder="main" />
           <span class="hint">Tag, branch or commit SHA pinning the infra template. Default: its default branch.</span>
         </div>
 
@@ -280,15 +280,23 @@
 
         <div>
           <label for="app_template_ref">Application template ref <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="app_template_ref" name="app_template_ref" placeholder="v2.0.0" />
+          <input type="text" id="app_template_ref" name="app_template_ref" placeholder="main" />
           <span class="hint">Tag, branch or commit SHA pinning the app template. Default: its default branch.</span>
         </div>
 
         <div>
-          <label for="container_image">Container image <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="container_image" name="container_image"
-                 placeholder="<REFERENCE_IMAGE>" />
-          <span class="hint">Ignored on reconcile runs. The workflow's reference image is used if blank. Include the registry host in the reference — ECS pulls by full image reference, so there is no separate registry field. The archetype fixes the container contract — port 8080, health endpoint <code>/health</code>; implementing apps must follow it.</span>
+          <label for="container_image">Container image <span class="req">*</span></label>
+          <input type="text" id="container_image" name="container_image" required
+                 placeholder="deors/template-helloworld-express:sha-af53b68" />
+          <span class="hint">Image reference <em>without</em> the registry host. Ignored on reconcile runs. The archetype fixes the container contract — port 8080, health endpoint <code>/health</code>; the image must follow it.</span>
+          <div class="field-error" data-for="container_image">Required.</div>
+        </div>
+
+        <div>
+          <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
+          <input type="text" id="container_registry_url" name="container_registry_url" required
+                placeholder="ghcr.io" />
+          <span class="hint">Registry host for the image. Ignored on reconcile runs.</span>
         </div>
 
         <div>
@@ -387,9 +395,11 @@
         aws_role_arn: v('aws_role_arn'),
         main_domain: v('main_domain'),
         infra_template_repo: v('infra_template_repo'),
+        container_image: v('container_image'),
+        container_registry_url: v('container_registry_url')
       }
     };
-    ['infra_template_ref', 'app_template_repo', 'app_template_ref', 'container_image',
+    ['infra_template_ref', 'app_template_repo', 'app_template_ref',
      'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
     });

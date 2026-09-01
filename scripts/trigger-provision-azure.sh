@@ -25,6 +25,11 @@ Required (flag OR env var):
   --azure-client-id       <guid>                    AZURE_CLIENT_ID
   --azure-location        <region>                  AZURE_LOCATION
   --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
+  --container-image       <ref>                     CONTAINER_IMAGE
+                                                      (e.g. deors/template-helloworld-express:sha-af53b68,
+                                                       WITHOUT the registry host. No default — the right
+                                                       image is coupled to the app archetype. Ignored on
+                                                       reconcile runs)
 
 Optional:
   --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
@@ -35,13 +40,9 @@ Optional:
                                              template; default: its default branch)
   --app-template-ref       <ref>         APP_TEMPLATE_REF
                                             (same, for the app template)
-  --container-image        <ref>          CONTAINER_IMAGE
-                                            (default: mcr.microsoft.com/appsvc/staticsite:latest;
-                                             a placeholder that App Service can pull anonymously —
-                                             the template's CI overwrites it within minutes; ignored
-                                             on reconcile runs)
   --container-registry-url <url>          CONTAINER_REGISTRY_URL
-                                            (default: empty)
+                                            (registry host for the image;
+                                             default: ghcr.io, applied workflow-side)
   --ci-workflow-file       <name>         CI_WORKFLOW_FILE
                                             (default: ci.yml)
   --repo                   <owner/name>   PLATFORM_REPO
@@ -55,11 +56,12 @@ Example:
     --app-name               test-webapp \
     --environment            dev \
     --azure-tenant-id        11111111-1111-1111-1111-111111111111 \
-    --azure-subscription-id  b7212ffc-e49b-4c42-8c74-6efb375cf064 \
+    --azure-subscription-id  22222222-2222-2222-2222-222222222222 \
     --azure-client-id        00000000-0000-0000-0000-000000000000 \
-    --location               westeurope \
+    --azure-location         westeurope \
     --infra-template-repo    deors/template-terraform-azure-webapp \
-    --app-template-repo      deors/template-helloworld-express
+    --app-template-repo      deors/template-helloworld-express \
+    --container-image        deors/template-helloworld-express:sha-af53b68
 USAGE
 }
 
@@ -112,6 +114,7 @@ MISSING=()
 [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
 [[ -z "$AZURE_LOCATION"        ]] && MISSING+=("--azure-location / AZURE_LOCATION")
 [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
+[[ -z "$CONTAINER_IMAGE"       ]] && MISSING+=("--container-image / CONTAINER_IMAGE")
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: missing required value(s):" >&2
@@ -160,12 +163,12 @@ PAYLOAD=$(jq -nc \
       azure_subscription_id: $sub,
       azure_client_id:       $cid,
       azure_location:        $loc,
-      infra_template_repo:   $infra_tmpl
+      infra_template_repo:   $infra_tmpl,
+      container_image:       $image
     }
     + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
     + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
     + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)
-    + (if $image     != "" then {container_image:        $image}     else {} end)
     + (if $reg       != "" then {container_registry_url: $reg}       else {} end)
     + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
   }')
