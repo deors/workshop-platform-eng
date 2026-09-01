@@ -392,7 +392,7 @@ Resources → Run workflow**, and provide:
 | Input | Required | Value for the first test |
 | ----- | -------- | ------------------------ |
 | `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
-| `environment` | yes | `dev` |
+| `environment` | yes | `dev` — promotion order is enforced: `staging` can only be requested once `dev` is provisioned, `prod` once `dev` and `staging` both are ready (requesting `all`, or reconciling an environment that already exists, always passes) |
 | `azure_tenant_id` | yes | the tenant GUID captured in step 1 |
 | `azure_subscription_id` | yes | the GUID captured in step 1 |
 | `azure_client_id` | yes | the `appId` captured in step 1 |
@@ -412,7 +412,7 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 
 ```
 Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
-Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable
+Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable, environment promotion order respected
 Checkov · {env}                   ✓ no findings
 Terraform fmt check               ✓ formatting clean
 Bootstrap tfstate storage         ✓ rg-test-webapp-tfstate + storage account + container
