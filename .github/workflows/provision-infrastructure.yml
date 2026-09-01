@@ -259,6 +259,9 @@ jobs:
   #    The repo checks use GH_PAT when configured (proving the accessibility
   #    the app phase will need) and fall back to the workflow token, keeping
   #    infra-only setups PAT-free as documented in setup-github.md.
+  #
+  #    The job also enforces the environment promotion order (P16): staging
+  #    cannot be first-provisioned before dev, nor prod before dev + staging.
   # ────────────────────────────────────────────────────────────────────────────
   preflight:
     name: Preflight checks
@@ -280,6 +283,78 @@ jobs:
         run: |
           export CONTAINER_IMAGE_FULL="${REGISTRY:+${REGISTRY}/}${IMAGE}"
           scripts/preflight-inputs.sh
+
+      # The promotion gate below reads the tfstate backend, which needs a
+      # cloud login. This job never binds a GitHub Environment, so the
+      # branch-scoped federated credential authenticates it — the same
+      # subject every other non-environment job uses.
+      - name: Azure login (OIDC)
+        uses: azure/login@v3
+        with:
+          tenant-id:       ${{ needs.resolve-inputs.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
+          client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
+
+      - name: Environment promotion gate
+        env:
+          ENVS_JSON:       ${{ needs.resolve-inputs.outputs.environments }}
+          STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
+        run: |
+          set -euo pipefail
+
+          # Promotion order is dev → staging → prod: staging cannot be
+          # first-provisioned before dev, nor prod before dev + staging. A
+          # prerequisite counts as satisfied when it is part of this same
+          # request (so 'all' always passes, with no lookups) or already
+          # provisioned. Reconciling an environment that already exists is
+          # always allowed, even if a prerequisite has since been deleted —
+          # the gate orders FIRST provisioning, it does not police steady
+          # state. "Already provisioned" is judged from the tfstate backend,
+          # the only signal that also works for infra-only runs.
+          ENVS=$(jq -r '.[]' <<<"$ENVS_JSON")
+          in_set() { grep -qx "$1" <<<"$ENVS"; }
+
+          exists() {
+            local BLOB="$1/terraform.tfstate" OUT
+            # Classify failures: a missing account/container means "not
+            # provisioned", but an auth or transport error must fail the gate
+            # loudly — never be misread as "environment missing".
+            if ! OUT=$(az storage blob exists \
+                         --account-name   "$STORAGE_ACCOUNT" \
+                         --container-name tfstate \
+                         --name           "$BLOB" \
+                         --auth-mode      login \
+                         --query exists --output tsv 2>&1); then
+              if grep -qiE "ResourceNotFound|StorageAccountNotFound|ContainerNotFound|does not exist|not found" <<<"$OUT"; then
+                return 1
+              fi
+              echo "::error::Environment promotion gate could not check '$1' (state backend query failed): ${OUT}"
+              exit 1
+            fi
+            [[ "$OUT" == "true" ]]
+          }
+
+          require() {
+            local TARGET="$1"; shift
+            in_set "$TARGET" || return 0
+            local MISSING=()
+            for P in "$@"; do
+              in_set "$P" && continue
+              exists "$P" && continue
+              MISSING+=("$P")
+            done
+            [[ ${#MISSING[@]} -eq 0 ]] && return 0
+            if exists "$TARGET"; then
+              echo "'$TARGET' is already provisioned — reconcile allowed although prerequisite(s) no longer exist: ${MISSING[*]}"
+              return 0
+            fi
+            echo "::error::Environment promotion gate: '$TARGET' requested, but prerequisite environment(s) not provisioned yet: ${MISSING[*]}. Provision ${MISSING[*]} first, or request 'all'."
+            exit 1
+          }
+
+          require staging dev
+          require prod dev staging
+          echo "Environment promotion gate passed."
 
   # ────────────────────────────────────────────────────────────────────────────
   # 3. Create infrastructure repository from template (idempotent)

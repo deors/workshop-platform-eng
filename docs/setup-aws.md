@@ -287,7 +287,7 @@ Resources → Run workflow**, and provide:
 | Input | Required | Value for the first test |
 | ----- | -------- | ------------------------ |
 | `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
-| `environment` | yes | `dev` |
+| `environment` | yes | `dev` — promotion order is enforced: `staging` can only be requested once `dev` is provisioned, `prod` once `dev` and `staging` both are ready (requesting `all`, or reconciling an environment that already exists, always passes) |
 | `aws_region` | yes | `eu-west-1` — region for the tfstate bucket and every provisioned resource. No default, by design: an implicit region silently deploys to the wrong place |
 | `aws_role_arn` | yes | the role ARN captured in step 2 |
 | `main_domain` | yes | the root domain of your Route 53 public hosted zone (e.g. `example.com`) — drives the ACM certificate and DNS records for `<app>.<env>.<domain>` |
@@ -310,7 +310,7 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 
 ```
 Resolve inputs                    ✓ validated inputs, derived tf-state-<app>-<acct8> from the role ARN
-Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable
+Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable, environment promotion order respected
 Checkov · {env}                   ✓ no findings
 Terraform fmt check               ✓ formatting clean
 Bootstrap tfstate bucket          ✓ S3 bucket + rg-test-webapp-tfstate resource group
