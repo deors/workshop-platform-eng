@@ -30,7 +30,7 @@ on:
         type: string
         required: true
       infra_template_repo:
-        description: "Template repo for the infrastructure (owner/name, e.g. deors/template-terraform-azure-webapp)"
+        description: "Template repo for the infrastructure (e.g. owner/template-terraform-azure-webapp)"
         type: string
         required: true
       infra_template_ref:
@@ -39,7 +39,7 @@ on:
         required: false
         default: ""
       app_template_repo:
-        description: "Template repo for the application source (owner/name, e.g. deors/template-helloworld-express); leave empty to skip the application repository phase"
+        description: "Template repo for the application source (e.g. owner/template-helloworld-express); leave empty to skip the application repository phase"
         type: string
         required: false
         default: ""
@@ -49,11 +49,11 @@ on:
         required: false
         default: ""
       container_image:
-        description: "Container image reference, without the registry host (org/container:tag, e.g. deors/template-helloworld-express:sha-af53b68); ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows"
+        description: "Container image reference, without the registry host (e.g. owner/template-helloworld-express:sha-af53b68); ignored in reconcile runs — Terraform's lifecycle keeps the image last set by CI/CD workflows"
         type: string
         required: true
       container_registry_url:
-        description: "Container registry URL (e.g. ghcr.io; leave empty for public Docker Hub images); ignored in reconcile runs"
+        description: "Container registry URL (e.g. ghcr.io); leave empty for public Docker Hub images; ignored in reconcile runs"
         type: string
         required: true
       ci_workflow_file:
