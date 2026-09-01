@@ -198,7 +198,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name:              verify-${{ steps.params.outputs.environment }}
+          name:              verify-azure-${{ steps.params.outputs.environment }}
           path:              /tmp/verify-summary.txt
           retention-days:    7
           if-no-files-found: warn
