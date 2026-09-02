@@ -48,6 +48,10 @@
     section ul { margin: 8px 0; padding-left: 22px; }
     section li { margin: 4px 0; }
 
+    /* An author `display` rule (e.g. .grid-2) overrides the UA default for
+       the `hidden` attribute, so make hidden unconditionally win — the
+       target-cloud override section relies on it. */
+    [hidden] { display: none !important; }
     .grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -217,41 +221,53 @@
 
       <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
 
-      <div class="grid-2">
+      <div>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="override_cloud_params" style="width:auto; margin:0;" />
+          Override the organization's target-cloud defaults
+        </label>
+        <span class="hint">The workflow reads the target-cloud parameters from the
+          <code>PROVISION_AZURE_*</code> repository variables set by the platform
+          operators. Tick to pass explicit values for this run — a value entered
+          here always overrides the variable; a field left empty keeps falling
+          back to it.</span>
+      </div>
+
+      <div class="grid-2" id="cloud-params" hidden>
 
         <div>
-          <label for="azure_tenant_id">Azure Tenant ID <span class="req">*</span></label>
-          <input type="text" id="azure_tenant_id" name="azure_tenant_id" required
+          <label for="azure_tenant_id">Azure Tenant ID <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="azure_tenant_id" name="azure_tenant_id"
                  placeholder="11111111-1111-1111-1111-111111111111"
                  pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
-          <span class="hint">Entra tenant GUID.</span>
+          <span class="hint">Entra tenant GUID. Empty ⇒ <code>PROVISION_AZURE_TENANT_ID</code>.</span>
           <div class="field-error" data-for="azure_tenant_id">Must be a GUID.</div>
         </div>
 
         <div>
-          <label for="azure_subscription_id">Azure Subscription ID <span class="req">*</span></label>
-          <input type="text" id="azure_subscription_id" name="azure_subscription_id" required
+          <label for="azure_subscription_id">Azure Subscription ID <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="azure_subscription_id" name="azure_subscription_id"
                  placeholder="00000000-0000-0000-0000-000000000000"
                  pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
-          <span class="hint">GUID, 8-4-4-4-12 hex.</span>
+          <span class="hint">GUID, 8-4-4-4-12 hex. Empty ⇒ <code>PROVISION_AZURE_SUBSCRIPTION_ID</code>.</span>
           <div class="field-error" data-for="azure_subscription_id">Must be a GUID.</div>
         </div>
 
         <div>
-          <label for="azure_client_id">Azure Client ID (SP) <span class="req">*</span></label>
-          <input type="text" id="azure_client_id" name="azure_client_id" required
+          <label for="azure_client_id">Azure Client ID (SP) <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="azure_client_id" name="azure_client_id"
                  placeholder="00000000-0000-0000-0000-000000000000"
                  pattern="^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" />
-          <span class="hint">Application (client) ID of the platform service principal.</span>
+          <span class="hint">Application (client) ID of the platform service principal. Empty ⇒ <code>PROVISION_AZURE_CLIENT_ID</code>.</span>
           <div class="field-error" data-for="azure_client_id">Must be a GUID.</div>
         </div>
 
         <div>
-          <label for="azure_location">Azure region <span class="req">*</span></label>
-          <input type="text" id="azure_location" name="azure_location" required
+          <label for="azure_location">Azure region <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="azure_location" name="azure_location"
                  placeholder="westeurope"
                  pattern="^[a-z][a-z0-9]+$" />
-          <span class="hint">Region for the Terraform state storage account. No default — must be set explicitly.</span>
+          <span class="hint">Region for all resources and the state storage account. Empty ⇒ <code>PROVISION_AZURE_LOCATION</code>.</span>
           <div class="field-error" data-for="azure_location">Lowercase letters and digits, e.g. <code>westeurope</code>.</div>
         </div>
 
@@ -390,6 +406,14 @@
     el.addEventListener('change', updateCurl);
   });
 
+  // ── Target-cloud override toggle ───────────────────────────────────────────
+  // Fields stay hidden (and out of the payload) unless the operator opts in.
+  const overrideCb  = document.getElementById('override_cloud_params');
+  const cloudParams = document.getElementById('cloud-params');
+  overrideCb.addEventListener('change', () => {
+    cloudParams.hidden = !overrideCb.checked;
+  });
+
   // ── Payload builder (omits empty optional fields) ──────────────────────────
   function buildPayload () {
     const v = id => (document.getElementById(id).value || '').trim();
@@ -398,15 +422,21 @@
       client_payload: {
         app_name: v('app_name'),
         environment: v('environment'),
-        azure_tenant_id: v('azure_tenant_id'),
-        azure_subscription_id: v('azure_subscription_id'),
-        azure_client_id: v('azure_client_id'),
-        azure_location: v('azure_location'),
         infra_template_repo: v('infra_template_repo'),
         container_image: v('container_image'),
         container_registry_url: v('container_registry_url')
       }
     };
+    // Target-cloud parameters ride along ONLY when the override box is
+    // ticked, and only the non-empty ones: an omitted key lets the workflow
+    // fall back to the matching PROVISION_AZURE_* repository variable,
+    // while an empty string would defeat that fallback.
+    if (document.getElementById('override_cloud_params').checked) {
+      ['azure_tenant_id', 'azure_subscription_id', 'azure_client_id',
+       'azure_location'].forEach(id => {
+        if (v(id)) payload.client_payload[id] = v(id);
+      });
+    }
     ['infra_template_ref', 'app_template_repo', 'app_template_ref',
      'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);

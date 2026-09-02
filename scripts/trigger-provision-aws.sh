@@ -25,8 +25,6 @@ Usage:
 Required (flag OR env var):
   --app-name            <name>                    APP_NAME
   --environment         <dev|staging|prod|all>    ENVIRONMENT
-  --aws-region          <region>                  AWS_REGION
-  --aws-role-arn        <arn>                     AWS_ROLE_ARN
   --main-domain         <domain>                  MAIN_DOMAIN
   --infra-template-repo <owner/name>              INFRA_TEMPLATE_REPO
   --container-image     <ref>                     CONTAINER_IMAGE
@@ -36,6 +34,12 @@ Required (flag OR env var):
                                                      reconcile runs)
 
 Optional:
+  --aws-region             <region>      AWS_REGION
+                                           (falls back to the PROVISION_AWS_REGION
+                                            repository variable — the organization
+                                            default; a flag always overrides it)
+  --aws-role-arn           <arn>         AWS_ROLE_ARN
+                                           (falls back to PROVISION_AWS_ROLE_ARN)
   --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
                                            (default: empty — provisions
                                             infrastructure only, no app repo)
@@ -110,8 +114,6 @@ done
 MISSING=()
 [[ -z "$APP_NAME"            ]] && MISSING+=("--app-name / APP_NAME")
 [[ -z "$ENVIRONMENT"         ]] && MISSING+=("--environment / ENVIRONMENT")
-[[ -z "$AWS_REGION"          ]] && MISSING+=("--aws-region / AWS_REGION")
-[[ -z "$AWS_ROLE_ARN"        ]] && MISSING+=("--aws-role-arn / AWS_ROLE_ARN")
 [[ -z "$MAIN_DOMAIN"         ]] && MISSING+=("--main-domain / MAIN_DOMAIN")
 [[ -z "$INFRA_TEMPLATE_REPO" ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
 [[ -z "$CONTAINER_IMAGE"     ]] && MISSING+=("--container-image / CONTAINER_IMAGE")
@@ -136,7 +138,7 @@ esac
 # The workflow parses this ARN for both the account ID (which names the tfstate
 # bucket) and the role name (whose trust policy gains the app's OIDC subject),
 # so a malformed value silently targets the wrong thing rather than erroring.
-if ! [[ "$AWS_ROLE_ARN" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$ ]]; then
+if [[ -n "$AWS_ROLE_ARN" ]] && ! [[ "$AWS_ROLE_ARN" =~ ^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$ ]]; then
   INVALID+=("aws_role_arn must be a full IAM role ARN, e.g. arn:aws:iam::123456789012:role/GitHubActionsRole — got '${AWS_ROLE_ARN}'")
 fi
 if [[ ${#INVALID[@]} -gt 0 ]]; then
@@ -179,12 +181,12 @@ PAYLOAD=$(jq -nc \
     client_payload: ({
       app_name:            $app,
       environment:         $env,
-      aws_region:          $region,
-      aws_role_arn:        $role,
       main_domain:         $domain,
       infra_template_repo: $infra_tmpl,
       container_image:     $image
     }
+    + (if $region    != "" then {aws_region:             $region}    else {} end)
+    + (if $role      != "" then {aws_role_arn:           $role}      else {} end)
     + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
     + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
     + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)

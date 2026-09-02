@@ -393,10 +393,10 @@ Resources → Run workflow**, and provide:
 | ----- | -------- | ------------------------ |
 | `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
 | `environment` | yes | `dev` — promotion order is enforced: `staging` can only be requested once `dev` is provisioned, `prod` once `dev` and `staging` both are ready (requesting `all`, or reconciling an environment that already exists, always passes) |
-| `azure_tenant_id` | yes | the tenant GUID captured in step 1 |
-| `azure_subscription_id` | yes | the GUID captured in step 1 |
-| `azure_client_id` | yes | the `appId` captured in step 1 |
-| `location` | yes | `westeurope` — Azure region for the tfstate storage account and every provisioned resource. No default, by design: an implicit region silently deploys to the wrong place |
+| `azure_tenant_id` | no* | the tenant GUID captured in step 1 — falls back to the `PROVISION_AZURE_TENANT_ID` repository variable |
+| `azure_subscription_id` | no* | the GUID captured in step 1 — falls back to `PROVISION_AZURE_SUBSCRIPTION_ID` |
+| `azure_client_id` | no* | the `appId` captured in step 1 — falls back to `PROVISION_AZURE_CLIENT_ID` |
+| `azure_location` | no* | `westeurope` — Azure region for the tfstate storage account and every provisioned resource; falls back to `PROVISION_AZURE_LOCATION`. There is deliberately no built-in default: an implicit region silently deploys to the wrong place |
 | `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
 | `app_template_repo` | no | the `<owner>/<name>` of the application template repo; **leave empty to skip the app-repo phase** (infra-only run) |
@@ -404,6 +404,30 @@ Resources → Run workflow**, and provide:
 | `container_image` | yes | image reference **without** the registry host, e.g. `deors/template-helloworld-express:sha-af53b68`. The archetype fixes the container contract — port 8080, health endpoint `/health`; the image must follow it |
 | `container_registry_url` | yes | the registry host |
 | `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
+
+> **Reconcile caveat.** `container_image` only matters on the first apply —
+> afterwards CI/CD workflows own the deployed container image.
+
+\* **no\*** = optional *per run*, but a value must come from somewhere: the
+input always overrides the repository variable, and when neither is present
+the run fails fast naming both ways to supply it. See *Lock in the target
+cloud* below.
+
+### Lock in the target cloud (recommended)
+
+In most organizations the target cloud is locked in, so passing the same
+identity parameters on every request is boilerplate. Set them once as
+repository variables and every form/CLI/API request can omit them:
+
+```bash
+gh variable set PROVISION_AZURE_TENANT_ID       -R <org>/<platform-repo> --body "<tenant-guid>"
+gh variable set PROVISION_AZURE_SUBSCRIPTION_ID -R <org>/<platform-repo> --body "<subscription-guid>"
+gh variable set PROVISION_AZURE_CLIENT_ID       -R <org>/<platform-repo> --body "<client-guid>"
+gh variable set PROVISION_AZURE_LOCATION        -R <org>/<platform-repo> --body "westeurope"
+```
+
+A per-run input always overrides the variable (the provisioning form hides
+these fields behind an "override the organization's defaults" checkbox).
 
 ### What you should observe
 

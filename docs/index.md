@@ -301,6 +301,13 @@ Flags fall back to upper-case env vars (`ENVIRONMENT`, `APP_NAME`, …) and the
 scripts auto-detect the platform repo from the current git remote. `--help`
 for the full reference.
 
+The target-cloud parameters (`--azure-tenant-id` / `--azure-subscription-id`
+/ `--azure-client-id` / `--azure-location`, and `--aws-region` /
+`--aws-role-arn`) are optional when the platform repository carries the
+`PROVISION_*` organization defaults — set once, per the *Lock in the target
+cloud* section of each setup guide. A flag always overrides the variable;
+with neither, the run fails fast naming both ways to supply the value.
+
 ### GitHub UI
 
 `Actions → <cloud> - Provision & Reconcile Application Resources → Run workflow`
@@ -311,7 +318,9 @@ Azure and AWS pipelines sit side by side in the Actions list.
 
 The `event_type` selects the cloud — for example,
 `azure-provision-infrastructure` in the case of Azure. The payload carries that
-cloud's identity and region parameters:
+cloud's identity and region parameters — or omits them, when the repository
+carries the `PROVISION_*` organization defaults (an explicit key always
+overrides the variable):
 
 ```bash
 curl -X POST \

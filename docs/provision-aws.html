@@ -48,6 +48,10 @@
     section ul { margin: 8px 0; padding-left: 22px; }
     section li { margin: 4px 0; }
 
+    /* An author `display` rule (e.g. .grid-2) overrides the UA default for
+       the `hidden` attribute, so make hidden unconditionally win — the
+       target-cloud override section relies on it. */
+    [hidden] { display: none !important; }
     .grid-2 {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -222,30 +226,48 @@
       <div class="grid-2">
 
         <div>
-          <label for="aws_region">AWS region <span class="req">*</span></label>
-          <input type="text" id="aws_region" name="aws_region" required
-                 placeholder="eu-west-1"
-                 pattern="^[a-z]{2}(-gov)?-[a-z]+-[0-9]$" />
-          <span class="hint">Region for the resources and the Terraform state bucket. No default — must be set explicitly.</span>
-          <div class="field-error" data-for="aws_region">Lowercase region code, e.g. <code>eu-west-1</code>.</div>
-        </div>
-
-        <div>
-          <label for="aws_role_arn">IAM role ARN <span class="req">*</span></label>
-          <input type="text" id="aws_role_arn" name="aws_role_arn" required
-                 placeholder="arn:aws:iam::123456789012:role/GitHubActionsRole"
-                 pattern="^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$" />
-          <span class="hint">Role assumed via OIDC. Its account ID also names the state bucket.</span>
-          <div class="field-error" data-for="aws_role_arn">Must be a full IAM role ARN, e.g. <code>arn:aws:iam::123456789012:role/GitHubActionsRole</code>.</div>
-        </div>
-
-        <div>
           <label for="main_domain">Root domain <span class="req">*</span></label>
           <input type="text" id="main_domain" name="main_domain" required
                  placeholder="example.com"
                  pattern="^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" />
           <span class="hint">Existing Route 53 hosted zone in the same account. The certificate is issued for <code>&lt;app&gt;.&lt;env&gt;.&lt;domain&gt;</code>.</span>
           <div class="field-error" data-for="main_domain">Must be a domain name, e.g. <code>example.com</code>.</div>
+        </div>
+
+      </div>
+
+      <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
+
+      <div>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="override_cloud_params" style="width:auto; margin:0;" />
+          Override the organization's target-cloud defaults
+        </label>
+        <span class="hint">The workflow reads the target-cloud parameters from the
+          <code>PROVISION_AWS_*</code> repository variables set by the platform
+          operators. Tick to pass explicit values for this run — a value entered
+          here always overrides the variable; a field left empty keeps falling
+          back to it.</span>
+      </div>
+
+      <div class="grid-2" id="cloud-params" hidden>
+
+        <div>
+          <label for="aws_region">AWS region <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="aws_region" name="aws_region"
+                 placeholder="eu-west-1"
+                 pattern="^[a-z]{2}(-gov)?-[a-z]+-[0-9]$" />
+          <span class="hint">Region for the resources and the Terraform state bucket. Empty ⇒ <code>PROVISION_AWS_REGION</code>.</span>
+          <div class="field-error" data-for="aws_region">Lowercase region code, e.g. <code>eu-west-1</code>.</div>
+        </div>
+
+        <div>
+          <label for="aws_role_arn">IAM role ARN <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="aws_role_arn" name="aws_role_arn"
+                 placeholder="arn:aws:iam::123456789012:role/GitHubActionsRole"
+                 pattern="^arn:aws[a-z-]*:iam::[0-9]{12}:role/.+$" />
+          <span class="hint">Role assumed via OIDC. Its account ID also names the state bucket. Empty ⇒ <code>PROVISION_AWS_ROLE_ARN</code>.</span>
+          <div class="field-error" data-for="aws_role_arn">Must be a full IAM role ARN, e.g. <code>arn:aws:iam::123456789012:role/GitHubActionsRole</code>.</div>
         </div>
 
       </div>
@@ -383,6 +405,14 @@
     el.addEventListener('change', updateCurl);
   });
 
+  // ── Target-cloud override toggle ───────────────────────────────────────────
+  // Fields stay hidden (and out of the payload) unless the operator opts in.
+  const overrideCb  = document.getElementById('override_cloud_params');
+  const cloudParams = document.getElementById('cloud-params');
+  overrideCb.addEventListener('change', () => {
+    cloudParams.hidden = !overrideCb.checked;
+  });
+
   // ── Payload builder (omits empty optional fields) ──────────────────────────
   function buildPayload () {
     const v = id => (document.getElementById(id).value || '').trim();
@@ -391,14 +421,21 @@
       client_payload: {
         app_name: v('app_name'),
         environment: v('environment'),
-        aws_region: v('aws_region'),
-        aws_role_arn: v('aws_role_arn'),
         main_domain: v('main_domain'),
         infra_template_repo: v('infra_template_repo'),
         container_image: v('container_image'),
         container_registry_url: v('container_registry_url')
       }
     };
+    // Target-cloud parameters ride along ONLY when the override box is
+    // ticked, and only the non-empty ones: an omitted key lets the workflow
+    // fall back to the matching PROVISION_AWS_* repository variable, while
+    // an empty string would defeat that fallback.
+    if (document.getElementById('override_cloud_params').checked) {
+      ['aws_region', 'aws_role_arn'].forEach(id => {
+        if (v(id)) payload.client_payload[id] = v(id);
+      });
+    }
     ['infra_template_ref', 'app_template_repo', 'app_template_ref',
      'ci_workflow_file'].forEach(id => {
       if (v(id)) payload.client_payload[id] = v(id);
