@@ -13,22 +13,27 @@ on:
         options: [dev, staging, prod, all]
         required: true
         default: dev
+      # The four target-cloud parameters are optional ON PURPOSE, with no
+      # default: the target cloud is usually locked in for the organization,
+      # so each falls back to a PROVISION_* repository variable set once. An
+      # input always overrides the variable; when neither is present the run
+      # fails fast in resolve-inputs naming both ways to supply the value.
       azure_tenant_id:
-        description: "Azure Tenant ID"
+        description: "Azure Tenant ID (optional — falls back to the PROVISION_AZURE_TENANT_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_subscription_id:
-        description: "Azure Subscription ID"
+        description: "Azure Subscription ID (optional — falls back to the PROVISION_AZURE_SUBSCRIPTION_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_client_id:
-        description: "Client ID of the Azure service principal / managed identity used for OIDC login"
+        description: "Client ID of the service principal / managed identity for OIDC login (optional — falls back to the PROVISION_AZURE_CLIENT_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_location:
-        description: "Azure region for all the resources (e.g. westeurope)"
+        description: "Azure region for all the resources, e.g. westeurope (optional — falls back to the PROVISION_AZURE_LOCATION repository variable)"
         type: string
-        required: true
+        required: false
       infra_template_repo:
         description: "Template repo for the infrastructure (e.g. owner/template-terraform-azure-webapp)"
         type: string
@@ -135,14 +140,22 @@ jobs:
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
           RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
+          # Organization defaults for the target-cloud parameters (Actions
+          # repository variables). Inputs always override them.
+          VAR_TENANT_ID:         ${{ vars.PROVISION_AZURE_TENANT_ID }}
+          VAR_SUB_ID:            ${{ vars.PROVISION_AZURE_SUBSCRIPTION_ID }}
+          VAR_CLIENT_ID:         ${{ vars.PROVISION_AZURE_CLIENT_ID }}
+          VAR_AZURE_LOCATION:    ${{ vars.PROVISION_AZURE_LOCATION }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
-          AZURE_TENANT_ID="${WD_TENANT_ID:-$RD_TENANT_ID}"
-          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$RD_SUB_ID}"
-          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$RD_CLIENT_ID}"
-          AZURE_LOCATION="${WD_AZURE_LOCATION:-$RD_AZURE_LOCATION}"
+          # Target-cloud parameters: input (either trigger) wins, the
+          # PROVISION_* repository variable is the organization's fallback.
+          AZURE_TENANT_ID="${WD_TENANT_ID:-${RD_TENANT_ID:-$VAR_TENANT_ID}}"
+          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-${RD_SUB_ID:-$VAR_SUB_ID}}"
+          AZURE_CLIENT_ID="${WD_CLIENT_ID:-${RD_CLIENT_ID:-$VAR_CLIENT_ID}}"
+          AZURE_LOCATION="${WD_AZURE_LOCATION:-${RD_AZURE_LOCATION:-$VAR_AZURE_LOCATION}}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
@@ -154,15 +167,47 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"               ]] && MISSING+=(app_name)
           [[ -z "$ENVIRONMENT"            ]] && MISSING+=(environment)
-          [[ -z "$AZURE_TENANT_ID"        ]] && MISSING+=(azure_tenant_id)
-          [[ -z "$AZURE_SUBSCRIPTION_ID"  ]] && MISSING+=(azure_subscription_id)
-          [[ -z "$AZURE_CLIENT_ID"        ]] && MISSING+=(azure_client_id)
-          [[ -z "$AZURE_LOCATION"         ]] && MISSING+=(azure_location)
           [[ -z "$INFRA_TEMPLATE_REPO"    ]] && MISSING+=(infra_template_repo)
           [[ -z "$CONTAINER_IMAGE"        ]] && MISSING+=(container_image)
           [[ -z "$CONTAINER_REGISTRY_URL" ]] && MISSING+=(container_registry_url)
-          if [[ ${#MISSING[@]} -gt 0 ]]; then
-            echo "::error::Missing required parameters: ${MISSING[*]}"
+
+          # Target-cloud parameters have TWO sources; when both are absent
+          # the report must name both, so they are tracked separately as
+          # "input_name|variable_name" pairs.
+          MISSING_CLOUD=()
+          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING_CLOUD+=("azure_tenant_id|PROVISION_AZURE_TENANT_ID")
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING_CLOUD+=("azure_subscription_id|PROVISION_AZURE_SUBSCRIPTION_ID")
+          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING_CLOUD+=("azure_client_id|PROVISION_AZURE_CLIENT_ID")
+          [[ -z "$AZURE_LOCATION"        ]] && MISSING_CLOUD+=("azure_location|PROVISION_AZURE_LOCATION")
+
+          if [[ ${#MISSING[@]} -gt 0 || ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            [[ ${#MISSING[@]} -gt 0 ]] && echo "::error::Missing required parameters: ${MISSING[*]}"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+              if [[ ${#MISSING[@]} -gt 0 ]]; then
+                echo "## Missing required parameters"
+                echo ""
+                for M in "${MISSING[@]}"; do echo "- \`${M}\`"; done
+                echo ""
+              fi
+              if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+                echo "## Missing target-cloud parameters"
+                echo ""
+                echo "The target cloud is usually locked in for the organization: set each"
+                echo "repository variable once, or pass the input to override it per run."
+                echo "An input always overrides the variable."
+                echo ""
+                echo "| Parameter | Pass per run as | …or set once as repository variable |"
+                echo "|-----------|-----------------|--------------------------------------|"
+                for M in "${MISSING_CLOUD[@]}"; do
+                  IFS='|' read -r IN VAR <<<"$M"
+                  echo "| \`${IN}\` | workflow input / \`client_payload.${IN}\` | \`gh variable set ${VAR}\` |"
+                done
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 

@@ -20,10 +20,6 @@ Usage:
 Required (flag OR env var):
   --app-name              <name>                    APP_NAME
   --environment           <dev|staging|prod|all>    ENVIRONMENT
-  --azure-tenant-id       <guid>                    AZURE_TENANT_ID
-  --azure-subscription-id <guid>                    AZURE_SUBSCRIPTION_ID
-  --azure-client-id       <guid>                    AZURE_CLIENT_ID
-  --azure-location        <region>                  AZURE_LOCATION
   --infra-template-repo   <owner/name>              INFRA_TEMPLATE_REPO
   --container-image       <ref>                     CONTAINER_IMAGE
                                                       (e.g. deors/template-helloworld-express:sha-af53b68,
@@ -32,6 +28,16 @@ Required (flag OR env var):
                                                        reconcile runs)
 
 Optional:
+  --azure-tenant-id        <guid>        AZURE_TENANT_ID
+                                            (falls back to the PROVISION_AZURE_TENANT_ID
+                                             repository variable — the organization
+                                             default; a flag always overrides it)
+  --azure-subscription-id  <guid>        AZURE_SUBSCRIPTION_ID
+                                            (falls back to PROVISION_AZURE_SUBSCRIPTION_ID)
+  --azure-client-id        <guid>        AZURE_CLIENT_ID
+                                            (falls back to PROVISION_AZURE_CLIENT_ID)
+  --azure-location         <region>      AZURE_LOCATION
+                                            (falls back to PROVISION_AZURE_LOCATION)
   --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
                                             (default: empty — provisions
                                              infrastructure only, no app repo)
@@ -109,10 +115,6 @@ done
 MISSING=()
 [[ -z "$APP_NAME"              ]] && MISSING+=("--app-name / APP_NAME")
 [[ -z "$ENVIRONMENT"           ]] && MISSING+=("--environment / ENVIRONMENT")
-[[ -z "$AZURE_TENANT_ID"       ]] && MISSING+=("--azure-tenant-id / AZURE_TENANT_ID")
-[[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING+=("--azure-subscription-id / AZURE_SUBSCRIPTION_ID")
-[[ -z "$AZURE_CLIENT_ID"       ]] && MISSING+=("--azure-client-id / AZURE_CLIENT_ID")
-[[ -z "$AZURE_LOCATION"        ]] && MISSING+=("--azure-location / AZURE_LOCATION")
 [[ -z "$INFRA_TEMPLATE_REPO"   ]] && MISSING+=("--infra-template-repo / INFRA_TEMPLATE_REPO")
 [[ -z "$CONTAINER_IMAGE"       ]] && MISSING+=("--container-image / CONTAINER_IMAGE")
 
@@ -159,13 +161,13 @@ PAYLOAD=$(jq -nc \
     client_payload: ({
       app_name:              $app,
       environment:           $env,
-      azure_tenant_id:       $tid,
-      azure_subscription_id: $sub,
-      azure_client_id:       $cid,
-      azure_location:        $loc,
       infra_template_repo:   $infra_tmpl,
       container_image:       $image
     }
+    + (if $tid       != "" then {azure_tenant_id:        $tid}       else {} end)
+    + (if $sub       != "" then {azure_subscription_id:  $sub}       else {} end)
+    + (if $cid       != "" then {azure_client_id:        $cid}       else {} end)
+    + (if $loc       != "" then {azure_location:         $loc}       else {} end)
     + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
     + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
     + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)

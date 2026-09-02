@@ -288,8 +288,8 @@ Resources → Run workflow**, and provide:
 | ----- | -------- | ------------------------ |
 | `app_name` | yes | `test-webapp` (3–22 chars, lowercase, digits, hyphens) |
 | `environment` | yes | `dev` — promotion order is enforced: `staging` can only be requested once `dev` is provisioned, `prod` once `dev` and `staging` both are ready (requesting `all`, or reconciling an environment that already exists, always passes) |
-| `aws_region` | yes | `eu-west-1` — region for the tfstate bucket and every provisioned resource. No default, by design: an implicit region silently deploys to the wrong place |
-| `aws_role_arn` | yes | the role ARN captured in step 2 |
+| `aws_region` | no* | `eu-west-1` — region for the tfstate bucket and every provisioned resource; falls back to the `PROVISION_AWS_REGION` repository variable. There is deliberately no built-in default: an implicit region silently deploys to the wrong place |
+| `aws_role_arn` | no* | the role ARN captured in step 2 — falls back to `PROVISION_AWS_ROLE_ARN` |
 | `main_domain` | yes | the root domain of your Route 53 public hosted zone (e.g. `example.com`) — drives the ACM certificate and DNS records for `<app>.<env>.<domain>` |
 | `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
@@ -300,8 +300,26 @@ Resources → Run workflow**, and provide:
 | `ci_workflow_file` | no | _(leave empty — defaults to `ci.yml`; only used when `app_template_repo` is set)_ |
 
 > **Reconcile caveat.** `container_image` only matters on the first apply —
-> afterwards the ECS service's `lifecycle.ignore_changes` keeps whatever
-> CodeDeploy deployed.
+> afterwards CI/CD workflows own the deployed container image.
+
+\* **no\*** = optional *per run*, but a value must come from somewhere: the
+input always overrides the repository variable, and when neither is present
+the run fails fast naming both ways to supply it. See *Lock in the target
+cloud* below.
+
+### Lock in the target cloud (recommended)
+
+In most organizations the target cloud is locked in, so passing the same
+identity parameters on every request is boilerplate. Set them once as
+repository variables and every form/CLI/API request can omit them:
+
+```bash
+gh variable set PROVISION_AWS_REGION   -R <org>/<platform-repo> --body "eu-west-1"
+gh variable set PROVISION_AWS_ROLE_ARN -R <org>/<platform-repo> --body "arn:aws:iam::<account-id>:role/GitHubActionsPlatformEng"
+```
+
+A per-run input always overrides the variable (the provisioning form hides
+these fields behind an "override the organization's defaults" checkbox).
 
 ### What you should observe
 

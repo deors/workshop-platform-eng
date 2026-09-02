@@ -13,14 +13,19 @@ on:
         options: [dev, staging, prod, all]
         required: true
         default: dev
+      # The two target-cloud parameters are optional ON PURPOSE, with no
+      # default: the target cloud is usually locked in for the organization,
+      # so each falls back to a PROVISION_* repository variable set once. An
+      # input always overrides the variable; when neither is present the run
+      # fails fast in resolve-inputs naming both ways to supply the value.
       aws_region:
-        description: "AWS region for all the resources and the tfstate bucket (e.g. eu-west-1)"
+        description: "AWS region for all the resources and the tfstate bucket, e.g. eu-west-1 (optional — falls back to the PROVISION_AWS_REGION repository variable)"
         type: string
-        required: true
+        required: false
       aws_role_arn:
-        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)"
+        description: "ARN of the IAM role to assume via OIDC (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
-        required: true
+        required: false
       main_domain:
         description: "Root domain managed in Route 53 (e.g. example.com). The template issues a certificate for <app>.<env>.<main_domain>"
         type: string
@@ -128,12 +133,18 @@ jobs:
           RD_IMAGE:              ${{ github.event.client_payload.container_image }}
           RD_REGISTRY:           ${{ github.event.client_payload.container_registry_url }}
           RD_CI_FILE:            ${{ github.event.client_payload.ci_workflow_file }}
+          # Organization defaults for the target-cloud parameters (Actions
+          # repository variables). Inputs always override them.
+          VAR_REGION:            ${{ vars.PROVISION_AWS_REGION }}
+          VAR_ROLE_ARN:          ${{ vars.PROVISION_AWS_ROLE_ARN }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
           ENVIRONMENT="${WD_ENV:-$RD_ENV}"
-          AWS_REGION="${WD_REGION:-$RD_REGION}"
-          AWS_ROLE_ARN="${WD_ROLE_ARN:-$RD_ROLE_ARN}"
+          # Target-cloud parameters: input (either trigger) wins, the
+          # PROVISION_* repository variable is the organization's fallback.
+          AWS_REGION="${WD_REGION:-${RD_REGION:-$VAR_REGION}}"
+          AWS_ROLE_ARN="${WD_ROLE_ARN:-${RD_ROLE_ARN:-$VAR_ROLE_ARN}}"
           MAIN_DOMAIN="${WD_MAIN_DOMAIN:-$RD_MAIN_DOMAIN}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
@@ -146,14 +157,46 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"               ]] && MISSING+=(app_name)
           [[ -z "$ENVIRONMENT"            ]] && MISSING+=(environment)
-          [[ -z "$AWS_REGION"             ]] && MISSING+=(aws_region)
-          [[ -z "$AWS_ROLE_ARN"           ]] && MISSING+=(aws_role_arn)
           [[ -z "$MAIN_DOMAIN"            ]] && MISSING+=(main_domain)
           [[ -z "$INFRA_TEMPLATE_REPO"    ]] && MISSING+=(infra_template_repo)
           [[ -z "$CONTAINER_IMAGE"        ]] && MISSING+=(container_image)
           [[ -z "$CONTAINER_REGISTRY_URL" ]] && MISSING+=(container_registry_url)
-          if [[ ${#MISSING[@]} -gt 0 ]]; then
-            echo "::error::Missing required parameters: ${MISSING[*]}"
+
+          # Target-cloud parameters have TWO sources; when both are absent
+          # the report must name both, so they are tracked separately as
+          # "input_name|variable_name" pairs.
+          MISSING_CLOUD=()
+          [[ -z "$AWS_REGION"   ]] && MISSING_CLOUD+=("aws_region|PROVISION_AWS_REGION")
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING_CLOUD+=("aws_role_arn|PROVISION_AWS_ROLE_ARN")
+
+          if [[ ${#MISSING[@]} -gt 0 || ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            [[ ${#MISSING[@]} -gt 0 ]] && echo "::error::Missing required parameters: ${MISSING[*]}"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+              if [[ ${#MISSING[@]} -gt 0 ]]; then
+                echo "## Missing required parameters"
+                echo ""
+                for M in "${MISSING[@]}"; do echo "- \`${M}\`"; done
+                echo ""
+              fi
+              if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+                echo "## Missing target-cloud parameters"
+                echo ""
+                echo "The target cloud is usually locked in for the organization: set each"
+                echo "repository variable once, or pass the input to override it per run."
+                echo "An input always overrides the variable."
+                echo ""
+                echo "| Parameter | Pass per run as | …or set once as repository variable |"
+                echo "|-----------|-----------------|--------------------------------------|"
+                for M in "${MISSING_CLOUD[@]}"; do
+                  IFS='|' read -r IN VAR <<<"$M"
+                  echo "| \`${IN}\` | workflow input / \`client_payload.${IN}\` | \`gh variable set ${VAR}\` |"
+                done
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
