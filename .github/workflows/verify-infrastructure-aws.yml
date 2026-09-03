@@ -65,13 +65,13 @@ on:
         required: true
         default: dev
       aws_region:
-        description: AWS region the stack was applied to (e.g. eu-west-1)
+        description: "AWS region the stack was applied to (e.g. eu-west-1) (optional — falls back to the PROVISION_AWS_REGION repository variable)"
         type: string
-        required: true
+        required: false
       aws_role_arn:
-        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole) (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
-        required: true
+        required: false
       main_domain:
         description: "Root domain in Route 53 (leave empty to skip certificate, DNS and HTTPS checks)"
         type: string
@@ -120,12 +120,19 @@ jobs:
           RD_MAIN_DOMAIN:   ${{ github.event.client_payload.main_domain }}
           RD_INFRA_REPO:    ${{ github.event.client_payload.infra_repo }}
           RD_VERIFY_SCRIPT: ${{ github.event.client_payload.verify_script }}
+          VAR_REGION:       ${{ vars.PROVISION_AWS_REGION }}
+          VAR_ROLE_ARN:     ${{ vars.PROVISION_AWS_ROLE_ARN }}
           OWNER:            ${{ github.repository_owner }}
         run: |
           APP_NAME="${IN_APP:-$RD_APP}"
           ENVIRONMENT="${IN_ENV:-$RD_ENV}"
-          AWS_REGION="${IN_REGION:-$RD_REGION}"
-          AWS_ROLE_ARN="${IN_ROLE_ARN:-$RD_ROLE_ARN}"
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback. It
+          # only engages on the external interface (workflow_dispatch /
+          # repository_dispatch): workflow_call inputs stay required, so
+          # workflow-to-workflow calls always pass explicit values.
+          AWS_REGION="${IN_REGION:-${RD_REGION:-$VAR_REGION}}"
+          AWS_ROLE_ARN="${IN_ROLE_ARN:-${RD_ROLE_ARN:-$VAR_ROLE_ARN}}"
           MAIN_DOMAIN="${IN_MAIN_DOMAIN:-${RD_MAIN_DOMAIN:-}}"
           INFRA_REPO="${IN_INFRA_REPO:-$RD_INFRA_REPO}"
           # Canonical path of the verification script inside the infra repo.
@@ -134,10 +141,38 @@ jobs:
           MISSING=()
           [[ -z "$APP_NAME"     ]] && MISSING+=(app_name)
           [[ -z "$ENVIRONMENT"  ]] && MISSING+=(environment)
-          [[ -z "$AWS_REGION"   ]] && MISSING+=(aws_region)
-          [[ -z "$AWS_ROLE_ARN" ]] && MISSING+=(aws_role_arn)
-          if [[ ${#MISSING[@]} -gt 0 ]]; then
-            echo "::error::Missing required parameters: ${MISSING[*]}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AWS_REGION"   ]] && MISSING_CLOUD+=("aws_region|PROVISION_AWS_REGION")
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING_CLOUD+=("aws_role_arn|PROVISION_AWS_ROLE_ARN")
+          if [[ ${#MISSING[@]} -gt 0 || ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            [[ ${#MISSING[@]} -gt 0 ]] && echo "::error::Missing required parameters: ${MISSING[*]}"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+              if [[ ${#MISSING[@]} -gt 0 ]]; then
+                echo "## Missing required parameters"
+                echo ""
+                for M in "${MISSING[@]}"; do echo "- \`${M}\`"; done
+                echo ""
+              fi
+              if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+                echo "## Missing target-cloud parameters"
+                echo ""
+                echo "The target cloud is usually locked in for the organization: set each"
+                echo "repository variable once, or pass the input to override it per run."
+                echo "An input always overrides the variable."
+                echo ""
+                echo "| Parameter | Pass per run as | …or set once as repository variable |"
+                echo "|-----------|-----------------|--------------------------------------|"
+                for M in "${MISSING_CLOUD[@]}"; do
+                  IFS='|' read -r IN VAR <<<"$M"
+                  echo "| \`${IN}\` | workflow input / \`client_payload.${IN}\` | \`gh variable set ${VAR}\` |"
+                done
+              fi
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 

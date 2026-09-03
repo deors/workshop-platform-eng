@@ -19,13 +19,13 @@ on:
         type: string
         required: true
       aws_region:
-        description: AWS region holding the resources and the tfstate bucket (e.g. eu-west-1)
+        description: "AWS region holding the resources and the tfstate bucket (e.g. eu-west-1) (optional — falls back to the PROVISION_AWS_REGION repository variable)"
         type: string
-        required: true
+        required: false
       aws_role_arn:
-        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole) (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
-        required: true
+        required: false
       main_domain:
         description: "Root domain the template issued certificates under (leave empty when HTTPS was not enabled)"
         type: string
@@ -53,6 +53,8 @@ jobs:
     outputs:
       app_name:       ${{ steps.validate.outputs.app_name }}
       delete_tfstate: ${{ steps.validate.outputs.delete_tfstate }}
+      aws_region:     ${{ steps.validate.outputs.aws_region }}
+      aws_role_arn:   ${{ steps.validate.outputs.aws_role_arn }}
     steps:
       - name: Validate inputs
         id: validate
@@ -60,8 +62,43 @@ jobs:
           APP_NAME:              ${{ github.event.inputs.app_name }}
           CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
           DELETE_TFSTATE:        ${{ github.event.inputs.delete_tfstate }}
+          WD_REGION:             ${{ needs.validate.outputs.aws_region }}
+          WD_ROLE_ARN:           ${{ needs.validate.outputs.aws_role_arn }}
+          VAR_REGION:            ${{ vars.PROVISION_AWS_REGION }}
+          VAR_ROLE_ARN:          ${{ vars.PROVISION_AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
+
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback
+          # (this workflow is dispatch-only, the external interface).
+          AWS_REGION="${WD_REGION:-$VAR_REGION}"
+          AWS_ROLE_ARN="${WD_ROLE_ARN:-$VAR_ROLE_ARN}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AWS_REGION"   ]] && MISSING_CLOUD+=("aws_region|PROVISION_AWS_REGION")
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING_CLOUD+=("aws_role_arn|PROVISION_AWS_ROLE_ARN")
+          if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+            echo "## Missing target-cloud parameters"
+            echo ""
+            echo "The target cloud is usually locked in for the organization: set each"
+            echo "repository variable once, or pass the input to override it per run."
+            echo "An input always overrides the variable."
+            echo ""
+            echo "| Parameter | Pass per run as | …or set once as repository variable |"
+            echo "|-----------|-----------------|--------------------------------------|"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "| \`${IN}\` | workflow input | \`gh variable set ${VAR}\` |"
+            done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
           if [[ "$APP_NAME" != "$CONFIRMATION_APP_NAME" ]]; then
@@ -79,6 +116,8 @@ jobs:
 
           echo "app_name=$APP_NAME"             >> "$GITHUB_OUTPUT"
           echo "delete_tfstate=$DELETE_TFSTATE" >> "$GITHUB_OUTPUT"
+          echo "aws_region=$AWS_REGION"         >> "$GITHUB_OUTPUT"
+          echo "aws_role_arn=$AWS_ROLE_ARN"     >> "$GITHUB_OUTPUT"
 
   # One environment at a time (max-parallel: 1). Serialising is not just
   # tidiness: the environments share an IAM role whose trust policy is edited
@@ -97,8 +136,8 @@ jobs:
       environment:              ${{ matrix.environment }}
       confirmation_app_name:    ${{ needs.validate.outputs.app_name }}
       confirmation_environment: ${{ matrix.environment }}
-      aws_region:               ${{ github.event.inputs.aws_region }}
-      aws_role_arn:             ${{ github.event.inputs.aws_role_arn }}
+      aws_region:               ${{ needs.validate.outputs.aws_region }}
+      aws_role_arn:             ${{ needs.validate.outputs.aws_role_arn }}
       main_domain:              ${{ github.event.inputs.main_domain }}
     secrets: inherit
 
@@ -117,14 +156,14 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.event.inputs.aws_role_arn }}
-          aws-region:     ${{ github.event.inputs.aws_region }}
+          role-to-assume: ${{ needs.validate.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.validate.outputs.aws_region }}
 
       - name: Empty and delete state bucket
         id: delete_bucket
         env:
           APP_NAME:   ${{ needs.validate.outputs.app_name }}
-          AWS_REGION: ${{ github.event.inputs.aws_region }}
+          AWS_REGION: ${{ needs.validate.outputs.aws_region }}
         run: |
           set -euo pipefail
 
@@ -186,8 +225,8 @@ jobs:
     uses: ./.github/workflows/delete-resource-group-aws.yml
     with:
       resource_group_name: rg-${{ needs.validate.outputs.app_name }}-tfstate
-      aws_region:          ${{ github.event.inputs.aws_region }}
-      aws_role_arn:        ${{ github.event.inputs.aws_role_arn }}
+      aws_region:          ${{ needs.validate.outputs.aws_region }}
+      aws_role_arn:        ${{ needs.validate.outputs.aws_role_arn }}
 
   summary:
     name: Summary

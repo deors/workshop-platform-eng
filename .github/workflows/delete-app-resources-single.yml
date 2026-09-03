@@ -52,17 +52,17 @@ on:
         options: [dev, staging, prod]
         required: true
       azure_tenant_id:
-        description: Azure Tenant ID
+        description: "Azure Tenant ID (optional — falls back to the PROVISION_AZURE_TENANT_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_subscription_id:
-        description: Azure Subscription ID
+        description: "Azure Subscription ID (optional — falls back to the PROVISION_AZURE_SUBSCRIPTION_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_client_id:
-        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        description: "Client ID of the Azure service principal / managed identity used for OIDC login (optional — falls back to the PROVISION_AZURE_CLIENT_ID repository variable)"
         type: string
-        required: true
+        required: false
       confirmation_app_name:
         description: Repeat the exact application name to confirm destructive deletion
         type: string
@@ -92,6 +92,9 @@ jobs:
       wait_for_completion: ${{ steps.out.outputs.wait_for_completion }}
       resource_group_name: ${{ steps.out.outputs.resource_group_name }}
       app_repo_full: ${{ steps.out.outputs.app_repo_full }}
+      azure_tenant_id: ${{ steps.out.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ steps.out.outputs.azure_subscription_id }}
+      azure_client_id: ${{ steps.out.outputs.azure_client_id }}
     steps:
       - name: Validate
         id: out
@@ -106,6 +109,15 @@ jobs:
           WD_CONFIRM_ENV: ${{ github.event.inputs.confirmation_environment }}
           IN_WAIT:        ${{ inputs.wait_for_completion }}
           WD_WAIT:        ${{ github.event.inputs.wait_for_completion }}
+          IN_TENANT_ID:   ${{ inputs.azure_tenant_id }}
+          WD_TENANT_ID:   ${{ github.event.inputs.azure_tenant_id }}
+          IN_SUB_ID:      ${{ inputs.azure_subscription_id }}
+          WD_SUB_ID:      ${{ github.event.inputs.azure_subscription_id }}
+          IN_CLIENT_ID:   ${{ inputs.azure_client_id }}
+          WD_CLIENT_ID:   ${{ github.event.inputs.azure_client_id }}
+          VAR_TENANT_ID:  ${{ vars.PROVISION_AZURE_TENANT_ID }}
+          VAR_SUB_ID:     ${{ vars.PROVISION_AZURE_SUBSCRIPTION_ID }}
+          VAR_CLIENT_ID:  ${{ vars.PROVISION_AZURE_CLIENT_ID }}
         run: |
           set -euo pipefail
 
@@ -114,6 +126,41 @@ jobs:
           CONFIRM_APP_NAME="${IN_CONFIRM_APP:-$WD_CONFIRM_APP}"
           CONFIRM_ENVIRONMENT="${IN_CONFIRM_ENV:-$WD_CONFIRM_ENV}"
           WAIT_FOR_COMPLETION="${IN_WAIT:-${WD_WAIT:-true}}"
+
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback. It
+          # only engages on the external interface (workflow_dispatch /
+          # repository_dispatch): workflow_call inputs stay required, so
+          # workflow-to-workflow calls always pass explicit values.
+          AZURE_TENANT_ID="${IN_TENANT_ID:-${WD_TENANT_ID:-$VAR_TENANT_ID}}"
+          AZURE_SUBSCRIPTION_ID="${IN_SUB_ID:-${WD_SUB_ID:-$VAR_SUB_ID}}"
+          AZURE_CLIENT_ID="${IN_CLIENT_ID:-${WD_CLIENT_ID:-$VAR_CLIENT_ID}}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AZURE_TENANT_ID" ]] && MISSING_CLOUD+=("azure_tenant_id|PROVISION_AZURE_TENANT_ID")
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING_CLOUD+=("azure_subscription_id|PROVISION_AZURE_SUBSCRIPTION_ID")
+          [[ -z "$AZURE_CLIENT_ID" ]] && MISSING_CLOUD+=("azure_client_id|PROVISION_AZURE_CLIENT_ID")
+          if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+            echo "## Missing target-cloud parameters"
+            echo ""
+            echo "The target cloud is usually locked in for the organization: set each"
+            echo "repository variable once, or pass the input to override it per run."
+            echo "An input always overrides the variable."
+            echo ""
+            echo "| Parameter | Pass per run as | …or set once as repository variable |"
+            echo "|-----------|-----------------|--------------------------------------|"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "| \`${IN}\` | workflow input | \`gh variable set ${VAR}\` |"
+            done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
           [[ -z "$ENVIRONMENT" ]] && { echo "::error::environment is required"; exit 1; }
@@ -147,6 +194,9 @@ jobs:
           echo "wait_for_completion=$WAIT_FOR_COMPLETION" >> "$GITHUB_OUTPUT"
           echo "resource_group_name=$RG_NAME" >> "$GITHUB_OUTPUT"
           echo "app_repo_full=$APP_REPO_FULL" >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID" >> "$GITHUB_OUTPUT"
 
   delete-rg:
     name: Delete Azure resource group
@@ -154,9 +204,9 @@ jobs:
     uses: ./.github/workflows/delete-resource-group.yml
     with:
       resource_group_name:   ${{ needs.validate.outputs.resource_group_name }}
-      azure_tenant_id:       ${{ inputs.azure_tenant_id || github.event.inputs.azure_tenant_id }}
-      azure_subscription_id: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
-      azure_client_id:       ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+      azure_tenant_id:       ${{ needs.validate.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ needs.validate.outputs.azure_subscription_id }}
+      azure_client_id:       ${{ needs.validate.outputs.azure_client_id }}
       wait_for_completion:   ${{ needs.validate.outputs.wait_for_completion }}
 
   cleanup-github-and-oidc:
@@ -191,9 +241,9 @@ jobs:
       - name: Azure login (OIDC)
         uses: azure/login@v3
         with:
-          tenant-id:       ${{ inputs.azure_tenant_id || github.event.inputs.azure_tenant_id }}
-          subscription-id: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
-          client-id:       ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+          tenant-id:       ${{ needs.validate.outputs.azure_tenant_id }}
+          subscription-id: ${{ needs.validate.outputs.azure_subscription_id }}
+          client-id:       ${{ needs.validate.outputs.azure_client_id }}
 
       # Deleting the resource group removes the resources but leaves this
       # environment's state blob fully populated, describing resources that no
@@ -212,7 +262,7 @@ jobs:
         env:
           APP_NAME:        ${{ needs.validate.outputs.app_name }}
           TARGET_ENV:      ${{ needs.validate.outputs.environment }}
-          SUBSCRIPTION_ID: ${{ inputs.azure_subscription_id || github.event.inputs.azure_subscription_id }}
+          SUBSCRIPTION_ID: ${{ needs.validate.outputs.azure_subscription_id }}
         run: |
           set -euo pipefail
 
@@ -258,7 +308,7 @@ jobs:
 
       - name: Remove OIDC federated credential
         env:
-          APP_ID:        ${{ inputs.azure_client_id || github.event.inputs.azure_client_id }}
+          APP_ID:        ${{ needs.validate.outputs.azure_client_id }}
           APP_REPO_FULL: ${{ needs.validate.outputs.app_repo_full }}
           TARGET_ENV:    ${{ needs.validate.outputs.environment }}
         run: |

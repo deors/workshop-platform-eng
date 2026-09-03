@@ -72,13 +72,13 @@ on:
         options: [dev, staging, prod]
         required: true
       aws_region:
-        description: AWS region holding the resources (e.g. eu-west-1)
+        description: "AWS region holding the resources (e.g. eu-west-1) (optional — falls back to the PROVISION_AWS_REGION repository variable)"
         type: string
-        required: true
+        required: false
       aws_role_arn:
-        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole) (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
-        required: true
+        required: false
       main_domain:
         description: "Root domain the template issued certificates under (leave empty when HTTPS was not enabled)"
         type: string
@@ -107,6 +107,8 @@ jobs:
       resource_group_name: ${{ steps.out.outputs.resource_group_name }}
       app_repo_full:       ${{ steps.out.outputs.app_repo_full }}
       infra_repo_full:     ${{ steps.out.outputs.infra_repo_full }}
+      aws_region:          ${{ steps.out.outputs.aws_region }}
+      aws_role_arn:        ${{ steps.out.outputs.aws_role_arn }}
     steps:
       - name: Validate
         id: out
@@ -119,6 +121,12 @@ jobs:
           WD_CONFIRM_APP: ${{ github.event.inputs.confirmation_app_name }}
           IN_CONFIRM_ENV: ${{ inputs.confirmation_environment }}
           WD_CONFIRM_ENV: ${{ github.event.inputs.confirmation_environment }}
+          IN_REGION:      ${{ inputs.aws_region }}
+          WD_REGION:      ${{ github.event.inputs.aws_region }}
+          IN_ROLE_ARN:    ${{ inputs.aws_role_arn }}
+          WD_ROLE_ARN:    ${{ github.event.inputs.aws_role_arn }}
+          VAR_REGION:     ${{ vars.PROVISION_AWS_REGION }}
+          VAR_ROLE_ARN:   ${{ vars.PROVISION_AWS_ROLE_ARN }}
         run: |
           set -euo pipefail
 
@@ -126,6 +134,39 @@ jobs:
           ENVIRONMENT="${IN_ENV:-$WD_ENV}"
           CONFIRM_APP_NAME="${IN_CONFIRM_APP:-$WD_CONFIRM_APP}"
           CONFIRM_ENVIRONMENT="${IN_CONFIRM_ENV:-$WD_CONFIRM_ENV}"
+
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback. It
+          # only engages on the external interface (workflow_dispatch /
+          # repository_dispatch): workflow_call inputs stay required, so
+          # workflow-to-workflow calls always pass explicit values.
+          AWS_REGION="${IN_REGION:-${WD_REGION:-$VAR_REGION}}"
+          AWS_ROLE_ARN="${IN_ROLE_ARN:-${WD_ROLE_ARN:-$VAR_ROLE_ARN}}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AWS_REGION"   ]] && MISSING_CLOUD+=("aws_region|PROVISION_AWS_REGION")
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING_CLOUD+=("aws_role_arn|PROVISION_AWS_ROLE_ARN")
+          if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+            echo "## Missing target-cloud parameters"
+            echo ""
+            echo "The target cloud is usually locked in for the organization: set each"
+            echo "repository variable once, or pass the input to override it per run."
+            echo "An input always overrides the variable."
+            echo ""
+            echo "| Parameter | Pass per run as | …or set once as repository variable |"
+            echo "|-----------|-----------------|--------------------------------------|"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "| \`${IN}\` | workflow input | \`gh variable set ${VAR}\` |"
+            done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           [[ -z "$APP_NAME"    ]] && { echo "::error::app_name is required"; exit 1; }
           [[ -z "$ENVIRONMENT" ]] && { echo "::error::environment is required"; exit 1; }
@@ -157,6 +198,8 @@ jobs:
             echo "resource_group_name=$RG_NAME"
             echo "app_repo_full=$APP_REPO_FULL"
             echo "infra_repo_full=$INFRA_REPO_FULL"
+            echo "aws_region=$AWS_REGION"
+            echo "aws_role_arn=$AWS_ROLE_ARN"
           } >> "$GITHUB_OUTPUT"
 
   # ────────────────────────────────────────────────────────────────────────────
@@ -182,8 +225,8 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
-          aws-region:     ${{ inputs.aws_region || github.event.inputs.aws_region }}
+          role-to-assume: ${{ needs.validate.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.validate.outputs.aws_region }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v4
@@ -196,7 +239,7 @@ jobs:
         env:
           APP_NAME:    ${{ needs.validate.outputs.app_name }}
           ENVIRONMENT: ${{ needs.validate.outputs.environment }}
-          AWS_REGION:  ${{ inputs.aws_region || github.event.inputs.aws_region }}
+          AWS_REGION:  ${{ needs.validate.outputs.aws_region }}
           MAIN_DOMAIN: ${{ inputs.main_domain || github.event.inputs.main_domain }}
         run: |
           set -euo pipefail
@@ -259,7 +302,7 @@ jobs:
         env:
           APP_NAME:    ${{ needs.validate.outputs.app_name }}
           ENVIRONMENT: ${{ needs.validate.outputs.environment }}
-          AWS_REGION:  ${{ inputs.aws_region || github.event.inputs.aws_region }}
+          AWS_REGION:  ${{ needs.validate.outputs.aws_region }}
         run: |
           set -euo pipefail
 
@@ -314,8 +357,8 @@ jobs:
     uses: ./.github/workflows/delete-resource-group-aws.yml
     with:
       resource_group_name: ${{ needs.validate.outputs.resource_group_name }}
-      aws_region:          ${{ inputs.aws_region || github.event.inputs.aws_region }}
-      aws_role_arn:        ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+      aws_region:          ${{ needs.validate.outputs.aws_region }}
+      aws_role_arn:        ${{ needs.validate.outputs.aws_role_arn }}
 
   cleanup-github-and-oidc:
     name: Cleanup GitHub environment and OIDC
@@ -350,8 +393,8 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
-          aws-region:     ${{ inputs.aws_region || github.event.inputs.aws_region }}
+          role-to-assume: ${{ needs.validate.outputs.aws_role_arn }}
+          aws-region:     ${{ needs.validate.outputs.aws_region }}
 
       # Azure removes the environment's federated credential from the AD app.
       # The AWS analogue is the GitHub OIDC subject inside the IAM role's trust
@@ -369,7 +412,7 @@ jobs:
       # would win. Retire apps one at a time if they share a role.
       - name: Remove OIDC trust subject
         env:
-          ROLE_ARN:      ${{ inputs.aws_role_arn || github.event.inputs.aws_role_arn }}
+          ROLE_ARN:      ${{ needs.validate.outputs.aws_role_arn }}
           APP_REPO_FULL: ${{ needs.validate.outputs.app_repo_full }}
           TARGET_ENV:    ${{ needs.validate.outputs.environment }}
         run: |
