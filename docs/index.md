@@ -409,7 +409,7 @@ and region parameters:
 | `app_name` | Yes | Application name — used to discover resource groups |
 | `tags_json` | Yes | JSON object whose keys/values become the tags, e.g. `{"airid":"309005","Application":"myapp","CreatedBy":"user"}` |
 | `dry_run` | No (default: `false`) | When `true`, discovers and lists all resources that would be tagged without writing anything |
-| *cloud credentials* | Yes | Azure: `azure_tenant_id`, `azure_subscription_id`, `azure_client_id`. AWS: `aws_region`, `aws_role_arn` |
+| *cloud credentials* | No* | Azure: `azure_tenant_id`, `azure_subscription_id`, `azure_client_id`. AWS: `aws_region`, `aws_role_arn`. Optional per run — each falls back to its `PROVISION_*` repository variable (the organization default); an input always overrides the variable, and with neither the run fails fast naming both |
 
 ### How to run
 

@@ -429,6 +429,13 @@ gh variable set PROVISION_AZURE_LOCATION        -R <org>/<platform-repo> --body 
 A per-run input always overrides the variable (the provisioning form hides
 these fields behind an "override the organization's defaults" checkbox).
 
+The same variables back **every workflow that touches cloud resources**: the
+provisioning/reconciling workflow, the delete workflows (single environment
+and all-environments), the verification workflow, and the tagging workflow
+all fall back to them when dispatched without explicit cloud parameters.
+Workflow-to-workflow calls are unaffected — reusable-workflow inputs stay
+required, and callers always pass explicit values.
+
 ### What you should observe
 
 Each row below names the job exactly as it appears in the run's UI. Jobs

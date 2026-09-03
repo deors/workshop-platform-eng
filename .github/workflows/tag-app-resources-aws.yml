@@ -8,13 +8,13 @@ on:
         type: string
         required: true
       aws_region:
-        description: AWS region (e.g. us-east-1)
+        description: "AWS region (e.g. us-east-1) (optional — falls back to the PROVISION_AWS_REGION repository variable)"
         type: string
-        required: true
+        required: false
       aws_role_arn:
-        description: ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole)
+        description: "ARN of the IAM role to assume via OIDC (e.g. arn:aws:iam::123456789012:role/GitHubActionsRole) (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
-        required: true
+        required: false
       tags_json:
         description: 'JSON object of tags to apply to every resource, e.g. {"tag1":"value1","tag2":"value2","tag3":"value3"}'
         type: string
@@ -69,11 +69,54 @@ jobs:
           fi
           echo "Validated: app_name='$APP_NAME', tags=$TAG_COUNT"
 
+      - name: Resolve target-cloud parameters
+        id: cloud
+        env:
+          IN_AWS_REGION: ${{ inputs.aws_region }}
+          IN_AWS_ROLE_ARN: ${{ inputs.aws_role_arn }}
+          VAR_AWS_REGION: ${{ vars.PROVISION_AWS_REGION }}
+          VAR_AWS_ROLE_ARN: ${{ vars.PROVISION_AWS_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback
+          # (this workflow is dispatch-only, the external interface).
+          AWS_REGION="${IN_AWS_REGION:-$VAR_AWS_REGION}"
+          AWS_ROLE_ARN="${IN_AWS_ROLE_ARN:-$VAR_AWS_ROLE_ARN}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AWS_REGION" ]] && MISSING_CLOUD+=("aws_region|PROVISION_AWS_REGION")
+          [[ -z "$AWS_ROLE_ARN" ]] && MISSING_CLOUD+=("aws_role_arn|PROVISION_AWS_ROLE_ARN")
+          if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+            echo "## Missing target-cloud parameters"
+            echo ""
+            echo "The target cloud is usually locked in for the organization: set each"
+            echo "repository variable once, or pass the input to override it per run."
+            echo "An input always overrides the variable."
+            echo ""
+            echo "| Parameter | Pass per run as | …or set once as repository variable |"
+            echo "|-----------|-----------------|--------------------------------------|"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "| \`${IN}\` | workflow input | \`gh variable set ${VAR}\` |"
+            done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "aws_region=$AWS_REGION" >> "$GITHUB_OUTPUT"
+          echo "aws_role_arn=$AWS_ROLE_ARN" >> "$GITHUB_OUTPUT"
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ inputs.aws_role_arn }}
-          aws-region:     ${{ inputs.aws_region }}
+          role-to-assume: ${{ steps.cloud.outputs.aws_role_arn }}
+          aws-region:     ${{ steps.cloud.outputs.aws_region }}
 
       - name: Tag resources
         env:

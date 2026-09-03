@@ -19,17 +19,17 @@ on:
         type: string
         required: true
       azure_tenant_id:
-        description: Azure Tenant ID
+        description: "Azure Tenant ID (optional — falls back to the PROVISION_AZURE_TENANT_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_subscription_id:
-        description: Azure Subscription ID
+        description: "Azure Subscription ID (optional — falls back to the PROVISION_AZURE_SUBSCRIPTION_ID repository variable)"
         type: string
-        required: true
+        required: false
       azure_client_id:
-        description: Client ID of the Azure service principal / managed identity used for OIDC login
+        description: "Client ID of the Azure service principal / managed identity used for OIDC login (optional — falls back to the PROVISION_AZURE_CLIENT_ID repository variable)"
         type: string
-        required: true
+        required: false
       confirmation_app_name:
         description: Repeat the exact application name to confirm destructive deletion
         type: string
@@ -59,6 +59,9 @@ jobs:
       app_name:            ${{ steps.validate.outputs.app_name }}
       delete_tfstate:      ${{ steps.validate.outputs.delete_tfstate }}
       wait_for_completion: ${{ steps.validate.outputs.wait_for_completion }}
+      azure_tenant_id:       ${{ steps.validate.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ steps.validate.outputs.azure_subscription_id }}
+      azure_client_id:       ${{ steps.validate.outputs.azure_client_id }}
     steps:
       - name: Validate inputs
         id: validate
@@ -67,8 +70,47 @@ jobs:
           CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
           DELETE_TFSTATE:        ${{ github.event.inputs.delete_tfstate }}
           WAIT_FOR_COMPLETION:   ${{ github.event.inputs.wait_for_completion }}
+          WD_TENANT_ID:          ${{ needs.validate.outputs.azure_tenant_id }}
+          WD_SUB_ID:             ${{ needs.validate.outputs.azure_subscription_id }}
+          WD_CLIENT_ID:          ${{ needs.validate.outputs.azure_client_id }}
+          VAR_TENANT_ID:         ${{ vars.PROVISION_AZURE_TENANT_ID }}
+          VAR_SUB_ID:            ${{ vars.PROVISION_AZURE_SUBSCRIPTION_ID }}
+          VAR_CLIENT_ID:         ${{ vars.PROVISION_AZURE_CLIENT_ID }}
         run: |
           set -euo pipefail
+
+          # Target-cloud parameters: an explicit input always wins; the
+          # PROVISION_* repository variable is the organization fallback
+          # (this workflow is dispatch-only, the external interface).
+          AZURE_TENANT_ID="${WD_TENANT_ID:-$VAR_TENANT_ID}"
+          AZURE_SUBSCRIPTION_ID="${WD_SUB_ID:-$VAR_SUB_ID}"
+          AZURE_CLIENT_ID="${WD_CLIENT_ID:-$VAR_CLIENT_ID}"
+
+          MISSING_CLOUD=()
+          [[ -z "$AZURE_TENANT_ID"       ]] && MISSING_CLOUD+=("azure_tenant_id|PROVISION_AZURE_TENANT_ID")
+          [[ -z "$AZURE_SUBSCRIPTION_ID" ]] && MISSING_CLOUD+=("azure_subscription_id|PROVISION_AZURE_SUBSCRIPTION_ID")
+          [[ -z "$AZURE_CLIENT_ID"       ]] && MISSING_CLOUD+=("azure_client_id|PROVISION_AZURE_CLIENT_ID")
+          if [[ ${#MISSING_CLOUD[@]} -gt 0 ]]; then
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "::error::Target-cloud parameter '${IN}' is missing — pass it as an input on this run, or set the repository variable ${VAR} once as the organization default."
+            done
+            {
+            echo "## Missing target-cloud parameters"
+            echo ""
+            echo "The target cloud is usually locked in for the organization: set each"
+            echo "repository variable once, or pass the input to override it per run."
+            echo "An input always overrides the variable."
+            echo ""
+            echo "| Parameter | Pass per run as | …or set once as repository variable |"
+            echo "|-----------|-----------------|--------------------------------------|"
+            for M in "${MISSING_CLOUD[@]}"; do
+              IFS='|' read -r IN VAR <<<"$M"
+              echo "| \`${IN}\` | workflow input | \`gh variable set ${VAR}\` |"
+            done
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
           [[ -z "$APP_NAME" ]] && { echo "::error::app_name is required"; exit 1; }
           if [[ "$APP_NAME" != "$CONFIRMATION_APP_NAME" ]]; then
@@ -91,6 +133,9 @@ jobs:
           echo "app_name=$APP_NAME"                       >> "$GITHUB_OUTPUT"
           echo "delete_tfstate=$DELETE_TFSTATE"           >> "$GITHUB_OUTPUT"
           echo "wait_for_completion=$WAIT_FOR_COMPLETION" >> "$GITHUB_OUTPUT"
+          echo "azure_tenant_id=$AZURE_TENANT_ID"         >> "$GITHUB_OUTPUT"
+          echo "azure_subscription_id=$AZURE_SUBSCRIPTION_ID" >> "$GITHUB_OUTPUT"
+          echo "azure_client_id=$AZURE_CLIENT_ID"         >> "$GITHUB_OUTPUT"
 
   # One environment at a time (max-parallel: 1). Serialising is not just
   # tidiness: the environments share the platform App Registration whose
@@ -110,9 +155,9 @@ jobs:
       environment:               ${{ matrix.environment }}
       confirmation_app_name:     ${{ needs.validate.outputs.app_name }}
       confirmation_environment:  ${{ matrix.environment }}
-      azure_tenant_id:           ${{ github.event.inputs.azure_tenant_id }}
-      azure_subscription_id:     ${{ github.event.inputs.azure_subscription_id }}
-      azure_client_id:           ${{ github.event.inputs.azure_client_id }}
+      azure_tenant_id:           ${{ needs.validate.outputs.azure_tenant_id }}
+      azure_subscription_id:     ${{ needs.validate.outputs.azure_subscription_id }}
+      azure_client_id:           ${{ needs.validate.outputs.azure_client_id }}
       wait_for_completion:       ${{ needs.validate.outputs.wait_for_completion }}
     secrets: inherit
 
@@ -127,9 +172,9 @@ jobs:
     uses: ./.github/workflows/delete-resource-group.yml
     with:
       resource_group_name:   rg-${{ needs.validate.outputs.app_name }}-tfstate
-      azure_tenant_id:       ${{ github.event.inputs.azure_tenant_id }}
-      azure_subscription_id: ${{ github.event.inputs.azure_subscription_id }}
-      azure_client_id:       ${{ github.event.inputs.azure_client_id }}
+      azure_tenant_id:       ${{ needs.validate.outputs.azure_tenant_id }}
+      azure_subscription_id: ${{ needs.validate.outputs.azure_subscription_id }}
+      azure_client_id:       ${{ needs.validate.outputs.azure_client_id }}
       wait_for_completion:   ${{ needs.validate.outputs.wait_for_completion }}
 
   summary:
