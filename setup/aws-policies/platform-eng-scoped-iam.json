@@ -1,0 +1,88 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "TemplateRoleLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:GetRole",
+        "iam:UpdateRole",
+        "iam:UpdateRoleDescription",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRoleTags",
+        "iam:ListInstanceProfilesForRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:DeleteRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::<account-id>:role/ecs-exec-*",
+        "arn:aws:iam::<account-id>:role/ecs-task-*",
+        "arn:aws:iam::<account-id>:role/role-flow-logs-*",
+        "arn:aws:iam::<account-id>:role/role-codedeploy-*"
+      ]
+    },
+    {
+      "Sid": "AttachOnlyKnownManagedPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": [
+        "arn:aws:iam::<account-id>:role/ecs-exec-*",
+        "arn:aws:iam::<account-id>:role/ecs-task-*",
+        "arn:aws:iam::<account-id>:role/role-flow-logs-*",
+        "arn:aws:iam::<account-id>:role/role-codedeploy-*"
+      ],
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+            "arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "PassTemplateRolesToServices",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": [
+        "arn:aws:iam::<account-id>:role/ecs-exec-*",
+        "arn:aws:iam::<account-id>:role/ecs-task-*",
+        "arn:aws:iam::<account-id>:role/role-flow-logs-*",
+        "arn:aws:iam::<account-id>:role/role-codedeploy-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "ecs-tasks.amazonaws.com",
+            "codedeploy.amazonaws.com",
+            "vpc-flow-logs.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ServiceLinkedRolesForUsedServices",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "arn:aws:iam::<account-id>:role/aws-service-role/*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "ecs.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com",
+            "ecs.application-autoscaling.amazonaws.com"
+          ]
+        }
+      }
+    }
+  ]
+}

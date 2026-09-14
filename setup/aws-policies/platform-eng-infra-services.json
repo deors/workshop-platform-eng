@@ -1,0 +1,32 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InfraServices",
+      "Effect": "Allow",
+      "Action": [
+        "acm:*",
+        "application-autoscaling:*",
+        "cloudwatch:*",
+        "codedeploy:*",
+        "ec2:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "logs:*",
+        "resource-groups:*",
+        "route53:*",
+        "tag:GetResources",
+        "tag:TagResources",
+        "tag:UntagResources",
+        "xray:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoInstanceLaunch",
+      "Effect": "Deny",
+      "Action": "ec2:RunInstances",
+      "Resource": "*"
+    }
+  ]
+}

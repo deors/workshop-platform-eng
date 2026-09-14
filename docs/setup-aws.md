@@ -174,14 +174,32 @@ echo $AWS_ROLE_ARN
 
 ## Step 3 — Grant IAM permissions
 
-For the workshop baseline, attach the `AdministratorAccess` managed policy —
-the moral equivalent of the `Contributor` + `User Access Administrator` pair
-the Azure guide assigns at subscription scope:
+Attach the three customer-managed policies checked into this repo under
+[`setup/aws-policies/`](https://github.com/deors/workshop-platform-eng/tree/main/setup/aws-policies)
+— together they cover everything the workflows and the infrastructure
+template touch, and nothing else:
+
+| Policy | Grants |
+|---|---|
+| `PlatformEngInfraServices` | full access **within** the services the template manages — EC2 networking, ECS, ELBv2, Route 53, ACM, CloudWatch + Logs, X-Ray, Application Auto Scaling, CodeDeploy, Resource Groups and the Tagging API — plus an explicit deny on `ec2:RunInstances` |
+| `PlatformEngTerraformState` | `s3:*` restricted to the `tf-state-*` state buckets and their objects |
+| `PlatformEngScopedIAM` | role lifecycle **only** on the template's role-name prefixes (`ecs-exec-*`, `ecs-task-*`, `role-flow-logs-*`, `role-codedeploy-*`); managed-policy attachment restricted to the two policies the template actually attaches; `iam:PassRole` conditioned on the ECS, CodeDeploy and VPC Flow Logs services; service-linked-role creation for ECS/ELB/Application Auto Scaling |
 
 ```bash
-aws iam attach-role-policy \
-  --role-name GitHubActionsPlatformEng \
-  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+# From a checkout of this repo — fill in the account-id placeholder
+for P in platform-eng-infra-services platform-eng-terraform-state platform-eng-scoped-iam; do
+  sed "s/<account-id>/${ACCOUNT_ID}/g" "setup/aws-policies/${P}.json" > "/tmp/${P}.json"
+done
+
+aws iam create-policy --policy-name PlatformEngInfraServices  --policy-document file:///tmp/platform-eng-infra-services.json
+aws iam create-policy --policy-name PlatformEngTerraformState --policy-document file:///tmp/platform-eng-terraform-state.json
+aws iam create-policy --policy-name PlatformEngScopedIAM      --policy-document file:///tmp/platform-eng-scoped-iam.json
+
+aws iam attach-role-policy --role-name GitHubActionsPlatformEng --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/PlatformEngInfraServices"
+aws iam attach-role-policy --role-name GitHubActionsPlatformEng --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/PlatformEngTerraformState"
+aws iam attach-role-policy --role-name GitHubActionsPlatformEng --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/PlatformEngScopedIAM"
 
 # Verify
 aws iam list-attached-role-policies \
@@ -190,16 +208,28 @@ aws iam list-attached-role-policies \
   --output table
 ```
 
-> **Why so broad?** One run touches S3 (state bucket bootstrap), EC2 (VPC,
-> subnets, NAT, security groups, flow logs), ELBv2, ACM, Route 53, ECS,
-> Application Auto Scaling, CodeDeploy, CloudWatch (logs, alarms), X-Ray,
-> Resource Groups + the Tagging API, **and IAM** — the template creates the
-> per-app task and task-execution roles, and the platform edits this role's
-> own trust policy. `PowerUserAccess` is **not** enough: it excludes exactly
-> those IAM writes. Once the platform serves many apps across many accounts,
-> this model should be revisited (scoped policies, permission boundaries, or
-> one role per app) — the same caveat the Azure guide makes about its
-> subscription-scoped roles.
+> **Why service wildcards inside a service allowlist?** One run touches S3
+> (state bucket bootstrap), EC2 (VPC, subnets, NAT, security groups, flow
+> logs), ELBv2, ACM, Route 53, ECS, Application Auto Scaling, CodeDeploy,
+> CloudWatch (logs, alarms), X-Ray, Resource Groups + the Tagging API,
+> **and IAM** — the template creates the per-app task and task-execution
+> roles, and the platform edits this role's own trust policy. Terraform also
+> makes many auxiliary calls (waiters, tagging, `Describe*`) that no
+> hand-written action list captures reliably, so the policies deny at the
+> **service** level — no Lambda, no RDS, no EC2 instance launches — and
+> hard-scope the part that is actually dangerous: IAM. `PowerUserAccess`
+> would not work (it excludes exactly those IAM writes);
+> `AdministratorAccess` works but hands over the account, and is no longer
+> the recommended baseline. The scoped set has passed the full lifecycle —
+> provision, deploy, verify, tag, drift and delete — verified against a real
+> account.
+
+> **Residual risk, on the record.** The template needs `iam:PutRolePolicy`
+> on its own roles (they carry inline policies), so a compromised workflow
+> could still write a broad inline policy on a role it can pass to ECS.
+> Closing that path requires a permissions boundary on template-created
+> roles — an infrastructure-template change tracked as follow-up work, not
+> part of platform setup.
 
 ### Allow the role to manage its own trust policy
 
@@ -211,8 +241,8 @@ without it, deploy workflows in the new repo fail at
 `aws-actions/configure-aws-credentials` with
 `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
 
-`AdministratorAccess` already covers it. If you replace it with scoped
-policies, keep this minimum on the role:
+The scoped policy set above deliberately leaves this out: it lives as an
+inline policy on the role itself, scoped to exactly that one role ARN:
 
 ```bash
 aws iam put-role-policy \
