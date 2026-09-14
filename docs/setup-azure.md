@@ -162,7 +162,7 @@ You should see exactly four rows.
 
 ## Step 3 — Assign Azure RBAC roles
 
-The Service Principal needs three roles at **subscription scope**. The third
+The Service Principal needs two roles at **subscription scope**. The second
 one — `Storage Blob Data Contributor` — is the easy-to-miss one: the bootstrap
 script creates the state storage account with `allow-shared-key-access=false`,
 so the only way the script can then create the container is via RBAC. The role
@@ -178,20 +178,18 @@ az role assignment create \
   --role  "Contributor" \
   --scope "$SCOPE"
 
-# Read/write state blobs (Contributor does NOT cover the data plane)
+# Read/write state blobs (Contributor does NOT cover the data plane).
+# The condition document (checked into this repo) restricts the grant to
+# blobs in containers named `tfstate` — every platform state container has
+# that fixed name, so the SP can touch state files and no other blob data.
+# Run this from a checkout of this repo.
 az role assignment create \
   --assignee-object-id      "$SP_OBJECT_ID" \
   --assignee-principal-type ServicePrincipal \
   --role  "Storage Blob Data Contributor" \
-  --scope "$SCOPE"
-
-# Create role assignments — needed for the webapp module's ACR pull and
-# Key Vault access policy resources
-az role assignment create \
-  --assignee-object-id      "$SP_OBJECT_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role  "User Access Administrator" \
-  --scope "$SCOPE"
+  --scope "$SCOPE" \
+  --condition "$(cat setup/azure-policies/sbdc-tfstate-containers-only.condition.txt)" \
+  --condition-version "2.0"
 
 # Verify
 az role assignment list --assignee "$SP_OBJECT_ID" --scope "$SCOPE" \
@@ -205,15 +203,55 @@ Result
 -------------------------------
 Contributor
 Storage Blob Data Contributor
-User Access Administrator
 ```
 
-> **Why all three at subscription scope?** During bootstrap the
-> resource group and storage account don't exist yet, so any role on a
-> narrower scope wouldn't apply. Once we evolve the platform to provision
-> infrastructure for many apps in many subscriptions, this RBAC model will
-> be revisited (likely a per-subscription identity rather than a single
-> shared SP).
+> **Why subscription scope?** During bootstrap the resource group and
+> storage account don't exist yet, so any role on a narrower scope wouldn't
+> apply. Once we evolve the platform to provision infrastructure for many
+> apps in many subscriptions, this RBAC model will be revisited (likely a
+> per-subscription identity rather than a single shared SP).
+
+> **What the SP deliberately cannot do.** Neither role can create role
+> assignments — `Contributor` excludes `Microsoft.Authorization/*/write` —
+> so the identity GitHub Actions becomes can never grant itself (or anyone
+> else) additional access, and the conditioned data-plane grant keeps it out
+> of every blob that is not a Terraform state file. The default platform
+> path never needs more: Key Vault access policies are control-plane writes
+> `Contributor` covers, and the only role assignment the webapp template can
+> create is gated on pulling from Azure Container Registry with managed
+> identity (see below).
+
+### Only if your apps pull from Azure Container Registry with managed identity
+
+When the container registry URL ends in `.azurecr.io` and no registry
+username is supplied, the webapp template grants the app's managed identity
+`AcrPull` on your registry — a role assignment, which the two baseline roles
+cannot create. Grant the SP delegation power constrained to exactly that one
+role (the condition document is checked into this repo):
+
+```bash
+# From a checkout of this repo
+az role assignment create \
+  --assignee-object-id      "$SP_OBJECT_ID" \
+  --assignee-principal-type ServicePrincipal \
+  --role  "Role Based Access Control Administrator" \
+  --scope "$SCOPE" \
+  --condition "$(cat setup/azure-policies/rbac-admin-acrpull-only.condition.txt)" \
+  --condition-version "2.0"
+```
+
+The condition limits the delegation to creating and deleting `AcrPull`
+assignments only (`7f951dda-4ed3-4680-a7ca-43fe172d538d`) — the SP cannot
+hand out Owner, Contributor, or anything else. With the default `ghcr.io`
+registry this section does not apply; skip it.
+
+> **Recorded decision — `Contributor` stays at subscription scope.** A
+> custom role limited to the resource providers the template uses (the
+> Azure twin of the AWS guide's scoped policy set) is deliberately
+> deferred: resource groups are created dynamically so narrower scoping is
+> impossible, every new template capability would mean maintaining the
+> provider list, and with `User Access Administrator` gone `Contributor`
+> cannot be escalated. Revisit if the platform outgrows the workshop.
 
 ### Allow the SP to manage its own federated credentials
 

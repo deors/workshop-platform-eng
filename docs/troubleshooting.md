@@ -277,6 +277,22 @@ directory-role admin (Global, Privileged Role, Cloud Application, or
 Application Administrator) — in a corporate tenant this is usually an internal
 request.
 
+### Azure — `AuthorizationFailed` on `Microsoft.Authorization/roleAssignments/write` during apply
+
+Terraform tried to create a role assignment — on the standard setup that is
+exactly one scenario: the app pulls its image from **Azure Container
+Registry with managed identity**, and the webapp template grants the app's
+identity `AcrPull` on the registry. The baseline roles (`Contributor` +
+`Storage Blob Data Contributor`) deliberately cannot create role
+assignments.
+
+Fix: add the constrained delegation grant from the setup guide's *Only if
+your apps pull from Azure Container Registry with managed identity* section
+— `Role Based Access Control Administrator` with the `AcrPull`-only
+condition from `setup/azure-policies/`. Do **not** assign
+`User Access Administrator` to get past it: that reopens the
+grant-anyone-anything power the baseline removed.
+
 ### AWS — `Not authorized to perform sts:AssumeRoleWithWebIdentity`
 
 Raised in the **application** repo's deploy workflow, on
