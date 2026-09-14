@@ -316,9 +316,9 @@
 
         <div>
           <label for="container_registry_url">Container registry URL <span class="hint" style="display:inline;">(optional)</span></label>
-          <input type="text" id="container_registry_url" name="container_registry_url" required
+          <input type="text" id="container_registry_url" name="container_registry_url"
                 placeholder="ghcr.io" />
-          <span class="hint">Registry host for the image. Ignored on reconcile runs.</span>
+          <span class="hint">Registry host for the image; leave empty for public Docker Hub images. Ignored on reconcile runs.</span>
         </div>
 
         <div>

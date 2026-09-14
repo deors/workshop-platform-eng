@@ -56,7 +56,8 @@ on:
       container_registry_url:
         description: "Container registry URL (e.g. ghcr.io); leave empty for public Docker Hub images; ignored in reconcile runs"
         type: string
-        required: true
+        required: false
+        default: ""
       ci_workflow_file:
         description: "Filename of the CI workflow inside the application repo (e.g. ci.yml)"
         type: string
@@ -160,7 +161,6 @@ jobs:
           [[ -z "$MAIN_DOMAIN"            ]] && MISSING+=(main_domain)
           [[ -z "$INFRA_TEMPLATE_REPO"    ]] && MISSING+=(infra_template_repo)
           [[ -z "$CONTAINER_IMAGE"        ]] && MISSING+=(container_image)
-          [[ -z "$CONTAINER_REGISTRY_URL" ]] && MISSING+=(container_registry_url)
 
           # Target-cloud parameters have TWO sources; when both are absent
           # the report must name both, so they are tracked separately as

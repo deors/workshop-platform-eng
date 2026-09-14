@@ -50,7 +50,7 @@ Optional:
                                            (same, for the app template)
   --container-registry-url <host>        CONTAINER_REGISTRY_URL
                                            (registry host prepended to the image;
-                                            default: ghcr.io)
+                                            leave empty for public Docker Hub images)
   --ci-workflow-file       <name>        CI_WORKFLOW_FILE
                                            (default: ci.yml)
   --repo                   <owner/name>  PLATFORM_REPO
