@@ -62,8 +62,8 @@ jobs:
           APP_NAME:              ${{ github.event.inputs.app_name }}
           CONFIRMATION_APP_NAME: ${{ github.event.inputs.confirmation_app_name }}
           DELETE_TFSTATE:        ${{ github.event.inputs.delete_tfstate }}
-          WD_REGION:             ${{ needs.validate.outputs.aws_region }}
-          WD_ROLE_ARN:           ${{ needs.validate.outputs.aws_role_arn }}
+          WD_REGION:             ${{ github.event.inputs.aws_region }}
+          WD_ROLE_ARN:           ${{ github.event.inputs.aws_role_arn }}
           VAR_REGION:            ${{ vars.PROVISION_AWS_REGION }}
           VAR_ROLE_ARN:          ${{ vars.PROVISION_AWS_ROLE_ARN }}
         run: |
