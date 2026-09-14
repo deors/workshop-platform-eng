@@ -320,3 +320,26 @@ app's own `dev`/`staging`/`prod` serialise, and the teardown workflows do the
 same. **Not** handled: two *different* applications provisioning or being
 retired at the same time against the same role. Provision and retire apps that
 share a role one at a time.
+
+### AWS — `AccessDenied` / `not authorized to perform <action>` mid-run under the scoped policy baseline
+
+With the scoped policies from the setup guide (instead of a broad managed
+policy), an authorization error in a previously green step means the
+infrastructure template has evolved past the policy set — for example a new
+service, a new IAM role name prefix, or a managed-policy attachment the
+`PlatformEngScopedIAM` conditions don't list yet.
+
+The error names the exact action and resource. Extend the matching policy
+document under `setup/aws-policies/`, then roll it out as a new default
+version — no detach/reattach needed:
+
+```bash
+aws iam create-policy-version \
+  --policy-arn "arn:aws:iam::${ACCOUNT_ID}:policy/<policy-name>" \
+  --policy-document file:///tmp/<updated-policy>.json \
+  --set-as-default
+```
+
+Do **not** fall back to `AdministratorAccess` to get past a single denied
+action; IAM keeps only five policy versions, so prune old ones with
+`aws iam delete-policy-version` if the create is refused.
