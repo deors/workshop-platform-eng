@@ -54,7 +54,7 @@ on:
         type: string
         required: true
       container_registry_url:
-        description: "Container registry URL (e.g. ghcr.io); leave empty for public Docker Hub images; ignored in reconcile runs"
+        description: "Container registry URL; defaults to ghcr.io when empty; ignored in reconcile runs"
         type: string
         required: false
         default: ""
@@ -152,7 +152,7 @@ jobs:
           APP_TEMPLATE_REPO="${WD_APP_TEMPLATE:-$RD_APP_TEMPLATE}"
           APP_TEMPLATE_REF="${WD_APP_TEMPLATE_REF:-$RD_APP_TEMPLATE_REF}"
           CONTAINER_IMAGE="${WD_IMAGE:-$RD_IMAGE}"
-          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-$RD_REGISTRY}"
+          CONTAINER_REGISTRY_URL="${WD_REGISTRY:-${RD_REGISTRY:-ghcr.io}}"
           CI_WORKFLOW_FILE="${WD_CI_FILE:-${RD_CI_FILE:-ci.yml}}"
 
           MISSING=()
@@ -200,9 +200,9 @@ jobs:
             exit 1
           fi
 
-          # Prepend the registry when provided; the Fargate template receives
-          # a single full image reference (registry/image:tag).
-          [[ -n "$CONTAINER_REGISTRY_URL" ]] && CONTAINER_IMAGE="${CONTAINER_REGISTRY_URL}/${CONTAINER_IMAGE}"
+          # The Fargate template receives a single full image reference
+          # (registry/image:tag); the registry always has a value (ghcr.io default).
+          CONTAINER_IMAGE="${CONTAINER_REGISTRY_URL}/${CONTAINER_IMAGE}"
 
           # Presence of app_template_repo controls whether the application
           # repository phase runs; omitting it provisions infra only.
