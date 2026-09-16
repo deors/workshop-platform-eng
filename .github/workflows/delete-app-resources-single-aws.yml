@@ -3,7 +3,8 @@ name: AWS - Delete Application Resources (Single Environment)
 # Tears down ONE environment of an application on AWS, mirroring
 # delete-app-resources-single.yml on the Azure side:
 #
-#   1. destroy the infrastructure
+#   1. destroy the infrastructure, then the ECS task-definition revisions and
+#      CloudWatch log groups the destroy leaves behind
 #   2. delete the environment's resource group object
 #   3. remove the application repo's GitHub Environment and its variables
 #   4. remove the environment's OIDC trust subject
@@ -211,8 +212,9 @@ jobs:
     needs: validate
     runs-on: ubuntu-latest
     outputs:
-      destroy_status:  ${{ steps.destroy.outputs.destroy_status }}
-      task_def_status: ${{ steps.deregister_task_defs.outputs.task_def_status }}
+      destroy_status:   ${{ steps.destroy.outputs.destroy_status }}
+      task_def_status:  ${{ steps.deregister_task_defs.outputs.task_def_status }}
+      log_group_status: ${{ steps.cleanup_log_groups.outputs.log_group_status }}
 
     steps:
       - name: Checkout infrastructure repo
@@ -349,6 +351,54 @@ jobs:
 
           echo "Deregistered ${DEREGISTERED} revision(s)."
           echo "task_def_status=Deregistered ${DEREGISTERED} revision(s)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete CloudWatch log groups that survive the destroy
+        id: cleanup_log_groups
+        env:
+          APP_NAME:    ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT: ${{ needs.validate.outputs.environment }}
+          AWS_REGION:  ${{ needs.validate.outputs.aws_region }}
+        run: |
+          set -euo pipefail
+
+          # Two log groups outlive every destroy:
+          #   - /aws/ecs/containerinsights/<app>-<env>/performance is created by
+          #     Container Insights itself, never by Terraform;
+          #   - /vpc/flow-logs/<app>-<env>-<suffix> is destroyed by Terraform but
+          #     recreated moments later by flow-log deliveries buffered before
+          #     the destroy, so it is polled for a short while.
+          # A group that does not exist is the normal case, not an error.
+          FAMILY="${APP_NAME}-${ENVIRONMENT}"
+          INSIGHTS="/aws/ecs/containerinsights/${FAMILY}/performance"
+          FLOW_PREFIX="/vpc/flow-logs/${FAMILY}-"
+          DELETED=()
+
+          delete_group() {
+            aws logs delete-log-group --log-group-name "$1" --region "$AWS_REGION" \
+              && { echo "  Deleted ${1}"; DELETED+=("$1"); }
+          }
+
+          if aws logs describe-log-groups --log-group-name-prefix "$INSIGHTS" \
+               --query "logGroups[?logGroupName=='${INSIGHTS}'].logGroupName" \
+               --output text --region "$AWS_REGION" | grep -q .; then
+            delete_group "$INSIGHTS"
+          fi
+
+          for _ in $(seq 1 6); do
+            while IFS= read -r GROUP; do
+              [[ -z "$GROUP" ]] && continue
+              delete_group "$GROUP"
+            done < <(aws logs describe-log-groups --log-group-name-prefix "$FLOW_PREFIX" \
+                       --query 'logGroups[].logGroupName' --output text --region "$AWS_REGION" | tr '\t' '\n')
+            sleep 10
+          done
+
+          if [[ ${#DELETED[@]} -eq 0 ]]; then
+            echo "No leftover log groups for '${FAMILY}'."
+            echo "log_group_status=None remaining" >> "$GITHUB_OUTPUT"
+          else
+            echo "log_group_status=Deleted ${#DELETED[@]} group(s)" >> "$GITHUB_OUTPUT"
+          fi
 
   # The group object only becomes safe to remove once its resources are gone.
   delete-rg:
@@ -488,12 +538,13 @@ jobs:
       - name: Summary
         if: always()
         env:
-          APP_NAME:        ${{ needs.validate.outputs.app_name }}
-          ENVIRONMENT:     ${{ needs.validate.outputs.environment }}
-          RESOURCE_GROUP:  ${{ needs.validate.outputs.resource_group_name }}
-          DESTROY_STATUS:  ${{ needs.destroy.outputs.destroy_status }}
-          TASK_DEF_STATUS: ${{ needs.destroy.outputs.task_def_status }}
-          RG_STATUS:       ${{ needs.delete-rg.outputs.resource_group_status }}
+          APP_NAME:         ${{ needs.validate.outputs.app_name }}
+          ENVIRONMENT:      ${{ needs.validate.outputs.environment }}
+          RESOURCE_GROUP:   ${{ needs.validate.outputs.resource_group_name }}
+          DESTROY_STATUS:   ${{ needs.destroy.outputs.destroy_status }}
+          TASK_DEF_STATUS:  ${{ needs.destroy.outputs.task_def_status }}
+          LOG_GROUP_STATUS: ${{ needs.destroy.outputs.log_group_status }}
+          RG_STATUS:        ${{ needs.delete-rg.outputs.resource_group_status }}
         run: |
           {
             echo "## Delete App Resources (AWS)"
@@ -502,6 +553,7 @@ jobs:
             echo "- Environment: $ENVIRONMENT"
             echo "- Terraform destroy: ${DESTROY_STATUS:-Unknown}"
             echo "- ECS task definition cleanup: ${TASK_DEF_STATUS:-Unknown}"
+            echo "- CloudWatch log group cleanup: ${LOG_GROUP_STATUS:-Unknown}"
             echo "- Resource group: $RESOURCE_GROUP"
             echo "- Resource group delete status: ${RG_STATUS:-Unknown}"
             echo "- GitHub environment cleanup: executed (environment and its variables; repository untouched)"
