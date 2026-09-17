@@ -34,26 +34,29 @@ Required (flag OR env var):
                                                      reconcile runs)
 
 Optional:
-  --aws-region             <region>      AWS_REGION
+  --aws-region              <region>     AWS_REGION
                                            (falls back to the PROVISION_AWS_REGION
                                             repository variable — the organization
                                             default; a flag always overrides it)
-  --aws-role-arn           <arn>         AWS_ROLE_ARN
+  --aws-role-arn            <arn>        AWS_ROLE_ARN
                                            (falls back to PROVISION_AWS_ROLE_ARN)
-  --app-template-repo      <owner/name>  APP_TEMPLATE_REPO
+  --aws-registry-secret-arn <arn>        AWS_REGISTRY_SECRET_ARN
+                                           (falls back to PROVISION_AWS_REGISTRY_SECRET_ARN;
+                                            required for private GHCR registries)
+  --app-template-repo       <owner/name> APP_TEMPLATE_REPO
                                            (default: empty — provisions
                                             infrastructure only, no app repo)
-  --infra-template-ref     <ref>         INFRA_TEMPLATE_REF
+  --infra-template-ref      <ref>        INFRA_TEMPLATE_REF
                                            (tag, branch or SHA pinning the infra
                                             template; default: its default branch)
-  --app-template-ref       <ref>         APP_TEMPLATE_REF
+  --app-template-ref        <ref>        APP_TEMPLATE_REF
                                            (same, for the app template)
-  --container-registry-url <host>        CONTAINER_REGISTRY_URL
+  --container-registry-url  <host>       CONTAINER_REGISTRY_URL
                                            (registry host prepended to the image;
                                             default: ghcr.io, applied workflow-side)
-  --ci-workflow-file       <name>        CI_WORKFLOW_FILE
+  --ci-workflow-file        <name>       CI_WORKFLOW_FILE
                                            (default: ci.yml)
-  --repo                   <owner/name>  PLATFORM_REPO
+  --repo                    <owner/name> PLATFORM_REPO
                                            (default: auto-detected from git remote)
 
 For help:
@@ -78,6 +81,7 @@ APP_NAME="${APP_NAME:-}"
 ENVIRONMENT="${ENVIRONMENT:-}"
 AWS_REGION="${AWS_REGION:-}"
 AWS_ROLE_ARN="${AWS_ROLE_ARN:-}"
+AWS_REGISTRY_SECRET_ARN="${AWS_REGISTRY_SECRET_ARN:-}"
 MAIN_DOMAIN="${MAIN_DOMAIN:-}"
 INFRA_TEMPLATE_REPO="${INFRA_TEMPLATE_REPO:-}"
 INFRA_TEMPLATE_REF="${INFRA_TEMPLATE_REF:-}"
@@ -90,20 +94,21 @@ PLATFORM_REPO="${PLATFORM_REPO:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --app-name)               APP_NAME="$2";               shift 2 ;;
-    --environment)            ENVIRONMENT="$2";            shift 2 ;;
-    --aws-region)             AWS_REGION="$2";             shift 2 ;;
-    --aws-role-arn)           AWS_ROLE_ARN="$2";           shift 2 ;;
-    --main-domain)            MAIN_DOMAIN="$2";            shift 2 ;;
-    --infra-template-repo)    INFRA_TEMPLATE_REPO="$2";    shift 2 ;;
-    --infra-template-ref)     INFRA_TEMPLATE_REF="$2";     shift 2 ;;
-    --app-template-repo)      APP_TEMPLATE_REPO="$2";      shift 2 ;;
-    --app-template-ref)       APP_TEMPLATE_REF="$2";       shift 2 ;;
-    --container-image)        CONTAINER_IMAGE="$2";        shift 2 ;;
-    --container-registry-url) CONTAINER_REGISTRY_URL="$2"; shift 2 ;;
-    --ci-workflow-file)       CI_WORKFLOW_FILE="$2";       shift 2 ;;
-    --repo)                   PLATFORM_REPO="$2";          shift 2 ;;
-    -h|--help)                usage; exit 0 ;;
+    --app-name)                APP_NAME="$2";                shift 2 ;;
+    --environment)             ENVIRONMENT="$2";             shift 2 ;;
+    --aws-region)              AWS_REGION="$2";              shift 2 ;;
+    --aws-role-arn)            AWS_ROLE_ARN="$2";            shift 2 ;;
+    --aws-registry-secret-arn) AWS_REGISTRY_SECRET_ARN="$2"; shift 2 ;;
+    --main-domain)             MAIN_DOMAIN="$2";             shift 2 ;;
+    --infra-template-repo)     INFRA_TEMPLATE_REPO="$2";     shift 2 ;;
+    --infra-template-ref)      INFRA_TEMPLATE_REF="$2";      shift 2 ;;
+    --app-template-repo)       APP_TEMPLATE_REPO="$2";       shift 2 ;;
+    --app-template-ref)        APP_TEMPLATE_REF="$2";        shift 2 ;;
+    --container-image)         CONTAINER_IMAGE="$2";         shift 2 ;;
+    --container-registry-url)  CONTAINER_REGISTRY_URL="$2";  shift 2 ;;
+    --ci-workflow-file)        CI_WORKFLOW_FILE="$2";        shift 2 ;;
+    --repo)                    PLATFORM_REPO="$2";           shift 2 ;;
+    -h|--help)                 usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
@@ -168,6 +173,7 @@ PAYLOAD=$(jq -nc \
   --arg env         "$ENVIRONMENT" \
   --arg region      "$AWS_REGION" \
   --arg role        "$AWS_ROLE_ARN" \
+  --arg reg_secret  "$AWS_REGISTRY_SECRET_ARN" \
   --arg domain      "$MAIN_DOMAIN" \
   --arg infra_tmpl  "$INFRA_TEMPLATE_REPO" \
   --arg infra_ref   "$INFRA_TEMPLATE_REF" \
@@ -185,13 +191,14 @@ PAYLOAD=$(jq -nc \
       infra_template_repo: $infra_tmpl,
       container_image:     $image
     }
-    + (if $region    != "" then {aws_region:             $region}    else {} end)
-    + (if $role      != "" then {aws_role_arn:           $role}      else {} end)
-    + (if $infra_ref != "" then {infra_template_ref:     $infra_ref} else {} end)
-    + (if $app_tmpl  != "" then {app_template_repo:      $app_tmpl}  else {} end)
-    + (if $app_ref   != "" then {app_template_ref:       $app_ref}   else {} end)
-    + (if $registry  != "" then {container_registry_url: $registry}  else {} end)
-    + (if $ci        != "" then {ci_workflow_file:       $ci}        else {} end))
+    + (if $region     != "" then {aws_region:              $region}     else {} end)
+    + (if $role       != "" then {aws_role_arn:            $role}       else {} end)
+    + (if $reg_secret != "" then {aws_registry_secret_arn: $reg_secret} else {} end)
+    + (if $infra_ref  != "" then {infra_template_ref:      $infra_ref}  else {} end)
+    + (if $app_tmpl   != "" then {app_template_repo:       $app_tmpl}   else {} end)
+    + (if $app_ref    != "" then {app_template_ref:        $app_ref}    else {} end)
+    + (if $registry   != "" then {container_registry_url:  $registry}   else {} end)
+    + (if $ci         != "" then {ci_workflow_file:        $ci}         else {} end))
   }')
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────

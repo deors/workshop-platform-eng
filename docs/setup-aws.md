@@ -309,6 +309,32 @@ Full details in the
 
 ---
 
+### Registry pull credentials (private registries)
+
+Skip this when your images are public. When they live in a private registry —
+for example GHCR packages of private or internal repositories, the template
+image used on first provision included — ECS pulls them with credentials
+stored in Secrets Manager (the template's `repositoryCredentials` support):
+one secret per account, a JSON object with exactly these two keys. For GHCR,
+a GitHub token with only the `read:packages` scope whose owner can read the
+packages:
+
+```bash
+aws secretsmanager create-secret \
+  --region <aws-region> \
+  --name platform-eng/registry-pull \
+  --secret-string '{"username":"<github-login>","password":"<read:packages token>"}' \
+  --query ARN --output text
+```
+
+Create it in the same region as the workloads: the pull happens at every task
+launch, and a cross-region secret ties each launch to a second region. Pass
+the ARN as `aws_registry_secret_arn` on each run, or set it once as the
+organization default (see below). Only the ARN reaches Terraform; the value
+never enters state. Rotation is a secret-value update — running tasks keep
+running, new tasks pick it up at launch. Leave it empty for public images or
+ECR.
+
 ## Step 4 — Trigger the first run
 
 In the GitHub UI: **Actions → AWS - Provision & Reconcile Application
@@ -320,6 +346,7 @@ Resources → Run workflow**, and provide:
 | `environment` | yes | `dev` — promotion order is enforced: `staging` can only be requested once `dev` is provisioned, `prod` once `dev` and `staging` both are ready (requesting `all`, or reconciling an environment that already exists, always passes) |
 | `aws_region` | no* | `eu-west-1` — region for the tfstate bucket and every provisioned resource; falls back to the `PROVISION_AWS_REGION` repository variable. There is deliberately no built-in default: an implicit region silently deploys to the wrong place |
 | `aws_role_arn` | no* | the role ARN captured in step 2 — falls back to `PROVISION_AWS_ROLE_ARN` |
+| `aws_registry_secret_arn` | no* | the registry credentials secret ARN from step 3 — required for GHCR private registries, empty for public images or ECR; falls back to `PROVISION_AWS_REGISTRY_SECRET_ARN` |
 | `main_domain` | yes | the root domain of your Route 53 public hosted zone (e.g. `example.com`) — drives the ACM certificate and DNS records for `<app>.<env>.<domain>` |
 | `infra_template_repo` | yes | the `<owner>/<name>` of the infrastructure template repo |
 | `infra_template_ref` | no | _(leave empty — uses the template's default branch)_ git ref (tag, branch, or commit SHA) to pin the infra template |
@@ -346,6 +373,7 @@ repository variables and every form/CLI/API request can omit them:
 ```bash
 gh variable set PROVISION_AWS_REGION   -R <org>/<platform-repo> --body "eu-west-1"
 gh variable set PROVISION_AWS_ROLE_ARN -R <org>/<platform-repo> --body "arn:aws:iam::<account-id>:role/GitHubActionsPlatformEng"
+gh variable set PROVISION_AWS_REGISTRY_SECRET_ARN -R <org>/<platform-repo> --body "arn:aws:secretsmanager:<aws-region>:<account-id>:secret:platform-eng/registry-pull-<suffix>"
 ```
 
 A per-run input always overrides the variable (the provisioning form hides

@@ -5,10 +5,11 @@
 #   1. the infrastructure template repo exists and is accessible
 #   2. its pinned ref (when provided) resolves to a commit
 #   3. the application template repo and ref, likewise (when provided)
-#   4. the container image manifest exists and is anonymously pullable —
-#      the same access mode ECS / App Service uses on first deploy, so a
-#      mistyped image fails here with a named error instead of a service
-#      waiting forever for an image it can never pull
+#   4. the container image manifest exists and is pullable — anonymously, or,
+#      when the run carries a registry credentials secret and the image is on
+#      GHCR, after logging in with the platform's GitHub token (the runtime
+#      pulls with the secret) — so a mistyped image fails here with a named
+#      error instead of a service waiting forever for an image it cannot pull
 #
 # Every check runs; ALL failures are reported together — one ::error::
 # annotation per finding plus a table in the job summary — and the script
@@ -21,7 +22,11 @@
 #   APP_TEMPLATE_REF      git ref pinning it, or empty
 #   CONTAINER_IMAGE_FULL  full image reference incl. registry host  (required)
 #   GH_TOKEN              token for the repo checks — the same one the run
-#                         uses later, so success here proves accessibility
+#                         uses later, so success here proves accessibility;
+#                         also used to log in to ghcr.io for the image check
+#   REGISTRY_SECRET_ARN   registry credentials secret of the run, or empty —
+#                         only when set is the GHCR check authenticated
+#   REGISTRY_USER         username for the ghcr.io login (any GitHub login)
 #
 # Requires: gh, docker (both preinstalled on ubuntu-latest runners).
 
@@ -71,18 +76,31 @@ else
   note_ok "app template" "not provided — infra-only run, check skipped"
 fi
 
-# ── 4: container image manifest, anonymously ────────────────────────────────
-# `docker manifest inspect` queries the registry without pulling layers and
-# without credentials — exactly how the infrastructure pulls a public image
-# on first deploy. GH_TOKEN is unset for this call so a docker login from an
-# earlier step can never mask an image that is not actually public.
+# ── 4: container image manifest ──────────────────────────────────────────────
+# `docker manifest inspect` queries the registry without pulling layers.
+# Without a registry credentials secret the runtime pulls anonymously, so the
+# check is anonymous too. With one, GHCR is queried after a login with
+# GH_TOKEN: "anonymously pullable" is no longer the contract — "exists and is
+# readable by the platform" is.
 # Tooling absence must fail as a tooling error, never as "image not found".
+REGISTRY_HOST="${CONTAINER_IMAGE_FULL%%/*}"
 if ! command -v docker >/dev/null; then
   note_fail "container image" "docker CLI not available on this runner — the image check could not run at all (this is a tooling problem, not a verdict on '${CONTAINER_IMAGE_FULL}')"
-elif OUT=$(docker manifest inspect "${CONTAINER_IMAGE_FULL}" 2>&1 >/dev/null); then
-  note_ok "container image" "'${CONTAINER_IMAGE_FULL}' manifest found — anonymously pullable"
 else
-  note_fail "container image" "'${CONTAINER_IMAGE_FULL}' manifest not found or not anonymously accessible — the first deploy would wait forever for an image it cannot pull. Registry said: ${OUT}"
+  ACCESS="anonymously"
+  if [[ "${REGISTRY_HOST}" == "ghcr.io" && -n "${REGISTRY_SECRET_ARN:-}" && -n "${GH_TOKEN:-}" ]]; then
+    if docker login ghcr.io -u "${REGISTRY_USER:-token}" --password-stdin <<<"${GH_TOKEN}" >/dev/null 2>&1; then
+      ACCESS="with the platform's GitHub credentials"
+    else
+      note_fail "container image" "could not log in to ghcr.io with GH_TOKEN — the token needs the read:packages scope to check '${CONTAINER_IMAGE_FULL}'"
+    fi
+  fi
+  if OUT=$(docker manifest inspect "${CONTAINER_IMAGE_FULL}" 2>&1 >/dev/null); then
+    note_ok "container image" "'${CONTAINER_IMAGE_FULL}' manifest found — pullable ${ACCESS}"
+  else
+    note_fail "container image" "'${CONTAINER_IMAGE_FULL}' manifest not found or not accessible ${ACCESS} — the first deploy would wait forever for an image it cannot pull. Registry said: ${OUT}"
+  fi
+  [[ "${ACCESS}" != "anonymously" ]] && docker logout ghcr.io >/dev/null 2>&1
 fi
 
 # ── Report ───────────────────────────────────────────────────────────────────

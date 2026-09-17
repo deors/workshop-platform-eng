@@ -293,6 +293,27 @@ condition from `setup/azure-policies/`. Do **not** assign
 `User Access Administrator` to get past it: that reopens the
 grant-anyone-anything power the baseline removed.
 
+### AWS — tasks stop with `CannotPullContainerError` (401 / 403 from the registry)
+
+The service never reaches a steady state and every stopped task reports
+`CannotPullContainerError` with an unauthorized or forbidden status from the
+registry. The image is in a private registry (for example a GHCR package of a
+private repository) and ECS could not authenticate the pull. Check, in order:
+
+1. `aws_registry_secret_arn` reached the run — an input, `client_payload`
+   key, or the `PROVISION_AWS_REGISTRY_SECRET_ARN` repository variable. With
+   none of them the task definition carries no `repositoryCredentials` and
+   ECS pulls anonymously, which private packages refuse.
+2. The secret's value is `{"username": ..., "password": ...}` and the token
+   has `read:packages` and can read *that* package (the token owner must have
+   access to the application repository or its package).
+3. The secret is readable by the task execution role — the template grants
+   `secretsmanager:GetSecretValue` on the ARN it is given; a customer-managed
+   KMS key additionally needs `registry_credentials_kms_key_arn`.
+
+A 404 from the registry is a different problem: the image or tag does not
+exist — the preflight check catches that before anything is created.
+
 ### AWS — `Not authorized to perform sts:AssumeRoleWithWebIdentity`
 
 Raised in the **application** repo's deploy workflow, on

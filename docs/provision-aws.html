@@ -270,6 +270,15 @@
           <div class="field-error" data-for="aws_role_arn">Must be a full IAM role ARN, e.g. <code>arn:aws:iam::123456789012:role/GitHubActionsRole</code>.</div>
         </div>
 
+        <div>
+          <label for="aws_registry_secret_arn">Registry credentials secret ARN <span class="hint" style="display:inline;">(optional override)</span></label>
+          <input type="text" id="aws_registry_secret_arn" name="aws_registry_secret_arn"
+                 placeholder="arn:aws:secretsmanager:eu-west-1:123456789012:secret:platform-eng/registry-pull-AbCdEf"
+                 pattern="^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$" />
+          <span class="hint">Secrets Manager secret ECS uses to pull from GHCR private registries. Empty ⇒ <code>PROVISION_AWS_REGISTRY_SECRET_ARN</code>, or GHCR public images or ECR.</span>
+          <div class="field-error" data-for="aws_registry_secret_arn">Must be a full Secrets Manager secret ARN.</div>
+        </div>
+
       </div>
 
       <hr style="border: none; border-top: 1px solid var(--border); margin: 22px 0 18px;" />
@@ -432,7 +441,7 @@
     // fall back to the matching PROVISION_AWS_* repository variable, while
     // an empty string would defeat that fallback.
     if (document.getElementById('override_cloud_params').checked) {
-      ['aws_region', 'aws_role_arn'].forEach(id => {
+      ['aws_region', 'aws_role_arn', 'aws_registry_secret_arn'].forEach(id => {
         if (v(id)) payload.client_payload[id] = v(id);
       });
     }

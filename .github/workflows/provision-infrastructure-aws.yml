@@ -26,6 +26,10 @@ on:
         description: "ARN of the IAM role to assume via OIDC (optional — falls back to the PROVISION_AWS_ROLE_ARN repository variable)"
         type: string
         required: false
+      aws_registry_secret_arn:
+        description: "Secrets Manager secret ARN with the container registry pull credentials, required for GHCR private registries (optional — falls back to the PROVISION_AWS_REGISTRY_SECRET_ARN repository variable; empty for public images or ECR)"
+        type: string
+        required: false
       main_domain:
         description: "Root domain managed in Route 53 (e.g. example.com). The template issues a certificate for <app>.<env>.<main_domain>"
         type: string
@@ -91,6 +95,7 @@ jobs:
       aws_region:              ${{ steps.params.outputs.aws_region }}
       aws_role_arn:            ${{ steps.params.outputs.aws_role_arn }}
       aws_account_id:          ${{ steps.params.outputs.aws_account_id }}
+      aws_registry_secret_arn: ${{ steps.params.outputs.aws_registry_secret_arn }}
       main_domain:             ${{ steps.params.outputs.main_domain }}
       infra_template_repo:     ${{ steps.params.outputs.infra_template_repo }}
       app_template_repo:       ${{ steps.params.outputs.app_template_repo }}
@@ -113,6 +118,7 @@ jobs:
           WD_ENV:                ${{ github.event.inputs.environment }}
           WD_REGION:             ${{ github.event.inputs.aws_region }}
           WD_ROLE_ARN:           ${{ github.event.inputs.aws_role_arn }}
+          WD_REGISTRY_SECRET:    ${{ github.event.inputs.aws_registry_secret_arn }}
           WD_MAIN_DOMAIN:        ${{ github.event.inputs.main_domain }}
           WD_INFRA_TEMPLATE:     ${{ github.event.inputs.infra_template_repo }}
           WD_INFRA_TEMPLATE_REF: ${{ github.event.inputs.infra_template_ref }}
@@ -126,6 +132,7 @@ jobs:
           RD_ENV:                ${{ github.event.client_payload.environment }}
           RD_REGION:             ${{ github.event.client_payload.aws_region }}
           RD_ROLE_ARN:           ${{ github.event.client_payload.aws_role_arn }}
+          RD_REGISTRY_SECRET:    ${{ github.event.client_payload.aws_registry_secret_arn }}
           RD_MAIN_DOMAIN:        ${{ github.event.client_payload.main_domain }}
           RD_INFRA_TEMPLATE:     ${{ github.event.client_payload.infra_template_repo }}
           RD_INFRA_TEMPLATE_REF: ${{ github.event.client_payload.infra_template_ref }}
@@ -138,6 +145,7 @@ jobs:
           # repository variables). Inputs always override them.
           VAR_REGION:            ${{ vars.PROVISION_AWS_REGION }}
           VAR_ROLE_ARN:          ${{ vars.PROVISION_AWS_ROLE_ARN }}
+          VAR_REGISTRY_SECRET:   ${{ vars.PROVISION_AWS_REGISTRY_SECRET_ARN }}
           OWNER:                 ${{ github.repository_owner }}
         run: |
           APP_NAME="${WD_APP:-$RD_APP}"
@@ -146,6 +154,8 @@ jobs:
           # PROVISION_* repository variable is the organization's fallback.
           AWS_REGION="${WD_REGION:-${RD_REGION:-$VAR_REGION}}"
           AWS_ROLE_ARN="${WD_ROLE_ARN:-${RD_ROLE_ARN:-$VAR_ROLE_ARN}}"
+          # Optional: only private registries other than ECR need it.
+          AWS_REGISTRY_SECRET_ARN="${WD_REGISTRY_SECRET:-${RD_REGISTRY_SECRET:-$VAR_REGISTRY_SECRET}}"
           MAIN_DOMAIN="${WD_MAIN_DOMAIN:-$RD_MAIN_DOMAIN}"
           INFRA_TEMPLATE_REPO="${WD_INFRA_TEMPLATE:-$RD_INFRA_TEMPLATE}"
           INFRA_TEMPLATE_REF="${WD_INFRA_TEMPLATE_REF:-$RD_INFRA_TEMPLATE_REF}"
@@ -228,6 +238,11 @@ jobs:
           # `aws sts get-caller-identity` would return, without needing a login.
           AWS_ACCOUNT_ID=$(cut -d: -f5 <<<"$AWS_ROLE_ARN")
 
+          if [[ -n "$AWS_REGISTRY_SECRET_ARN" ]] && ! [[ "$AWS_REGISTRY_SECRET_ARN" =~ ^arn:aws[a-z-]*:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+$ ]]; then
+            echo "::error::aws_registry_secret_arn must be a full Secrets Manager secret ARN, e.g. arn:aws:secretsmanager:eu-west-1:123456789012:secret:platform-eng/registry-pull-AbCdEf"
+            exit 1
+          fi
+
           # Note: aws_role_arn and the account ID identify AWS principals. They
           # are not secrets in an OIDC flow (security comes from the role's
           # trust policy subject condition). They are NOT masked here because
@@ -239,6 +254,7 @@ jobs:
           echo "aws_region=$AWS_REGION"                         >> "$GITHUB_OUTPUT"
           echo "aws_role_arn=$AWS_ROLE_ARN"                     >> "$GITHUB_OUTPUT"
           echo "aws_account_id=$AWS_ACCOUNT_ID"                 >> "$GITHUB_OUTPUT"
+          echo "aws_registry_secret_arn=$AWS_REGISTRY_SECRET_ARN" >> "$GITHUB_OUTPUT"
           echo "main_domain=$MAIN_DOMAIN"                       >> "$GITHUB_OUTPUT"
           echo "infra_template_repo=$INFRA_TEMPLATE_REPO"       >> "$GITHUB_OUTPUT"
           echo "infra_template_ref=$INFRA_TEMPLATE_REF"         >> "$GITHUB_OUTPUT"
@@ -329,6 +345,8 @@ jobs:
           APP_TEMPLATE_REPO:   ${{ needs.resolve-inputs.outputs.app_template_repo }}
           APP_TEMPLATE_REF:    ${{ needs.resolve-inputs.outputs.app_template_ref }}
           CONTAINER_IMAGE_FULL: ${{ needs.resolve-inputs.outputs.container_image }}
+          REGISTRY_SECRET_ARN:  ${{ needs.resolve-inputs.outputs.aws_registry_secret_arn }}
+          REGISTRY_USER:        ${{ github.actor }}
         run: |
           scripts/preflight-inputs.sh
 
@@ -731,16 +749,18 @@ jobs:
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
-          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
-          AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
-          CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
-          MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
+          APP_NAME:            ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:          ${{ needs.resolve-inputs.outputs.aws_region }}
+          CONTAINER_IMAGE:     ${{ needs.resolve-inputs.outputs.container_image }}
+          MAIN_DOMAIN:         ${{ needs.resolve-inputs.outputs.main_domain }}
+          REGISTRY_SECRET_ARN: ${{ needs.resolve-inputs.outputs.aws_registry_secret_arn }}
         run: |
           # Write tfvars using printf to avoid shell interpolation of HCL syntax.
-          printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
-          printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
-          printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
-          printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
+          printf 'aws_region                      = "%s"\n' "$AWS_REGION"           > terraform.tfvars
+          printf 'app_name                        = "%s"\n' "$APP_NAME"            >> terraform.tfvars
+          printf 'container_image                 = "%s"\n' "$CONTAINER_IMAGE"     >> terraform.tfvars
+          printf 'main_domain                     = "%s"\n' "$MAIN_DOMAIN"         >> terraform.tfvars
+          printf 'registry_credentials_secret_arn = "%s"\n' "$REGISTRY_SECRET_ARN" >> terraform.tfvars
 
       - name: Terraform init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -838,18 +858,20 @@ jobs:
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
-          APP_NAME:          ${{ needs.resolve-inputs.outputs.app_name }}
-          AWS_REGION:        ${{ needs.resolve-inputs.outputs.aws_region }}
-          CONTAINER_IMAGE:   ${{ needs.resolve-inputs.outputs.container_image }}
-          MAIN_DOMAIN:       ${{ needs.resolve-inputs.outputs.main_domain }}
+          APP_NAME:            ${{ needs.resolve-inputs.outputs.app_name }}
+          AWS_REGION:          ${{ needs.resolve-inputs.outputs.aws_region }}
+          CONTAINER_IMAGE:     ${{ needs.resolve-inputs.outputs.container_image }}
+          MAIN_DOMAIN:         ${{ needs.resolve-inputs.outputs.main_domain }}
+          REGISTRY_SECRET_ARN: ${{ needs.resolve-inputs.outputs.aws_registry_secret_arn }}
         run: |
           # Must match the plan job's tfvars exactly — an `aws_region` that
           # differed between plan and apply would move every resource to
           # another region.
-          printf 'aws_region        = "%s"\n' "$AWS_REGION"        >  terraform.tfvars
-          printf 'app_name          = "%s"\n' "$APP_NAME"          >> terraform.tfvars
-          printf 'container_image   = "%s"\n' "$CONTAINER_IMAGE"   >> terraform.tfvars
-          printf 'main_domain       = "%s"\n' "$MAIN_DOMAIN"       >> terraform.tfvars
+          printf 'aws_region                      = "%s"\n' "$AWS_REGION"           > terraform.tfvars
+          printf 'app_name                        = "%s"\n' "$APP_NAME"            >> terraform.tfvars
+          printf 'container_image                 = "%s"\n' "$CONTAINER_IMAGE"     >> terraform.tfvars
+          printf 'main_domain                     = "%s"\n' "$MAIN_DOMAIN"         >> terraform.tfvars
+          printf 'registry_credentials_secret_arn = "%s"\n' "$REGISTRY_SECRET_ARN" >> terraform.tfvars
 
       - name: Terraform init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
