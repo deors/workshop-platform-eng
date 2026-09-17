@@ -308,70 +308,81 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Terraform destroy deregisters the revision it created (revision 1).
-          # CodeDeploy registers additional revisions (e.g. revision 2) each time
-          # the app is deployed; those are never in Terraform state and are left
-          # behind after destroy. This step cleans them up.
+          # Terraform destroy deregisters the revision it created, but a
+          # deregistered revision stays listed as INACTIVE until deleted. The
+          # app's deploy workflows register further revisions that are never in
+          # Terraform state and stay ACTIVE after destroy. This step deregisters
+          # the ACTIVE ones and deletes every revision of the family.
           FAMILY="${APP_NAME}-${ENVIRONMENT}"
 
-          # The CLI auto-paginates, so all revisions are returned in one call.
-          ARNS=$(aws ecs list-task-definitions \
-            --family-prefix "$FAMILY" \
-            --status ACTIVE \
-            --query 'taskDefinitionArns' \
-            --output json \
-            --region "$AWS_REGION" 2>/dev/null || echo '[]')
+          # Prints the ARNs of the family's revisions in the given status, one
+          # per line. --family-prefix is a prefix match, so only exact-family
+          # ARNs are kept. The CLI auto-paginates.
+          # ARN shape: arn:aws:ecs:<region>:<account>:task-definition/<family>:<revision>
+          list_family_revisions() {
+            local STATUS="$1" ARN ARN_FAMILY
+            while IFS= read -r ARN; do
+              [[ -z "$ARN" ]] && continue
+              ARN_FAMILY="${ARN##*task-definition/}"
+              ARN_FAMILY="${ARN_FAMILY%:*}"
+              # Every ARN returned for the prefix must parse to a family starting
+              # with it; anything else means the parsing is wrong, and silently
+              # skipping would leave every revision behind.
+              if [[ "$ARN_FAMILY" != "$FAMILY"* ]]; then
+                echo "::error::Could not parse the task definition family from '${ARN}' (got '${ARN_FAMILY}')" >&2
+                return 1
+              fi
+              if [[ "$ARN_FAMILY" != "$FAMILY" ]]; then
+                echo "  Skipping '${ARN}' (different family: '${ARN_FAMILY}')" >&2
+                continue
+              fi
+              echo "$ARN"
+            done < <(aws ecs list-task-definitions \
+                       --family-prefix "$FAMILY" \
+                       --status "$STATUS" \
+                       --query 'taskDefinitionArns[]' \
+                       --output text \
+                       --region "$AWS_REGION" 2>/dev/null | tr '\t' '\n')
+          }
 
-          COUNT=$(echo "$ARNS" | jq 'length')
-          if [[ "$COUNT" -eq 0 ]]; then
-            echo "No active task definition revisions found for family '${FAMILY}'. Skipping."
+          # Captured into variables first so a parsing failure inside the
+          # function aborts the step (set -e ignores process substitutions).
+          ACTIVE_LIST=$(list_family_revisions ACTIVE)
+          INACTIVE_LIST=$(list_family_revisions INACTIVE)
+          ACTIVE=()
+          while IFS= read -r ARN; do [[ -n "$ARN" ]] && ACTIVE+=("$ARN"); done <<<"$ACTIVE_LIST"
+          INACTIVE=()
+          while IFS= read -r ARN; do [[ -n "$ARN" ]] && INACTIVE+=("$ARN"); done <<<"$INACTIVE_LIST"
+
+          if [[ ${#ACTIVE[@]} -eq 0 && ${#INACTIVE[@]} -eq 0 ]]; then
+            echo "No task definition revisions found for family '${FAMILY}'. Skipping."
             echo "task_def_status=None remaining" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "Found ${COUNT} active revision(s) for family prefix '${FAMILY}':"
-          DEREGISTERED=()
-          while IFS= read -r ARN; do
-            [[ -z "$ARN" ]] && continue
-            # --family-prefix is a prefix match, so keep only the exact family.
-            # ARN shape: arn:aws:ecs:<region>:<account>:task-definition/<family>:<revision>
-            ARN_FAMILY="${ARN##*task-definition/}"
-            ARN_FAMILY="${ARN_FAMILY%:*}"
-            # Every ARN returned for the prefix must parse to a family starting
-            # with it; anything else means the parsing is wrong, and silently
-            # skipping would leave every revision behind.
-            if [[ "$ARN_FAMILY" != "$FAMILY"* ]]; then
-              echo "::error::Could not parse the task definition family from '${ARN}' (got '${ARN_FAMILY}')"
-              exit 1
-            fi
-            if [[ "$ARN_FAMILY" != "$FAMILY" ]]; then
-              echo "  Skipping '${ARN}' (different family: '${ARN_FAMILY}')"
-              continue
-            fi
+          echo "Found ${#ACTIVE[@]} active and ${#INACTIVE[@]} inactive revision(s) for family '${FAMILY}'."
+          for ARN in ${ACTIVE[@]+"${ACTIVE[@]}"}; do
             echo "  Deregistering ${ARN}…"
             aws ecs deregister-task-definition \
               --task-definition "$ARN" \
               --region "$AWS_REGION" \
               --output text \
               --query 'taskDefinition.status' > /dev/null
-            DEREGISTERED+=("$ARN")
-          done < <(echo "$ARNS" | jq -r '.[]')
+          done
 
-          # Deregistered revisions stay listed as INACTIVE forever unless
-          # deleted; the API takes at most 10 per call.
-          DELETED=0
-          for ((i = 0; i < ${#DEREGISTERED[@]}; i += 10)); do
-            BATCH=("${DEREGISTERED[@]:i:10}")
+          # The delete API takes at most 10 revisions per call.
+          TO_DELETE=(${ACTIVE[@]+"${ACTIVE[@]}"} ${INACTIVE[@]+"${INACTIVE[@]}"})
+          for ((i = 0; i < ${#TO_DELETE[@]}; i += 10)); do
+            BATCH=("${TO_DELETE[@]:i:10}")
             aws ecs delete-task-definitions \
               --task-definitions "${BATCH[@]}" \
               --region "$AWS_REGION" \
               --output text \
               --query 'length(taskDefinitions)' > /dev/null
-            DELETED=$((DELETED + ${#BATCH[@]}))
           done
 
-          echo "Deregistered and deleted ${DELETED} revision(s)."
-          echo "task_def_status=Deregistered and deleted ${DELETED} revision(s)" >> "$GITHUB_OUTPUT"
+          echo "Deregistered ${#ACTIVE[@]} revision(s), deleted ${#TO_DELETE[@]}."
+          echo "task_def_status=Deregistered ${#ACTIVE[@]}, deleted ${#TO_DELETE[@]} revision(s)" >> "$GITHUB_OUTPUT"
 
       - name: Delete CloudWatch log groups that survive the destroy
         id: cleanup_log_groups
@@ -382,43 +393,50 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Two log groups outlive every destroy:
+          # Two log groups outlive every destroy, and both can be recreated
+          # seconds after being deleted by deliveries buffered before the
+          # destroy:
           #   - /aws/ecs/containerinsights/<app>-<env>/performance is created by
           #     Container Insights itself, never by Terraform;
           #   - /vpc/flow-logs/<app>-<env>-<suffix> is destroyed by Terraform but
-          #     recreated moments later by flow-log deliveries buffered before
-          #     the destroy, so it is polled for a short while.
-          # A group that does not exist is the normal case, not an error.
+          #     recreated by the flow-log service.
+          # Both are therefore polled and re-deleted for a short while. A group
+          # that does not exist is the normal case, not an error.
           FAMILY="${APP_NAME}-${ENVIRONMENT}"
           INSIGHTS="/aws/ecs/containerinsights/${FAMILY}/performance"
           FLOW_PREFIX="/vpc/flow-logs/${FAMILY}-"
-          DELETED=()
+          DELETED=""
 
           delete_group() {
             aws logs delete-log-group --log-group-name "$1" --region "$AWS_REGION" \
-              && { echo "  Deleted ${1}"; DELETED+=("$1"); }
+              && { echo "  Deleted ${1}"; DELETED+="${1}"$'\n'; }
           }
 
-          if aws logs describe-log-groups --log-group-name-prefix "$INSIGHTS" \
-               --query "logGroups[?logGroupName=='${INSIGHTS}'].logGroupName" \
-               --output text --region "$AWS_REGION" | grep -q .; then
-            delete_group "$INSIGHTS"
-          fi
+          # Prints the leftover groups that currently exist, one per line.
+          list_leftover_groups() {
+            aws logs describe-log-groups --log-group-name-prefix "$INSIGHTS" \
+              --query "logGroups[?logGroupName=='${INSIGHTS}'].logGroupName" \
+              --output text --region "$AWS_REGION" | tr '\t' '\n'
+            aws logs describe-log-groups --log-group-name-prefix "$FLOW_PREFIX" \
+              --query 'logGroups[].logGroupName' --output text --region "$AWS_REGION" | tr '\t' '\n'
+          }
 
-          for _ in $(seq 1 6); do
+          for ATTEMPT in $(seq 1 6); do
             while IFS= read -r GROUP; do
-              [[ -z "$GROUP" ]] && continue
+              [[ -z "$GROUP" || "$GROUP" == "None" ]] && continue
               delete_group "$GROUP"
-            done < <(aws logs describe-log-groups --log-group-name-prefix "$FLOW_PREFIX" \
-                       --query 'logGroups[].logGroupName' --output text --region "$AWS_REGION" | tr '\t' '\n')
-            sleep 10
+            done < <(list_leftover_groups)
+            [[ "$ATTEMPT" -lt 6 ]] && sleep 10
           done
 
-          if [[ ${#DELETED[@]} -eq 0 ]]; then
+          # The same group may be deleted more than once if it was recreated
+          # during the window; report distinct names.
+          DISTINCT=$(printf '%s' "$DELETED" | sort -u | grep -c . || true)
+          if [[ "$DISTINCT" -eq 0 ]]; then
             echo "No leftover log groups for '${FAMILY}'."
             echo "log_group_status=None remaining" >> "$GITHUB_OUTPUT"
           else
-            echo "log_group_status=Deleted ${#DELETED[@]} group(s)" >> "$GITHUB_OUTPUT"
+            echo "log_group_status=Deleted ${DISTINCT} group(s)" >> "$GITHUB_OUTPUT"
           fi
 
   # The group object only becomes safe to remove once its resources are gone.
