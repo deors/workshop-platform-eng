@@ -329,13 +329,21 @@ jobs:
             exit 0
           fi
 
-          echo "Found ${COUNT} active revision(s) for family '${FAMILY}':"
-          DEREGISTERED=0
+          echo "Found ${COUNT} active revision(s) for family prefix '${FAMILY}':"
+          DEREGISTERED=()
           while IFS= read -r ARN; do
             [[ -z "$ARN" ]] && continue
-            # Verify exact family from ARN (arn:...:task-definition/FAMILY:REVISION)
-            ARN_FAMILY="${ARN##*/task-definition/}"
+            # --family-prefix is a prefix match, so keep only the exact family.
+            # ARN shape: arn:aws:ecs:<region>:<account>:task-definition/<family>:<revision>
+            ARN_FAMILY="${ARN##*task-definition/}"
             ARN_FAMILY="${ARN_FAMILY%:*}"
+            # Every ARN returned for the prefix must parse to a family starting
+            # with it; anything else means the parsing is wrong, and silently
+            # skipping would leave every revision behind.
+            if [[ "$ARN_FAMILY" != "$FAMILY"* ]]; then
+              echo "::error::Could not parse the task definition family from '${ARN}' (got '${ARN_FAMILY}')"
+              exit 1
+            fi
             if [[ "$ARN_FAMILY" != "$FAMILY" ]]; then
               echo "  Skipping '${ARN}' (different family: '${ARN_FAMILY}')"
               continue
@@ -346,11 +354,24 @@ jobs:
               --region "$AWS_REGION" \
               --output text \
               --query 'taskDefinition.status' > /dev/null
-            (( DEREGISTERED++ )) || true
+            DEREGISTERED+=("$ARN")
           done < <(echo "$ARNS" | jq -r '.[]')
 
-          echo "Deregistered ${DEREGISTERED} revision(s)."
-          echo "task_def_status=Deregistered ${DEREGISTERED} revision(s)" >> "$GITHUB_OUTPUT"
+          # Deregistered revisions stay listed as INACTIVE forever unless
+          # deleted; the API takes at most 10 per call.
+          DELETED=0
+          for ((i = 0; i < ${#DEREGISTERED[@]}; i += 10)); do
+            BATCH=("${DEREGISTERED[@]:i:10}")
+            aws ecs delete-task-definitions \
+              --task-definitions "${BATCH[@]}" \
+              --region "$AWS_REGION" \
+              --output text \
+              --query 'length(taskDefinitions)' > /dev/null
+            DELETED=$((DELETED + ${#BATCH[@]}))
+          done
+
+          echo "Deregistered and deleted ${DELETED} revision(s)."
+          echo "task_def_status=Deregistered and deleted ${DELETED} revision(s)" >> "$GITHUB_OUTPUT"
 
       - name: Delete CloudWatch log groups that survive the destroy
         id: cleanup_log_groups
