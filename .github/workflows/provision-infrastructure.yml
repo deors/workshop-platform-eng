@@ -74,9 +74,12 @@ on:
 
 # Permissions required for OIDC login and SARIF upload to Security tab.
 permissions:
-  id-token:        write
-  contents:        read
-  security-events: write
+  id-token:          write
+  contents:          read
+  security-events:   write
+  # Sigstore attestations of the plan and of the verification results.
+  attestations:      write
+  artifact-metadata: write
 
 concurrency:
   group: provision-azure-${{ github.event.inputs.app_name || github.event.client_payload.app_name }}
@@ -785,6 +788,13 @@ jobs:
             -out=tfplan \
             2>&1 | tee plan-output.txt
 
+      # Signed provenance binding the plan's digest to this run's identity;
+      # apply refuses any plan without it.
+      - name: Attest plan
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: infra-repo/terraform/environments/${{ matrix.environment }}/tfplan
+
       - name: Write plan summary
         if: always()
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -895,6 +905,35 @@ jobs:
           name: tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
           path: infra-repo/terraform/environments/${{ matrix.environment }}
 
+      # The plan must carry a provenance attestation signed by this workflow
+      # in this very run: an unattested or replayed plan is never applied.
+      - name: Verify plan attestation
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        env:
+          GH_TOKEN:      ${{ github.token }}
+          REPO:          ${{ github.repository }}
+          WORKFLOW_PATH: .github/workflows/provision-infrastructure.yml
+          RUN_ID:        ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          RESULT=$(gh attestation verify tfplan \
+            --repo "$REPO" \
+            --signer-workflow "${REPO}/${WORKFLOW_PATH}" \
+            --format json)
+          # The signing certificate records the run that produced the
+          # attestation; the SLSA predicate carries the same value.
+          INVOCATIONS=$(jq -r '.[] | .verificationResult.signature.certificate.runInvocationURI
+                                    // .verificationResult.statement.predicate.runDetails.metadata.invocationId
+                                    // empty' <<<"$RESULT")
+          if ! grep -qE "/actions/runs/${RUN_ID}(/|$)" <<<"${INVOCATIONS}"; then
+            echo "::error::tfplan has no plan attestation from this run (${RUN_ID}); found: ${INVOCATIONS:-none}"
+            exit 1
+          fi
+          echo "Plan attestation verified: signed by ${REPO}/${WORKFLOW_PATH} in this run."
+          {
+            echo "- Plan attestation: verified (signer \`${REPO}/${WORKFLOW_PATH}\`, this run) — re-check any time with \`gh attestation verify tfplan --repo ${REPO}\` on the downloaded artifact"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Terraform apply
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
@@ -943,6 +982,8 @@ jobs:
       # The verification logic lives in the provisioned infra repo (seeded from
       # the infra template at scripts/verify.sh), not in this orchestrator.
       infra_repo:            ${{ needs.resolve-inputs.outputs.infra_repo_full }}
+      # Lets verify bind its results attestation to the applied plan's digest.
+      plan_artifact:         tfplan-azure-${{ needs.resolve-inputs.outputs.app_name }}-${{ matrix.environment }}
     secrets:
       # Needed to check out the (possibly private) infra repo from the reusable
       # workflow — the default GITHUB_TOKEN can't read other repositories.

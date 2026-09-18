@@ -450,6 +450,38 @@ Remove `--dry-run` to apply. Both require `jq` plus that cloud's CLI.
 
 ---
 
+## Attestations
+
+Every provision run leaves two signed, independently verifiable statements per
+environment — [GitHub artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)
+(Sigstore, keyless; the signer is the workflow's own OIDC identity):
+
+| Attestation | Subject | Statement | Who checks it |
+|---|---|---|---|
+| **Plan provenance** | the `tfplan` binary (digest) | SLSA provenance: produced by this platform's provision workflow, in this run, from this commit | the `apply` job — it refuses a plan without an attestation from **this** workflow **in this run** |
+| **Verification results** | the same `tfplan` digest (standalone verify runs: the summary file) | `{environment, passed, failed, verify_script_sha256}` under the predicate type `<server>/<owner>/<repo>/attestations/verification-results/v1` | anyone, after the fact |
+
+Together they say: *this infrastructure was applied from exactly the plan that
+was signed, and these are the checks it passed afterwards.* Attestations live in
+the platform repository and outlive the 7-day plan artifacts, so the evidence
+stays available once the files are gone.
+
+Re-verify at any time with the GitHub CLI, against the downloaded artifact:
+
+```bash
+gh attestation verify tfplan --repo <owner>/<platform-repo> \
+  --signer-workflow <owner>/<platform-repo>/.github/workflows/provision-infrastructure-aws.yml
+
+gh attestation verify tfplan --repo <owner>/<platform-repo> \
+  --predicate-type https://github.com/<owner>/<platform-repo>/attestations/verification-results/v1 \
+  --format json --jq '.[].verificationResult.statement.predicate'
+```
+
+Public repositories publish to the public Sigstore transparency log, permanently.
+The statements therefore carry digests, counts and the workflow identity only —
+never plan contents or variables. Note that the provenance of a manually
+dispatched run includes its `workflow_dispatch` inputs, as GitHub records them.
+
 ## Conventions
 
 These hold across clouds; where a cloud forces an exception it is called out.
