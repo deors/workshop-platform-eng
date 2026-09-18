@@ -47,6 +47,11 @@ on:
         type: string
         required: false
         default: scripts/verify.sh
+      plan_artifact:
+        description: "Name of this run's plan artifact holding `tfplan`. When set, the verification-results attestation is bound to the plan's digest; when empty it is bound to the summary file."
+        type: string
+        required: false
+        default: ""
     secrets:
       gh_pat:
         description: PAT used to checkout the (possibly private) infrastructure repo. Falls back to the GH_PAT repo secret for standalone runs.
@@ -88,8 +93,11 @@ on:
       - aws-verify-infrastructure
 
 permissions:
-  id-token: write
-  contents: read
+  id-token:          write
+  contents:          read
+  # Sigstore attestation of the verification results.
+  attestations:      write
+  artifact-metadata: write
 
 jobs:
   verify:
@@ -112,6 +120,8 @@ jobs:
           IN_MAIN_DOMAIN:   ${{ inputs.main_domain }}
           IN_INFRA_REPO:    ${{ inputs.infra_repo }}
           IN_VERIFY_SCRIPT: ${{ inputs.verify_script }}
+
+          IN_PLAN_ARTIFACT: ${{ inputs.plan_artifact }}
           # repository_dispatch payload (untyped).
           RD_APP:           ${{ github.event.client_payload.app_name }}
           RD_ENV:           ${{ github.event.client_payload.environment }}
@@ -194,6 +204,7 @@ jobs:
           echo "main_domain=$MAIN_DOMAIN"     >> "$GITHUB_OUTPUT"
           echo "infra_repo=$INFRA_REPO"       >> "$GITHUB_OUTPUT"
           echo "verify_script=$VERIFY_SCRIPT" >> "$GITHUB_OUTPUT"
+          echo "plan_artifact=${IN_PLAN_ARTIFACT:-}" >> "$GITHUB_OUTPUT"
 
       # Check out the provisioned infrastructure repo so we can run ITS
       # verification logic. The script lives beside the Terraform that defines
@@ -246,3 +257,79 @@ jobs:
           path:              /tmp/verify-summary.txt
           retention-days:    7
           if-no-files-found: warn
+
+      # ── Verification-results attestation ────────────────────────────────────
+      # A signed statement of the counts, bound to the plan that produced the
+      # infrastructure when the caller passes its plan artifact, otherwise to
+      # the summary file itself (standalone runs). Emitted on failure too — a
+      # failed verification is evidence as well.
+      - name: Download plan artifact
+        if: always() && steps.params.outputs.plan_artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.params.outputs.plan_artifact }}
+          path: plan
+
+      - name: Resolve attestation subject
+        id: subject
+        if: always()
+        env:
+          ENVIRONMENT:   ${{ steps.params.outputs.environment }}
+          VERIFY_SCRIPT: ${{ steps.params.outputs.verify_script }}
+          PLAN_ARTIFACT: ${{ steps.params.outputs.plan_artifact }}
+        run: |
+          set -euo pipefail
+          SUMMARY=/tmp/verify-summary.txt
+          if [[ ! -f "$SUMMARY" ]]; then
+            echo "No verify summary was written; nothing to attest."
+            echo "has_summary=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "$PLAN_ARTIFACT" && -f plan/tfplan ]]; then
+            DIGEST=$(sha256sum plan/tfplan | cut -d' ' -f1)
+            NAME="tfplan-aws-${ENVIRONMENT}"
+            BOUND_TO="plan"
+          else
+            DIGEST=$(sha256sum "$SUMMARY" | cut -d' ' -f1)
+            NAME="verify-summary-aws-${ENVIRONMENT}"
+            BOUND_TO="summary"
+          fi
+          PASSED=$(grep -oE '^passed=[0-9]+' "$SUMMARY" | cut -d= -f2 || echo 0)
+          FAILED=$(grep -oE '^failed=[0-9]+' "$SUMMARY" | cut -d= -f2 || echo 0)
+          SCRIPT_SHA=$(sha256sum "infra-repo/${VERIFY_SCRIPT}" | cut -d' ' -f1)
+          # Counts and digests only: the statement is published to a public
+          # transparency log.
+          PREDICATE=$(jq -nc \
+            --arg env "$ENVIRONMENT" --argjson passed "${PASSED:-0}" --argjson failed "${FAILED:-0}" \
+            --arg script "$SCRIPT_SHA" --arg bound "$BOUND_TO" \
+            '{environment: $env, passed: $passed, failed: $failed, verify_script_sha256: $script, subject_bound_to: $bound}')
+          {
+            echo "has_summary=true"
+            echo "digest=$DIGEST"
+            echo "name=$NAME"
+            echo "bound_to=$BOUND_TO"
+            echo "predicate=$PREDICATE"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Attest verification results
+        if: always() && steps.subject.outputs.has_summary == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-digest: sha256:${{ steps.subject.outputs.digest }}
+          subject-name:   ${{ steps.subject.outputs.name }}
+          predicate-type: ${{ github.server_url }}/${{ github.repository }}/attestations/verification-results/v1
+          predicate:      ${{ steps.subject.outputs.predicate }}
+
+      - name: Note how to re-verify
+        if: always() && steps.subject.outputs.has_summary == 'true'
+        env:
+          REPO:     ${{ github.repository }}
+          BOUND_TO: ${{ steps.subject.outputs.bound_to }}
+          SERVER:   ${{ github.server_url }}
+        run: |
+          if [[ "$BOUND_TO" == "plan" ]]; then
+            SUBJECT="the run's \`tfplan\` artifact"
+          else
+            SUBJECT="the run's \`verify-summary.txt\` artifact"
+          fi
+          echo "- Verification-results attestation bound to ${SUBJECT} — re-check with \`gh attestation verify <file> --repo ${REPO} --predicate-type ${SERVER}/${REPO}/attestations/verification-results/v1\`" >> "$GITHUB_STEP_SUMMARY"

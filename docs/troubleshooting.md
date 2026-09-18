@@ -293,6 +293,23 @@ condition from `setup/azure-policies/`. Do **not** assign
 `User Access Administrator` to get past it: that reopens the
 grant-anyone-anything power the baseline removed.
 
+### `Verify plan attestation` fails: `tfplan has no plan attestation from this run`
+
+The `apply` job only consumes a plan whose provenance attestation was signed
+by the provision workflow **in the same run**. Two causes:
+
+- **The `Attest plan` step did not run or failed** in the `plan` job — check
+  that job first. The usual reason is a permissions change: the workflow needs
+  `id-token: write`, `attestations: write` and `artifact-metadata: write`, and
+  an organization policy can cap the `GITHUB_TOKEN` permissions below that. The
+  fix is on the organization's Actions settings, not in the workflow.
+- **`found: …` lists a different run** — the artifact does not come from this
+  run. That is the situation the gate exists for; re-run the whole workflow
+  rather than re-running the `apply` job alone.
+
+Private repositories need a plan that includes artifact attestations; the
+public platform repository does not.
+
 ### Azure — `Delete resource group` fails with `deletion … failed after N min: …ResourceGroupDeletionBlocked…`
 
 The teardown's wait watches the deletion's outcome, not only whether the
