@@ -64,27 +64,132 @@ jobs:
           subscription-id: ${{ inputs.azure_subscription_id }}
           client-id:       ${{ inputs.azure_client_id }}
 
+      # The wait re-authenticates periodically and polls the deletion's
+      # outcome, not just the group's existence:
+      #   - azure/login caches a 5-minute client assertion; once the derived
+      #     access token expires (~1 h) az cannot redeem it and every call
+      #     fails with AADSTS700024. Slow deletions (private endpoints, DNS
+      #     zone links) routinely outlive it, so a fresh GitHub OIDC token is
+      #     minted and exchanged on a fixed interval.
+      #   - a failed deletion rolls provisioningState back to Succeeded and
+      #     leaves the group in place; watching existence alone cannot tell
+      #     it from a slow one. The activity log names the blocking resource.
       - name: Delete resource group
         id: delete_rg
         env:
-          RESOURCE_GROUP_NAME: ${{ inputs.resource_group_name }}
-          WAIT_FOR_COMPLETION: ${{ inputs.wait_for_completion }}
+          RESOURCE_GROUP_NAME:   ${{ inputs.resource_group_name }}
+          WAIT_FOR_COMPLETION:   ${{ inputs.wait_for_completion }}
+          AZURE_TENANT_ID:       ${{ inputs.azure_tenant_id }}
+          AZURE_SUBSCRIPTION_ID: ${{ inputs.azure_subscription_id }}
+          AZURE_CLIENT_ID:       ${{ inputs.azure_client_id }}
         run: |
           set -euo pipefail
 
-          if [[ "$(az group exists --name "$RESOURCE_GROUP_NAME")" != "true" ]]; then
-            STATUS="Not found"
-          else
-            az group delete --name "$RESOURCE_GROUP_NAME" --yes --no-wait
-            if [[ "$WAIT_FOR_COMPLETION" == "true" ]]; then
-              az group wait --name "$RESOURCE_GROUP_NAME" --deleted --interval 15
-              STATUS="Deleted"
-            else
-              STATUS="Delete requested (async)"
+          # Seconds. Overridable for testing (e.g. a short REAUTH_INTERVAL
+          # forces the re-login path on a fast teardown).
+          REAUTH_INTERVAL="${REAUTH_INTERVAL:-1800}"
+          POLL_INTERVAL="${POLL_INTERVAL:-30}"
+          MAX_WAIT="${MAX_WAIT:-10800}"
+          # A deletion that has not reached Deleting by then never started.
+          START_GRACE=300
+
+          fail() {
+            echo "::error::$1"
+            echo "resource_group_status=Failed — $1" >> "$GITHUB_OUTPUT"
+            exit 1
+          }
+
+          reauth() {
+            local JWT
+            JWT=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+                    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // empty')
+            [[ -n "$JWT" ]] || fail "could not obtain a GitHub OIDC token for re-authentication"
+            az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" \
+              --federated-token "$JWT" --output none
+            az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+            LAST_LOGIN=$(date +%s)
+            echo "  Re-authenticated to Azure."
+          }
+
+          # Sets EXISTS to "true"/"false". Called directly, never in a
+          # subshell, so a failure here aborts the step: a failing call is
+          # retried once after a re-login and an expired token is never
+          # mistaken for "gone".
+          check_group_exists() {
+            if ! EXISTS=$(az group exists --name "$RESOURCE_GROUP_NAME" 2>/dev/null); then
+              reauth
+              EXISTS=$(az group exists --name "$RESOURCE_GROUP_NAME") || fail "could not query resource group '${RESOURCE_GROUP_NAME}' even after re-authenticating"
             fi
+          }
+
+          # Prints the statusMessage of a failed delete of this group since
+          # the deletion was requested, or nothing.
+          failed_delete_reason() {
+            az monitor activity-log list --resource-group "$RESOURCE_GROUP_NAME" \
+              --start-time "$START_ISO" --max-events 100 \
+              --query "[?operationName.value=='Microsoft.Resources/subscriptions/resourceGroups/delete' && status.value=='Failed'] | [0].properties.statusMessage" \
+              --output tsv 2>/dev/null || true
+          }
+
+          check_group_exists
+          if [[ "$EXISTS" != "true" ]]; then
+            echo "resource_group_status=Not found" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
-          echo "resource_group_status=$STATUS" >> "$GITHUB_OUTPUT"
+          START=$(date +%s)
+          START_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          LAST_LOGIN=$START
+          az group delete --name "$RESOURCE_GROUP_NAME" --yes --no-wait
+
+          if [[ "$WAIT_FOR_COMPLETION" != "true" ]]; then
+            echo "resource_group_status=Delete requested (async)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Waiting for '${RESOURCE_GROUP_NAME}' to be deleted (re-auth every $((REAUTH_INTERVAL / 60)) min, ceiling $((MAX_WAIT / 60)) min)…"
+          SEEN_DELETING=false
+          while :; do
+            sleep "$POLL_INTERVAL"
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START))
+
+            if (( NOW - LAST_LOGIN >= REAUTH_INTERVAL )); then
+              reauth
+            fi
+
+            check_group_exists
+            if [[ "$EXISTS" != "true" ]]; then
+              echo "Resource group '${RESOURCE_GROUP_NAME}' deleted after $((ELAPSED / 60)) min."
+              echo "resource_group_status=Deleted ($((ELAPSED / 60)) min)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            STATE=$(az group show --name "$RESOURCE_GROUP_NAME" --query properties.provisioningState --output tsv 2>/dev/null || echo "unknown")
+            case "$STATE" in
+              Deleting)
+                SEEN_DELETING=true
+                echo "  [$((ELAPSED / 60)) min] still deleting…"
+                ;;
+              Succeeded)
+                REASON=$(failed_delete_reason)
+                if [[ -n "$REASON" ]]; then
+                  fail "deletion of '${RESOURCE_GROUP_NAME}' failed after $((ELAPSED / 60)) min: ${REASON}"
+                fi
+                if [[ "$SEEN_DELETING" == "true" || "$ELAPSED" -ge "$START_GRACE" ]]; then
+                  fail "deletion of '${RESOURCE_GROUP_NAME}' is no longer in progress (provisioningState=Succeeded) and no failure event was found in the activity log — check the portal's deployments/activity log for the blocking resource"
+                fi
+                echo "  [$((ELAPSED / 60)) min] deletion not started yet (provisioningState=Succeeded)…"
+                ;;
+              *)
+                echo "  [$((ELAPSED / 60)) min] provisioningState=${STATE}"
+                ;;
+            esac
+
+            if (( ELAPSED >= MAX_WAIT )); then
+              fail "resource group '${RESOURCE_GROUP_NAME}' still exists after $((MAX_WAIT / 60)) min (provisioningState=${STATE})"
+            fi
+          done
 
       - name: Write summary
         if: always()
