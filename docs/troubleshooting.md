@@ -293,6 +293,27 @@ condition from `setup/azure-policies/`. Do **not** assign
 `User Access Administrator` to get past it: that reopens the
 grant-anyone-anything power the baseline removed.
 
+### Azure — `Delete resource group` fails with `deletion … failed after N min: …ResourceGroupDeletionBlocked…`
+
+The teardown's wait watches the deletion's outcome, not only whether the
+group still exists: when Azure Resource Manager rolls the group back to
+`provisioningState=Succeeded`, the job reads the failed
+`resourceGroups/delete` event from the activity log and stops with its
+message. The usual cause is an orphaned entry in the ARM index — a resource
+the index still lists but whose provider answers `NotFound` — which blocks
+the whole group deletion.
+
+Fix: recreate a resource with the **same name and type** in that group (a
+minimal one is enough), then delete it explicitly; the index entry is
+refreshed and a re-run of the teardown completes. If the message names a
+resource lock instead, remove the lock and re-run.
+
+Long deletions on their own are not a failure mode any more: the wait
+re-authenticates to Azure every 30 minutes with a fresh OIDC token
+(`azure/login`'s original assertion cannot be redeemed after the first access
+token expires, which used to surface as `AADSTS700024` on slow deletions) and
+gives up only after three hours, naming the group's last known state.
+
 ### AWS — tasks stop with `CannotPullContainerError` (401 / 403 from the registry)
 
 The service never reaches a steady state and every stopped task reports
