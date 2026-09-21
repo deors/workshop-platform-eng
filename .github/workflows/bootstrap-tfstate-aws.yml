@@ -163,7 +163,7 @@ jobs:
 
           ### Backend config for \`$APP_NAME\`
 
-          Use these values in \`terraform init\` or copy to \`backend.tf\`:
+          Use these values in \`tofu init\` or copy to \`backend.tf\`:
 
           \`\`\`hcl
           terraform {

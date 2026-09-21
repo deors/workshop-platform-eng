@@ -15,7 +15,7 @@ name: AWS - Delete Resource Group
 # never be used as if it did.
 #
 # The actual teardown lives in delete-app-resources-single-aws.yml, which runs
-# `terraform destroy` against the recorded state. This workflow is called
+# `tofu destroy` against the recorded state. This workflow is called
 # AFTERWARDS to clear away the now-empty group object.
 
 on:

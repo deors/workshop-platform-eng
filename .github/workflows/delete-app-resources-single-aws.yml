@@ -16,7 +16,7 @@ name: AWS - Delete Application Resources (Single Environment)
 #
 # The Azure workflow deletes `rg-<app>-<env>` and Azure removes everything
 # inside it. AWS has no equivalent: a resource group is only a saved tag query,
-# so deleting it destroys nothing. Teardown therefore runs `terraform destroy`
+# so deleting it destroys nothing. Teardown therefore runs `tofu destroy`
 # against the recorded state in the app's infra repo, which is both authoritative
 # about what exists and aware of the dependency ordering AWS demands (drain the
 # ECS service before the cluster, release ENIs before the subnets, delete the
@@ -208,7 +208,7 @@ jobs:
   # removes AWS resources; everything after it is cleanup of metadata.
   # ────────────────────────────────────────────────────────────────────────────
   destroy:
-    name: "Terraform destroy · ${{ needs.validate.outputs.environment }}"
+    name: "OpenTofu destroy · ${{ needs.validate.outputs.environment }}"
     needs: validate
     runs-on: ubuntu-latest
     outputs:
@@ -230,13 +230,13 @@ jobs:
           role-to-assume: ${{ needs.validate.outputs.aws_role_arn }}
           aws-region:     ${{ needs.validate.outputs.aws_region }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
-      - name: Terraform destroy
+      - name: OpenTofu destroy
         id: destroy
         env:
           APP_NAME:    ${{ needs.validate.outputs.app_name }}
@@ -272,7 +272,7 @@ jobs:
           printf 'container_image = "%s"\n' "public.ecr.aws/nginx/nginx:stable-alpine" >> terraform.tfvars
           printf 'main_domain     = "%s"\n' "${MAIN_DOMAIN:-}" >> terraform.tfvars
 
-          terraform init \
+          tofu init \
             -input=false \
             -backend-config="bucket=${TFSTATE_BUCKET}" \
             -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
@@ -281,7 +281,7 @@ jobs:
 
           # An empty or missing state means there is nothing to tear down. Say
           # so and stop rather than letting `destroy` look like it did work.
-          STATE_COUNT=$(terraform state list 2>/dev/null | grep -c . || true)
+          STATE_COUNT=$(tofu state list 2>/dev/null | grep -c . || true)
           if [[ "$STATE_COUNT" -eq 0 ]]; then
             echo "No resources in state — nothing to destroy."
             echo "destroy_status=Nothing to destroy (empty state)" >> "$GITHUB_OUTPUT"
@@ -289,11 +289,11 @@ jobs:
           fi
 
           echo "Destroying ${STATE_COUNT} managed resources…"
-          terraform destroy -auto-approve -input=false -no-color
+          tofu destroy -auto-approve -input=false -no-color
 
-          REMAINING=$(terraform state list 2>/dev/null | grep -c . || true)
+          REMAINING=$(tofu state list 2>/dev/null | grep -c . || true)
           if [[ "$REMAINING" -gt 0 ]]; then
-            echo "::error::terraform destroy finished but ${REMAINING} resources remain in state"
+            echo "::error::tofu destroy finished but ${REMAINING} resources remain in state"
             echo "destroy_status=Incomplete (${REMAINING} left in state)" >> "$GITHUB_OUTPUT"
             exit 1
           fi
@@ -308,7 +308,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Terraform destroy deregisters the revision it created, but a
+          # OpenTofu destroy deregisters the revision it created, but a
           # deregistered revision stays listed as INACTIVE until deleted. The
           # app's deploy workflows register further revisions that are never in
           # Terraform state and stay ACTIVE after destroy. This step deregisters

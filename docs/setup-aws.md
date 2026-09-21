@@ -49,7 +49,7 @@ AWS access:
   treats `main_domain` as mandatory: the template derives each environment's
   FQDN as `<app_name>.<environment>.<main_domain>`, looks the zone up by
   name, and issues a DNS-validated ACM certificate against it. Without the
-  zone, `terraform apply` fails with `no matching Route53Zone found`.
+  zone, `tofu apply` fails with `no matching Route53Zone found`.
 
 There is nothing to pre-create for networking or compute: the template builds
 its own VPCs, subnets and NAT gateways per environment.
@@ -395,10 +395,10 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 Resolve inputs                    ✓ validated inputs, derived tf-state-<app>-<acct8> from the role ARN
 Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable, environment promotion order respected
 Checkov · {env}                   ✓ no findings
-Terraform fmt check               ✓ formatting clean
+OpenTofu fmt check                ✓ formatting clean
 Bootstrap tfstate bucket          ✓ S3 bucket + rg-test-webapp-tfstate resource group
-Plan · {env}                      ✓ terraform plan generated, artifact uploaded
-Apply · {env}                     ✓ terraform apply succeeded (blocks until the ACM cert is ISSUED)
+Plan · {env}                      ✓ tofu plan generated, artifact uploaded
+Apply · {env}                     ✓ tofu apply succeeded (blocks until the ACM cert is ISSUED)
 Verify · {env}                    ✓ control-plane assertions passed
 Create application repo           ✓ <owner>/<app_name> created from template    (app phase)
 Create run issue                  ✓ per-run tracking issue opened               (app phase)
@@ -433,7 +433,7 @@ steps are skipped and only the infra issue and final summary are written.
 ## Step 5 — Configure scheduled drift detection (optional)
 
 The `detect-drift-aws.yml` workflow compares the recorded Terraform state
-against the live AWS resources (`terraform plan -refresh-only`) and opens an
+against the live AWS resources (`tofu plan -refresh-only`) and opens an
 issue in the affected application's **infrastructure repo** (`<app>-infra`)
 when it finds drift or an error. It has three entry points: a weekly
 `schedule` (Mondays at 06:23 UTC — one hour after the Azure sweep, so the two
