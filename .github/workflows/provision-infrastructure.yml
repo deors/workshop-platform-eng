@@ -940,6 +940,15 @@ jobs:
           set -o pipefail
           tofu apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
 
+      # Right after apply the state still holds the values known at plan time;
+      # the provider reads back the rest (computed attributes: attached
+      # policies, listener ARNs, certificate status, empty collections that
+      # became []). Recording them now keeps the first drift sweep from
+      # reporting them as drift. Refresh-only never changes cloud resources.
+      - name: OpenTofu refresh state
+        working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
+        run: tofu apply -refresh-only -auto-approve -input=false -no-color
+
       - name: Write apply summary
         if: always()
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}

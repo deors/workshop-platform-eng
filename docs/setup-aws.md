@@ -435,7 +435,11 @@ steps are skipped and only the infra issue and final summary are written.
 The `detect-drift-aws.yml` workflow compares the recorded Terraform state
 against the live AWS resources (`tofu plan -refresh-only`) and opens an
 issue in the affected application's **infrastructure repo** (`<app>-infra`)
-when it finds drift or an error. It has three entry points: a weekly
+when it finds drift or an error. The provision workflow refreshes the state
+right after `apply`, so values the provider only reads back after creation
+(attached policies, listener ARNs, certificate status) are recorded and a
+sweep on a freshly provisioned environment reports only genuine changes —
+including the task definition the application's own deploy pipeline updates. It has three entry points: a weekly
 `schedule` (Mondays at 06:23 UTC — one hour after the Azure sweep, so the two
 never contend for runners), manual `workflow_dispatch`, and `workflow_call`.
 
