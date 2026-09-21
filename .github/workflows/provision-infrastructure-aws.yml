@@ -676,7 +676,7 @@ jobs:
   # 6. Terraform format check (once, not per-environment)
   # ────────────────────────────────────────────────────────────────────────────
   fmt:
-    name: Terraform fmt check
+    name: OpenTofu fmt check
     needs: [resolve-inputs, create-infra-repo]
     runs-on: ubuntu-latest
 
@@ -688,14 +688,14 @@ jobs:
           path: infra-repo
           token: ${{ secrets.GH_PAT }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Check formatting
-        run: terraform fmt -check -recursive infra-repo/terraform/
+        run: tofu fmt -check -recursive infra-repo/terraform/
 
   # ────────────────────────────────────────────────────────────────────────────
   # 7. Bootstrap remote state storage (idempotent – safe to run every time).
@@ -713,7 +713,7 @@ jobs:
       aws_account_id: ${{ needs.resolve-inputs.outputs.aws_account_id }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 8. Terraform plan – one job per target environment, after scan passes
+  # 8. OpenTofu plan – one job per target environment, after scan passes
   # ────────────────────────────────────────────────────────────────────────────
   plan:
     name: "Plan · ${{ matrix.environment }}"
@@ -743,11 +743,11 @@ jobs:
           role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
           aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -765,31 +765,31 @@ jobs:
           printf 'main_domain                     = "%s"\n' "$MAIN_DOMAIN"         >> terraform.tfvars
           printf 'registry_credentials_secret_arn = "%s"\n' "$REGISTRY_SECRET_ARN" >> terraform.tfvars
 
-      - name: Terraform init
+      - name: OpenTofu init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           ENVIRONMENT:    ${{ matrix.environment }}
           TFSTATE_BUCKET: ${{ needs.resolve-inputs.outputs.tfstate_bucket }}
           AWS_REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
         run: |
-          terraform init \
+          tofu init \
             -input=false \
             -backend-config="bucket=${TFSTATE_BUCKET}" \
             -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
             -backend-config="region=${AWS_REGION}" \
             -backend-config="encrypt=true"
 
-      - name: Terraform validate
+      - name: OpenTofu validate
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
-        run: terraform validate
+        run: tofu validate
 
-      - name: Terraform plan
+      - name: OpenTofu plan
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
           set -o pipefail
           # -no-color: markdown code blocks in the step summary don't render
           # ANSI escapes; without this the captured output is unreadable.
-          terraform plan \
+          tofu plan \
             -input=false \
             -no-color \
             -out=tfplan \
@@ -833,7 +833,7 @@ jobs:
             infra-repo/terraform/environments/${{ matrix.environment }}/plan-output.txt
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 9. Terraform apply – consume the plan artifact and provision per environment
+  # 9. OpenTofu apply – consume the plan artifact and provision per environment
   # ────────────────────────────────────────────────────────────────────────────
   apply:
     name: "Apply · ${{ matrix.environment }}"
@@ -859,11 +859,11 @@ jobs:
           role-to-assume: ${{ needs.resolve-inputs.outputs.aws_role_arn }}
           aws-region:     ${{ needs.resolve-inputs.outputs.aws_region }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -883,14 +883,14 @@ jobs:
           printf 'main_domain                     = "%s"\n' "$MAIN_DOMAIN"         >> terraform.tfvars
           printf 'registry_credentials_secret_arn = "%s"\n' "$REGISTRY_SECRET_ARN" >> terraform.tfvars
 
-      - name: Terraform init
+      - name: OpenTofu init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           ENVIRONMENT:    ${{ matrix.environment }}
           TFSTATE_BUCKET: ${{ needs.resolve-inputs.outputs.tfstate_bucket }}
           AWS_REGION:     ${{ needs.resolve-inputs.outputs.aws_region }}
         run: |
-          terraform init \
+          tofu init \
             -input=false \
             -backend-config="bucket=${TFSTATE_BUCKET}" \
             -backend-config="key=${ENVIRONMENT}/terraform.tfstate" \
@@ -932,11 +932,11 @@ jobs:
             echo "- Plan attestation: verified (signer \`${REPO}/${WORKFLOW_PATH}\`, this run) — re-check any time with \`gh attestation verify tfplan --repo ${REPO}\` on the downloaded artifact"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Terraform apply
+      - name: OpenTofu apply
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
           set -o pipefail
-          terraform apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
+          tofu apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
 
       - name: Write apply summary
         if: always()
@@ -1200,7 +1200,7 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 13. Comment on the infra repo issue with the full infrastructure summary:
-  #      per-env terraform plan results, verification test counts, and whether
+  #      per-env tofu plan results, verification test counts, and whether
   #      this run was a provision or reconcile. Runs after apply + verify.
   # ────────────────────────────────────────────────────────────────────────────
   comment-infra-issue:

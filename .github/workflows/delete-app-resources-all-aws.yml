@@ -7,7 +7,7 @@ name: AWS - Delete Application Resources (All Environments + tfstate)
 # GitHub Environments inside the app repo, matching the Azure behaviour.
 #
 # Ordering matters and is enforced by `needs`: the state backend is destroyed
-# LAST, because every per-environment `terraform destroy` reads and writes the
+# LAST, because every per-environment `tofu destroy` reads and writes the
 # state stored in it. Removing the bucket first would strand the infrastructure
 # with no way to tear it down short of hand-deleting each resource.
 

@@ -132,7 +132,7 @@ account per application, bootstrapped by
 `scripts/bootstrap-tfstate-<cloud>.sh` and safe to re-run. Symptoms below are
 grouped by cloud only where the error text differs.
 
-### `terraform init` cannot find the backend
+### `tofu init` cannot find the backend
 
 **AWS — `NoSuchBucket`.** The bucket is named
 `tf-state-<app20>-<account8>`, where `<app20>` is the app name lowercased with

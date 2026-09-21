@@ -36,7 +36,7 @@ pages that don't declare one).
 
 [`provision.html`](provision.html) is the cloud-agnostic entry point. It
 describes the shape of a provisioning run — describe the app, dispatch the
-workflow, Terraform plans and applies, the archetype verifies itself — and
+workflow, OpenTofu plans and applies, the archetype verifies itself — and
 hands off to a per-cloud form.
 
 Each per-cloud form (e.g., [`provision-azure.html`](provision-azure.html))

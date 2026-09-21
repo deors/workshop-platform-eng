@@ -59,11 +59,11 @@ git clone https://github.com/<org>/<app-name>-infra.git
 cd <app-name>-infra
 
 # Format
-terraform fmt -recursive terraform/
+tofu fmt -recursive terraform/
 
 # Validate every environment
 for env in dev staging prod; do
-  (cd terraform/environments/$env && terraform init -backend=false && terraform validate)
+  (cd terraform/environments/$env && tofu init -backend=false && tofu validate)
 done
 
 # Security scan — match the per-env split CI uses.
@@ -124,7 +124,7 @@ enforcement.
 There is no automated end-to-end test harness yet. For changes that touch
 the Terraform modules, please:
 
-1. Run `terraform plan` against a real Azure subscription you control.
+1. Run `tofu plan` against a real Azure subscription you control.
 2. Attach the relevant excerpt of the plan output to the PR description.
 3. Note any resource replacements (`-/+`) explicitly — they often hide
    downtime or data loss.
@@ -189,8 +189,8 @@ not *what* it does — the diff already shows the what.
 
 Before requesting review:
 
-- [ ] `terraform fmt -recursive terraform/` passes in the infra repo
-- [ ] `terraform validate` passes in every touched environment
+- [ ] `tofu fmt -recursive terraform/` passes in the infra repo
+- [ ] `tofu validate` passes in every touched environment
 - [ ] Checkov passes (or new skips are documented in `.checkov.yaml`)
 - [ ] The PR description states the motivation and lists user-visible changes
 - [ ] Any new variable, output, or input is documented in the relevant module

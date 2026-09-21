@@ -345,7 +345,7 @@ The state storage account is created with:
 - `--https-only true` and `--min-tls-version TLS1_2`.
 - Public network endpoint **enabled** (`defaultAction = Allow`). GitHub-hosted
   runners have no fixed egress IPs, so a firewall (`defaultAction = Deny`)
-  would block the bootstrap and every `terraform init`. AAD-only auth
+  would block the bootstrap and every `tofu init`. AAD-only auth
   + RBAC is what protects the account, not the network layer.
 
 If your threat model requires network-level isolation, switch to a Private
@@ -356,7 +356,7 @@ trade-off is intentionally out of scope for the workshop baseline.
 > azurerm backend must also be told to use Azure AD against the blob endpoint
 > (not just for credential acquisition). The workflow sets both
 > `use_oidc=true` and `use_azuread_auth=true` (plus `ARM_USE_AZUREAD=true`).
-> Without the second flag, `terraform init` hits `403 KeyBasedAuthenticationNotPermitted`
+> Without the second flag, `tofu init` hits `403 KeyBasedAuthenticationNotPermitted`
 > even with a valid OIDC token.
 
 ### Web App network exposure — per-environment policy
@@ -483,10 +483,10 @@ marked _(app phase)_ only appear when `app_template_repo` is provided.
 Resolve inputs                    ✓ validated inputs, derived sttf<app><sub>
 Preflight checks                  ✓ template repos + pinned refs exist, container image anonymously pullable, environment promotion order respected
 Checkov · {env}                   ✓ no findings
-Terraform fmt check               ✓ formatting clean
+OpenTofu fmt check                ✓ formatting clean
 Bootstrap tfstate storage         ✓ rg-test-webapp-tfstate + storage account + container
-Plan · {env}                      ✓ terraform plan generated, artifact uploaded
-Apply · {env}                     ✓ terraform apply succeeded
+Plan · {env}                      ✓ tofu plan generated, artifact uploaded
+Apply · {env}                     ✓ tofu apply succeeded
 Verify · {env}                    ✓ control-plane assertions passed
 Create application repo           ✓ <owner>/<app_name> created from template   (app phase)
 Create run issue                  ✓ per-run tracking issue opened               (app phase)
@@ -522,7 +522,7 @@ skipped and only the infra issue and final summary are written.
 ## Step 5 — Configure scheduled drift detection (optional)
 
 The `detect-drift.yml` workflow compares the recorded Terraform state against
-the live Azure resources (`terraform plan -refresh-only`) and opens an issue in
+the live Azure resources (`tofu plan -refresh-only`) and opens an issue in
 the affected application's **infrastructure repo** (`<app>-infra`) when it finds
 drift or an error. It has three entry points: a weekly `schedule` (Mondays at
 05:23 UTC — an off-peak minute, since GitHub delays top-of-the-hour schedules

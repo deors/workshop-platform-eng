@@ -155,10 +155,10 @@ operator                ┌─────────────────�
   ├─ trigger script ──► │                  Reconcile App Resources    │
   └─ raw curl ────────► │   1. resolve & validate inputs              │
                         │   2. checkov scan (per env)                 │
-                        │   3. terraform fmt                          │
+                        │   3. tofu fmt                               │
                         │   4. bootstrap tfstate (reusable)           │
-                        │   5. terraform plan (per env)               │
-                        │   6. terraform apply (per env)              │
+                        │   5. tofu plan (per env)                    │
+                        │   6. tofu apply (per env)                   │
                         │   7. verify (reusable, per env)             │
                         │   8. create app repo from template          │
                         │   9. open per-run tracking issue            │

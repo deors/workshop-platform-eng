@@ -5,7 +5,7 @@ name: Azure - Detect Drift
 # "Drift" here means a divergence between what Terraform has recorded in remote
 # state and what actually exists in Azure — i.e. out-of-band changes made by a
 # human in the portal, another tool, or a manual `az` command. We surface it
-# with `terraform plan -refresh-only -detailed-exitcode`, which compares the
+# with `tofu plan -refresh-only -detailed-exitcode`, which compares the
 # real resources against the recorded state WITHOUT proposing config-driven
 # changes. Its exit code is the signal:
 #
@@ -331,11 +331,11 @@ jobs:
           subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Detect drift
         id: detect
@@ -351,7 +351,7 @@ jobs:
           # GitHub invokes `run:` steps as `bash --noprofile --norc -e -o
           # pipefail {0}`, so errexit (-e) is ON by default. This step
           # DELIBERATELY inspects terraform's own exit codes — in particular
-          # `terraform plan -refresh-only -detailed-exitcode` returns 2 when it
+          # `tofu plan -refresh-only -detailed-exitcode` returns 2 when it
           # finds drift, which is a SUCCESS for us, not a failure. With errexit
           # on, that 2 would abort the step before we capture it (the symptom:
           # "Process completed with exit code 2" and no further output, because
@@ -369,7 +369,7 @@ jobs:
 
           # ── Drift summarisers (written inline so the step is self-contained;
           #    this job checks out only the infra repo, not the platform repo).
-          #    They turn the refresh-only plan JSON (`terraform show -json`) into
+          #    They turn the refresh-only plan JSON (`tofu show -json`) into
           #    a readable breakdown and a compact count line. Only attribute
           #    NAMES and resource ADDRESSES are emitted — never values — so the
           #    rendered summary cannot leak secrets.
@@ -435,7 +435,7 @@ jobs:
           #   no state       skip (never provisioned)  DRIFT (unmanaged RG)
           #   has state      DRIFT (all missing)        refresh-only plan
           #
-          # "managed state" = terraform state list reports ≥1 resource (covers
+          # "managed state" = tofu state list reports ≥1 resource (covers
           # both a missing state blob and an empty one). The bottom-right cell
           # is the classic case and uses `plan -refresh-only -detailed-exitcode`.
           for env in "${ENVS[@]}"; do
@@ -483,7 +483,7 @@ jobs:
             printf 'container_image        = "%s"\n' "mcr.microsoft.com/appsvc/staticsite:latest" >> terraform.tfvars
             printf 'container_registry_url = "%s"\n' "${REGISTRY:-}"    >> terraform.tfvars
 
-            terraform init \
+            tofu init \
               -input=false \
               -backend-config="resource_group_name=${RESOURCE_GROUP}" \
               -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
@@ -494,7 +494,7 @@ jobs:
               > init-output.txt 2>&1
             INIT_CODE=$?
             if [[ $INIT_CODE -ne 0 ]]; then
-              SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform init failed)"$'\n'
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (tofu init failed)"$'\n'
               ERRORED_ENVS+=("$env")
               DETAILS+=$'\n'"### \`${env}\` — init error"$'\n\n```\n'"$(cat init-output.txt)"$'\n```\n'
               popd >/dev/null
@@ -503,10 +503,10 @@ jobs:
 
             # stdout = resource addresses (counted); stderr kept separate so a
             # warning can't inflate the count.
-            terraform state list > state-list.txt 2> state-err.txt
+            tofu state list > state-list.txt 2> state-err.txt
             STATE_CODE=$?
             if [[ $STATE_CODE -ne 0 ]]; then
-              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not read terraform state)"$'\n'
+              SUMMARY+="- \`${env}\` — ⚠️ **error** (could not read tofu state)"$'\n'
               ERRORED_ENVS+=("$env")
               DETAILS+=$'\n'"### \`${env}\` — state read error"$'\n\n```\n'"$(cat state-err.txt)"$'\n```\n'
               popd >/dev/null
@@ -548,7 +548,7 @@ jobs:
               # structured breakdown. -detailed-exitcode: 0 = no drift, 2 =
               # drift, 1 = error. -no-color keeps the raw log readable.
               pushd "$DIR" >/dev/null
-              terraform plan \
+              tofu plan \
                 -refresh-only \
                 -detailed-exitcode \
                 -no-color \
@@ -558,7 +558,7 @@ jobs:
               PLAN_CODE=$?
               # Render JSON for parsing (only meaningful when a plan was saved).
               if [[ -f tfplan.bin ]]; then
-                terraform show -json tfplan.bin > plan.json 2> show-err.txt || true
+                tofu show -json tfplan.bin > plan.json 2> show-err.txt || true
               fi
               popd >/dev/null
 
@@ -593,7 +593,7 @@ jobs:
                   DETAILS+=$'\n'"### \`${env}\` — drift"$'\n\n'"${DRIFT_MD}"$'\n\n'"<details><summary>raw refresh-only plan output</summary>"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n\n</details>\n'
                   ;;
                 *)
-                  SUMMARY+="- \`${env}\` — ⚠️ **error** (terraform plan failed)"$'\n'
+                  SUMMARY+="- \`${env}\` — ⚠️ **error** (tofu plan failed)"$'\n'
                   ERRORED_ENVS+=("$env")
                   DETAILS+=$'\n'"### \`${env}\` — plan error"$'\n\n```\n'"$(cat "${DIR}/plan-output.txt")"$'\n```\n'
                   ;;
@@ -669,7 +669,7 @@ jobs:
             echo "Detected by drift sweep [#${{ github.run_id }}](${RUN_URL})."
             echo
             echo "Compared recorded Terraform state against the live Azure resources"
-            echo "(\`terraform plan -refresh-only\`) for infra repo"
+            echo "(\`tofu plan -refresh-only\`) for infra repo"
             echo "[\`${INFRA_REPO}\`](https://github.com/${INFRA_REPO})."
             echo
             echo "## Environment status"

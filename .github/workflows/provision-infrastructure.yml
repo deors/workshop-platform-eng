@@ -654,7 +654,7 @@ jobs:
   # 6. Terraform format check (once, not per-environment)
   # ────────────────────────────────────────────────────────────────────────────
   fmt:
-    name: Terraform fmt check
+    name: OpenTofu fmt check
     needs: [resolve-inputs, create-infra-repo]
     runs-on: ubuntu-latest
 
@@ -666,14 +666,14 @@ jobs:
           path: infra-repo
           token: ${{ secrets.GH_PAT }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Check formatting
-        run: terraform fmt -check -recursive infra-repo/terraform/
+        run: tofu fmt -check -recursive infra-repo/terraform/
 
   # ────────────────────────────────────────────────────────────────────────────
   # 7. Bootstrap remote state storage (idempotent – safe to run every time).
@@ -692,7 +692,7 @@ jobs:
       azure_location:        ${{ needs.resolve-inputs.outputs.azure_location }}
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 8. Terraform plan – one job per target environment, after scan passes
+  # 8. OpenTofu plan – one job per target environment, after scan passes
   # ────────────────────────────────────────────────────────────────────────────
   plan:
     name: "Plan · ${{ matrix.environment }}"
@@ -706,7 +706,7 @@ jobs:
 
     # The azurerm backend and provider read ARM_* env vars for OIDC auth.
     # azure/login sets AZURE_* (different prefix); we surface ARM_* here so
-    # `terraform init` (backend) and `terraform plan` (provider) can both
+    # `tofu init` (backend) and `tofu plan` (provider) can both
     # authenticate without --backend-config / provider-block boilerplate.
     env:
       ARM_USE_OIDC:        "true"
@@ -734,11 +734,11 @@ jobs:
           subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -756,14 +756,14 @@ jobs:
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 
-      - name: Terraform init
+      - name: OpenTofu init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           ENVIRONMENT:     ${{ matrix.environment }}
           STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
           RESOURCE_GROUP:  ${{ needs.resolve-inputs.outputs.tfstate_resource_group }}
         run: |
-          terraform init \
+          tofu init \
             -input=false \
             -backend-config="resource_group_name=${RESOURCE_GROUP}" \
             -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
@@ -772,17 +772,17 @@ jobs:
             -backend-config="use_oidc=true" \
             -backend-config="use_azuread_auth=true"
 
-      - name: Terraform validate
+      - name: OpenTofu validate
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
-        run: terraform validate
+        run: tofu validate
 
-      - name: Terraform plan
+      - name: OpenTofu plan
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
           set -o pipefail
           # -no-color: markdown code blocks in the step summary don't render
           # ANSI escapes; without this the captured output is unreadable.
-          terraform plan \
+          tofu plan \
             -input=false \
             -no-color \
             -out=tfplan \
@@ -826,7 +826,7 @@ jobs:
             infra-repo/terraform/environments/${{ matrix.environment }}/plan-output.txt
 
   # ────────────────────────────────────────────────────────────────────────────
-  # 9. Terraform apply – consume the plan artifact and provision per environment
+  # 9. OpenTofu apply – consume the plan artifact and provision per environment
   # ────────────────────────────────────────────────────────────────────────────
   apply:
     name: "Apply · ${{ matrix.environment }}"
@@ -860,11 +860,11 @@ jobs:
           subscription-id: ${{ needs.resolve-inputs.outputs.azure_subscription_id }}
           client-id:       ${{ needs.resolve-inputs.outputs.azure_client_id }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v4
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@v2
         with:
-          terraform_version: "~1.9"
-          terraform_wrapper:  false
+          tofu_version: "~1.12.0"
+          tofu_wrapper: false
 
       - name: Generate tfvars
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
@@ -883,14 +883,14 @@ jobs:
           printf 'container_image        = "%s"\n' "$CONTAINER_IMAGE"        >> terraform.tfvars
           printf 'container_registry_url = "%s"\n' "$CONTAINER_REGISTRY_URL" >> terraform.tfvars
 
-      - name: Terraform init
+      - name: OpenTofu init
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         env:
           STORAGE_ACCOUNT: ${{ needs.resolve-inputs.outputs.tfstate_storage_account }}
           RESOURCE_GROUP:  ${{ needs.resolve-inputs.outputs.tfstate_resource_group }}
           ENVIRONMENT:     ${{ matrix.environment }}
         run: |
-          terraform init \
+          tofu init \
             -input=false \
             -backend-config="resource_group_name=${RESOURCE_GROUP}" \
             -backend-config="storage_account_name=${STORAGE_ACCOUNT}" \
@@ -934,11 +934,11 @@ jobs:
             echo "- Plan attestation: verified (signer \`${REPO}/${WORKFLOW_PATH}\`, this run) — re-check any time with \`gh attestation verify tfplan --repo ${REPO}\` on the downloaded artifact"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Terraform apply
+      - name: OpenTofu apply
         working-directory: infra-repo/terraform/environments/${{ matrix.environment }}
         run: |
           set -o pipefail
-          terraform apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
+          tofu apply -input=false -no-color tfplan 2>&1 | tee apply-output.txt
 
       - name: Write apply summary
         if: always()
@@ -1201,7 +1201,7 @@ jobs:
 
   # ────────────────────────────────────────────────────────────────────────────
   # 13. Comment on the infra repo issue with the full infrastructure summary:
-  #      per-env terraform plan results, verification test counts, and whether
+  #      per-env tofu plan results, verification test counts, and whether
   #      this run was a provision or reconcile. Runs after apply + verify.
   # ────────────────────────────────────────────────────────────────────────────
   comment-infra-issue:
