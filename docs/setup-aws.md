@@ -181,7 +181,7 @@ template touch, and nothing else:
 
 | Policy | Grants |
 |---|---|
-| `PlatformEngInfraServices` | full access **within** the services the template manages — EC2 networking, ECS, ELBv2, Route 53, ACM, CloudWatch + Logs, X-Ray, Application Auto Scaling, CodeDeploy, Resource Groups and the Tagging API — plus an explicit deny on `ec2:RunInstances` |
+| `PlatformEngInfraServices` | full access **within** the services the template manages — EC2 networking, ECS, ELBv2, Route 53, ACM, CloudWatch + Logs, X-Ray, Application Auto Scaling, CodeDeploy, Cognito, Resource Groups and the Tagging API — plus Secrets Manager restricted to the `auth/*` secrets holding each environment's test-user credentials (the template creates them, the app repositories' deploy workflow reads them), and an explicit deny on `ec2:RunInstances` |
 | `PlatformEngTerraformState` | `s3:*` restricted to the `tf-state-*` state buckets and their objects |
 | `PlatformEngScopedIAM` | role lifecycle **only** on the template's role-name prefixes (`ecs-exec-*`, `ecs-task-*`, `role-flow-logs-*`, `role-codedeploy-*`); managed-policy attachment restricted to the two policies the template actually attaches; `iam:PassRole` conditioned on the ECS, CodeDeploy and VPC Flow Logs services; service-linked-role creation for ECS/ELB/Application Auto Scaling |
 
@@ -211,7 +211,8 @@ aws iam list-attached-role-policies \
 > **Why service wildcards inside a service allowlist?** One run touches S3
 > (state bucket bootstrap), EC2 (VPC, subnets, NAT, security groups, flow
 > logs), ELBv2, ACM, Route 53, ECS, Application Auto Scaling, CodeDeploy,
-> CloudWatch (logs, alarms), X-Ray, Resource Groups + the Tagging API,
+> Cognito, Secrets Manager (`auth/*` only), CloudWatch (logs, alarms), X-Ray,
+> Resource Groups + the Tagging API,
 > **and IAM** — the template creates the per-app task and task-execution
 > roles, and the platform edits this role's own trust policy. Terraform also
 > makes many auxiliary calls (waiters, tagging, `Describe*`) that no
@@ -398,7 +399,7 @@ Checkov · {env}                   ✓ no findings
 OpenTofu fmt check                ✓ formatting clean
 Bootstrap tfstate bucket          ✓ S3 bucket + rg-test-webapp-tfstate resource group
 Plan · {env}                      ✓ tofu plan generated, artifact uploaded
-Apply · {env}                     ✓ tofu apply succeeded (blocks until the ACM cert is ISSUED)
+Apply · {env}                     ✓ tofu apply succeeded (blocks until the ACM cert is ISSUED), sign-in details in the job summary
 Verify · {env}                    ✓ control-plane assertions passed
 Create application repo           ✓ <owner>/<app_name> created from template    (app phase)
 Create run issue                  ✓ per-run tracking issue opened               (app phase)
@@ -416,6 +417,13 @@ attached as a workflow artifact named `tfplan-aws-test-webapp-dev`, retained
 for 7 days. The plan is then consumed by the `apply` job, which provisions
 the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
+
+Every environment is authenticated at the load balancer, so the apply job's
+summary ends with a **Sign-in** block: the hosted sign-in domain, the
+environment's test user (`developer` in dev, `reviewer` in staging, `demo` in
+prod) and the command that fetches its credentials from Secrets Manager —
+`aws secretsmanager get-secret-value --secret-id auth/<app>-<env>/<user> --query SecretString --output text`.
+The credentials themselves never appear in logs or summaries.
 
 When `app_template_repo` is provided, the run also creates the application
 repository from your template, configures its GitHub Environments + variables

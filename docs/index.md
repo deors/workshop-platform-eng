@@ -71,7 +71,7 @@ stack:
 | Cloud | Stack | Provision | Setup |
 |-------|-------|-----------|-------|
 | **Azure** | App Service (Linux, container) with VNet integration, Private Endpoint, Managed Identity, Key Vault references, Application Insights + Log Analytics, deployment slots | [form](provision-azure.html) | [guide](setup-azure.md) |
-| **AWS** | ECS Fargate behind an Application Load Balancer, with VPC + NAT, ACM certificates, CloudWatch logs and alarms, X-Ray, CodeDeploy blue/green | [form](provision-aws.html) | [guide](setup-aws.md) |
+| **AWS** | ECS Fargate behind an Application Load Balancer, with VPC + NAT, ACM certificates, Cognito authentication at the load balancer, CloudWatch logs and alarms, X-Ray, CodeDeploy blue/green | [form](provision-aws.html) | [guide](setup-aws.md) |
 
 The GitHub side of the setup is [identical for every
 cloud](setup-github.md) — do that once, then follow the guide for your target.
