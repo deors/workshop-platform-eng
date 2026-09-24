@@ -954,8 +954,35 @@ jobs:
           APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
           ENVIRONMENT: ${{ matrix.environment }}
         run: |
+          # Sign-in details come from the template's outputs; both are empty
+          # when the environment is HTTP-only (and absent on template refs
+          # without ALB authentication). The secret ARN ends in a random
+          # 6-character suffix that is not part of the secret name. Only the
+          # name and the retrieval command are printed, never the value.
+          SIGN_IN_DOMAIN=$(tofu output -raw auth_sign_in_domain 2>/dev/null || true)
+          SECRET_ARN=$(tofu output -raw auth_default_user_secret_arn 2>/dev/null || true)
+          SECRET_NAME=$(sed -E 's/^.*:secret:(.*)-[A-Za-z0-9]{6}$/\1/' <<<"$SECRET_ARN")
           {
             echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            if [[ -n "$SIGN_IN_DOMAIN" && -n "$SECRET_NAME" ]]; then
+              echo "### Sign-in"
+              echo ""
+              echo "Every request to this environment is authenticated at the load balancer;"
+              echo "the application URL redirects to the hosted sign-in page."
+              echo ""
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Hosted sign-in domain | \`${SIGN_IN_DOMAIN}\` |"
+              echo "| Test user | \`${SECRET_NAME##*/}\` |"
+              echo "| Credentials secret | \`${SECRET_NAME}\` |"
+              echo ""
+              echo '```bash'
+              echo "aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --query SecretString --output text"
+              echo '```'
+            else
+              echo "Authentication: not enabled (no \`main_domain\`)"
+            fi
             echo ""
             echo "<details><summary>Show apply output</summary>"
             echo ""
