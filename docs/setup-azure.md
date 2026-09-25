@@ -513,7 +513,7 @@ Federated credential · {env}      ✓ AAD subject registered on the SP         
 Observe CI in app repo            ✓ CI watched, build+test+dev-deploy succeeded (app phase, first run only)
 Comment on app issue              ✓ summary posted as issue comment             (app phase)
 Comment on infra issue            ✓ plan + verify results posted to infra issue
-Final summary                     ✓ consolidated summary with links to issues
+Run report                        ✓ links to the issues + per-environment access details (URL, test identity, credential commands)
 ```
 
 The exact storage account name shows up in the `bootstrap-tfstate` job logs as
@@ -523,11 +523,13 @@ for 7 days. The plan is then consumed by the `apply` job, which provisions
 the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
 
-Every environment enforces Microsoft Entra ID sign-in, so the apply job's
-summary ends with an **Authentication** block: the two app registrations and
-their client IDs, the environment's Key Vault (`kv-<app>-<env>`) with the
-names of the five secrets it holds, the `az keyvault secret show` commands
-that fetch the end-to-end test credentials, and how people get access — a
+Every environment enforces Microsoft Entra ID sign-in. The **Run report**
+job (and the comment on the app repository's tracking issue) ends with an
+**Access** block per environment: the application URL, the two app
+registrations and their client IDs, the environment's Key Vault
+(`kv-<app>-<env>`) with the names of the five secrets it holds, the exact
+`az keyvault set-policy` and `az keyvault secret show` commands that let you
+read the end-to-end test credentials, and how people get access — a
 directory administrator assigns them under Enterprise applications →
 `app-<app>-<env>` → Users and groups (unassigned users get `AADSTS50105`;
 Global Administrators are exempt). Secret values never appear in logs or

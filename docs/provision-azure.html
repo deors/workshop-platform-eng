@@ -173,7 +173,7 @@
       <li>Linux Web App (container) with HTTPS-only, TLS 1.3, FTP disabled, end-to-end TLS encryption, health check on <code>/health</code></li>
       <li>Microsoft Entra ID sign-in enforced on the Web App and its slot (App Service authentication): browsers are redirected to sign-in, API clients without a bearer token get 401</li>
       <li>Two Entra app registrations per environment — <code>app-&lt;app&gt;-&lt;env&gt;</code> (the sign-in app; its enterprise application requires assignment, exposes the roles <code>User</code> and <code>E2E.Access</code>) and <code>app-&lt;app&gt;-&lt;env&gt;-e2e</code> (confidential client for non-interactive tests) — both owned by the provisioning identity; directory administrators assign users to the sign-in app</li>
-      <li>Key Vault <code>kv-&lt;app&gt;-&lt;env&gt;</code> holding <code>easyauth-client-secret</code>, <code>e2e-tenant-id</code>, <code>e2e-client-id</code>, <code>e2e-client-secret</code> and <code>e2e-scope</code>; the apply job summary shows the vault, the client IDs and the retrieval commands, never the values</li>
+      <li>Key Vault <code>kv-&lt;app&gt;-&lt;env&gt;</code> holding <code>easyauth-client-secret</code>, <code>e2e-tenant-id</code>, <code>e2e-client-id</code>, <code>e2e-client-secret</code> and <code>e2e-scope</code>; the run's final summary and the app tracking issue show the application URL, the vault, the client IDs and the retrieval commands, never the values</li>
       <li>Staging deployment slot (staging + prod environments)</li>
       <li>Private endpoint for inbound traffic (public endpoint also open in dev only, for runner smoke tests)</li>
       <li>Autoscale rules (1–3 staging, 3–10 prod)</li>

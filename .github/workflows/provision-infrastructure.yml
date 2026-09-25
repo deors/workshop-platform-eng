@@ -956,41 +956,52 @@ jobs:
           APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
           ENVIRONMENT: ${{ matrix.environment }}
         run: |
-          # Authentication details come from the template's outputs; they are
-          # empty when auth_enabled=false (and absent on template refs without
-          # Entra authentication). Only names, IDs and commands are printed,
-          # never a secret value.
+          # The access block (URL, sign-in, credential commands) goes to a file
+          # so the final summary and the app tracking issue can reuse it
+          # verbatim. Authentication details come from the template's outputs;
+          # they are empty when auth_enabled=false (and absent on template refs
+          # without Entra authentication). Only names, IDs and commands are
+          # printed, never a secret value.
+          WEBAPP_HOST=$(tofu output -raw default_hostname 2>/dev/null || true)
           KV_NAME=$(tofu output -raw key_vault_name 2>/dev/null || true)
           AUTH_CLIENT_ID=$(tofu output -raw auth_client_id 2>/dev/null || true)
           E2E_CLIENT_ID=$(tofu output -raw e2e_client_id 2>/dev/null || true)
+          if [[ "$ENVIRONMENT" == "dev" ]]; then
+            REACH="public"
+          else
+            REACH="private endpoint only, reachable from inside the VNet"
+          fi
           {
-            echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo "### \`$ENVIRONMENT\`"
             echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Application URL | ${WEBAPP_HOST:+https://${WEBAPP_HOST} }(${REACH}) |"
             if [[ -n "$AUTH_CLIENT_ID" ]]; then
-              echo "### Authentication"
-              echo ""
-              echo "Every request is authenticated with Microsoft Entra ID: browsers are redirected to sign-in, API clients without a bearer token get \`401\`."
-              echo ""
-              echo "| | |"
-              echo "|---|---|"
+              echo "| Sign-in | Microsoft Entra ID on every request; browsers are redirected to sign-in, API clients without a bearer token get \`401\` |"
               echo "| Sign-in app registration | \`app-${APP_NAME}-${ENVIRONMENT}\` — client ID \`${AUTH_CLIENT_ID}\` |"
               echo "| End-to-end test client | \`app-${APP_NAME}-${ENVIRONMENT}-e2e\` — client ID \`${E2E_CLIENT_ID}\` |"
-              echo "| Key Vault | \`${KV_NAME}\` |"
-              echo "| Secrets | \`easyauth-client-secret\`, \`e2e-tenant-id\`, \`e2e-client-id\`, \`e2e-client-secret\`, \`e2e-scope\` |"
+              echo "| Key Vault | \`${KV_NAME}\` — secrets \`easyauth-client-secret\`, \`e2e-tenant-id\`, \`e2e-client-id\`, \`e2e-client-secret\`, \`e2e-scope\` |"
               echo ""
-              echo "**Granting people access** — a directory administrator assigns them under Entra ID → Enterprise applications → \`app-${APP_NAME}-${ENVIRONMENT}\` → Users and groups. Unassigned users get \`AADSTS50105\`; Global Administrators are exempt by Entra's design."
+              echo "**Signing in as a person** — a directory administrator assigns you under Entra ID → Enterprise applications → \`app-${APP_NAME}-${ENVIRONMENT}\` → Users and groups; then open the application URL and sign in with your Entra account. Unassigned users get \`AADSTS50105\`; Global Administrators are exempt by Entra's design."
               echo ""
-              echo "**End-to-end test credentials** (client-credentials grant; the values never appear in logs or summaries):"
+              echo "**Credentials of the end-to-end test client** (client-credentials grant, scope in \`e2e-scope\`). The vault grants only the platform identity, so grant your own user once, then read the four values:"
               echo ""
               echo '```bash'
+              echo "az keyvault set-policy --name ${KV_NAME} --upn \"\$(az ad signed-in-user show --query userPrincipalName -o tsv)\" --secret-permissions get list"
               for S in e2e-tenant-id e2e-client-id e2e-client-secret e2e-scope; do
                 echo "az keyvault secret show --vault-name ${KV_NAME} -n ${S} --query value -o tsv"
               done
               echo '```'
             else
-              echo "Authentication: disabled (\`auth_enabled=false\`)"
+              echo "| Sign-in | disabled (\`auth_enabled=false\`) |"
             fi
             echo ""
+          } > access-summary.md
+          {
+            echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            cat access-summary.md
             echo "<details><summary>Show apply output</summary>"
             echo ""
             echo '```'
@@ -999,6 +1010,15 @@ jobs:
             echo ""
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload access summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              auth-summary-azure-${{ matrix.environment }}
+          path:              infra-repo/terraform/environments/${{ matrix.environment }}/access-summary.md
+          retention-days:    7
+          if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────────────────────────
   # 10. Verify – delegates to the reusable verify-infrastructure.yml workflow.
@@ -1625,6 +1645,14 @@ jobs:
     if: always() && needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - name: Download access summaries
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: auth-summary-azure-*
+          path:    access
+
       - name: Build and post app issue comment
         env:
           GH_TOKEN:      ${{ secrets.GH_PAT }}
@@ -1677,6 +1705,20 @@ jobs:
             echo "${CLOSING}"
           } > /tmp/app-comment.md
 
+          # Per-environment access blocks written by the apply jobs (URL, test
+          # user or test client, credential commands — never values).
+          if compgen -G "access/*/access-summary.md" >/dev/null; then
+            {
+              echo
+              echo "## Access"
+              echo
+              for ENV in dev staging prod; do
+                F="access/auth-summary-azure-${ENV}/access-summary.md"
+                if [[ -f "$F" ]]; then cat "$F"; fi
+              done
+            } >> /tmp/app-comment.md
+          fi
+
           # Comment on the per-run issue in the app repo
           if [[ -n "$ISSUE_NUMBER" ]]; then
             gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body-file /tmp/app-comment.md
@@ -1688,11 +1730,19 @@ jobs:
   #     full run details live.
   # ────────────────────────────────────────────────────────────────────────────
   final-summary:
-    name: Final summary
+    name: Run report
     needs: [create-run-issue, create-infra-issue, comment-app-issue, comment-infra-issue]
     if: always() && needs.comment-infra-issue.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
+      - name: Download access summaries
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: auth-summary-azure-*
+          path:    access
+
       - name: Write step summary
         env:
           PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1708,3 +1758,17 @@ jobs:
             if [[ -n "$APP_ISSUE_URL" ]];   then echo "| App repo issue   | $APP_ISSUE_URL |";   fi
             if [[ -n "$INFRA_ISSUE_URL" ]]; then echo "| Infra repo issue | $INFRA_ISSUE_URL |"; fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Per-environment access blocks written by the apply jobs (URL, test
+          # user or test client, credential commands — never values).
+          if compgen -G "access/*/access-summary.md" >/dev/null; then
+            {
+              echo
+              echo "## Access"
+              echo
+              for ENV in dev staging prod; do
+                F="access/auth-summary-azure-${ENV}/access-summary.md"
+                if [[ -f "$F" ]]; then cat "$F"; fi
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
