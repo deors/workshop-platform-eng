@@ -408,7 +408,7 @@ OIDC trust · {env}                ✓ subject appended to the role trust policy
 Observe CI in app repo            ✓ CI watched, build+test+dev-deploy succeeded (app phase, first run only)
 Comment on app issue              ✓ summary posted as issue comment             (app phase)
 Comment on infra issue            ✓ plan + verify results posted to infra issue
-Final summary                     ✓ consolidated summary with links to issues
+Run report                        ✓ links to the issues + per-environment access details (URL, test identity, credential commands)
 ```
 
 The exact bucket name shows up in the `bootstrap-tfstate` job logs as
@@ -418,11 +418,12 @@ for 7 days. The plan is then consumed by the `apply` job, which provisions
 the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
 
-Every environment is authenticated at the load balancer, so the apply job's
-summary ends with a **Sign-in** block: the hosted sign-in domain, the
-environment's test user (`developer` in dev, `reviewer` in staging, `demo` in
-prod) and the command that fetches its credentials from Secrets Manager —
-`aws secretsmanager get-secret-value --secret-id auth/<app>-<env>/<user> --query SecretString --output text`.
+Every environment is authenticated at the load balancer. The **Run report**
+job (and the comment on the app repository's tracking issue) ends with an
+**Access** block per environment: the application URL, the hosted sign-in
+domain, the environment's test user (`developer` in dev, `reviewer` in
+staging, `demo` in prod) and the exact command that returns its credentials —
+`aws secretsmanager get-secret-value --region <region> --secret-id auth/<app>-<env>/<user> --query SecretString --output text`.
 The credentials themselves never appear in logs or summaries.
 
 When `app_template_repo` is provided, the run also creates the application

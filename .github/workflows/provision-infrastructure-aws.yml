@@ -953,37 +953,49 @@ jobs:
         env:
           APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
           ENVIRONMENT: ${{ matrix.environment }}
+          MAIN_DOMAIN: ${{ needs.resolve-inputs.outputs.main_domain }}
+          AWS_REGION:  ${{ needs.resolve-inputs.outputs.aws_region }}
         run: |
-          # Sign-in details come from the template's outputs; both are empty
-          # when the environment is HTTP-only (and absent on template refs
+          # The access block (URL, test user, credential command) goes to a file
+          # so the final summary and the app tracking issue can reuse it
+          # verbatim. Sign-in details come from the template's outputs; both are
+          # empty when the environment is HTTP-only (and absent on template refs
           # without ALB authentication). The secret ARN ends in a random
-          # 6-character suffix that is not part of the secret name. Only the
-          # name and the retrieval command are printed, never the value.
+          # 6-character suffix that is not part of the secret name. Only names
+          # and commands are printed, never a secret value.
           SIGN_IN_DOMAIN=$(tofu output -raw auth_sign_in_domain 2>/dev/null || true)
           SECRET_ARN=$(tofu output -raw auth_default_user_secret_arn 2>/dev/null || true)
           SECRET_NAME=$(sed -E 's/^.*:secret:(.*)-[A-Za-z0-9]{6}$/\1/' <<<"$SECRET_ARN")
+          if [[ "$ENVIRONMENT" == "dev" ]]; then
+            REACH="public"
+          else
+            REACH="private, reachable only from inside the VPC"
+          fi
+          {
+            echo "### \`$ENVIRONMENT\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Application URL | https://${APP_NAME}.${ENVIRONMENT}.${MAIN_DOMAIN} (${REACH}) |"
+            if [[ -n "$SIGN_IN_DOMAIN" && -n "$SECRET_NAME" ]]; then
+              echo "| Sign-in | every request is authenticated at the load balancer; the URL redirects to the hosted sign-in page on \`${SIGN_IN_DOMAIN}\` |"
+              echo "| Test user | \`${SECRET_NAME##*/}\` |"
+              echo "| Credentials secret | \`${SECRET_NAME}\` (Secrets Manager, \`${AWS_REGION}\`) |"
+              echo ""
+              echo "**Password of the test user** — run with credentials for the account (an administrator, or the platform role). The output is JSON with \`username\` and \`password\`:"
+              echo ""
+              echo '```bash'
+              echo "aws secretsmanager get-secret-value --region ${AWS_REGION} --secret-id ${SECRET_NAME} --query SecretString --output text"
+              echo '```'
+            else
+              echo "| Sign-in | not enabled (no \`main_domain\`) |"
+            fi
+            echo ""
+          } > access-summary.md
           {
             echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
             echo ""
-            if [[ -n "$SIGN_IN_DOMAIN" && -n "$SECRET_NAME" ]]; then
-              echo "### Sign-in"
-              echo ""
-              echo "Every request to this environment is authenticated at the load balancer;"
-              echo "the application URL redirects to the hosted sign-in page."
-              echo ""
-              echo "| | |"
-              echo "|---|---|"
-              echo "| Hosted sign-in domain | \`${SIGN_IN_DOMAIN}\` |"
-              echo "| Test user | \`${SECRET_NAME##*/}\` |"
-              echo "| Credentials secret | \`${SECRET_NAME}\` |"
-              echo ""
-              echo '```bash'
-              echo "aws secretsmanager get-secret-value --secret-id ${SECRET_NAME} --query SecretString --output text"
-              echo '```'
-            else
-              echo "Authentication: not enabled (no \`main_domain\`)"
-            fi
-            echo ""
+            cat access-summary.md
             echo "<details><summary>Show apply output</summary>"
             echo ""
             echo '```'
@@ -992,6 +1004,15 @@ jobs:
             echo ""
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload access summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name:              auth-summary-aws-${{ matrix.environment }}
+          path:              infra-repo/terraform/environments/${{ matrix.environment }}/access-summary.md
+          retention-days:    7
+          if-no-files-found: warn
 
   # ────────────────────────────────────────────────────────────────────────────
   # 10. Verify – delegates to the reusable verify-infrastructure-aws.yml
@@ -1640,6 +1661,14 @@ jobs:
     if: always() && needs.resolve-inputs.outputs.with_app_repo == 'true' && needs.create-run-issue.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - name: Download access summaries
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: auth-summary-aws-*
+          path:    access
+
       - name: Build and post app issue comment
         env:
           GH_TOKEN:      ${{ secrets.GH_PAT }}
@@ -1692,6 +1721,20 @@ jobs:
             echo "${CLOSING}"
           } > /tmp/app-comment.md
 
+          # Per-environment access blocks written by the apply jobs (URL, test
+          # user or test client, credential commands — never values).
+          if compgen -G "access/*/access-summary.md" >/dev/null; then
+            {
+              echo
+              echo "## Access"
+              echo
+              for ENV in dev staging prod; do
+                F="access/auth-summary-aws-${ENV}/access-summary.md"
+                if [[ -f "$F" ]]; then cat "$F"; fi
+              done
+            } >> /tmp/app-comment.md
+          fi
+
           # Comment on the per-run issue in the app repo
           if [[ -n "$ISSUE_NUMBER" ]]; then
             gh issue comment "$ISSUE_NUMBER" -R "$REPO_FULL" --body-file /tmp/app-comment.md
@@ -1703,11 +1746,19 @@ jobs:
   #     full run details live.
   # ────────────────────────────────────────────────────────────────────────────
   final-summary:
-    name: Final summary
+    name: Run report
     needs: [create-run-issue, create-infra-issue, comment-app-issue, comment-infra-issue]
     if: always() && needs.comment-infra-issue.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
+      - name: Download access summaries
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v8
+        with:
+          pattern: auth-summary-aws-*
+          path:    access
+
       - name: Write step summary
         env:
           PROVISION_URL:   ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -1723,3 +1774,17 @@ jobs:
             if [[ -n "$APP_ISSUE_URL" ]];   then echo "| App repo issue   | $APP_ISSUE_URL |";   fi
             if [[ -n "$INFRA_ISSUE_URL" ]]; then echo "| Infra repo issue | $INFRA_ISSUE_URL |"; fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Per-environment access blocks written by the apply jobs (URL, test
+          # user or test client, credential commands — never values).
+          if compgen -G "access/*/access-summary.md" >/dev/null; then
+            {
+              echo
+              echo "## Access"
+              echo
+              for ENV in dev staging prod; do
+                F="access/auth-summary-aws-${ENV}/access-summary.md"
+                if [[ -f "$F" ]]; then cat "$F"; fi
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

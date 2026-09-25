@@ -171,7 +171,7 @@
       <li>Application Load Balancer, HTTPS listener on a TLS 1.3-only policy, HTTP listener redirecting to HTTPS</li>
       <li>ACM certificate for <code>&lt;app&gt;.&lt;env&gt;.&lt;main-domain&gt;</code>, DNS-validated, plus its Route 53 record</li>
       <li>Cognito user pool, hosted sign-in domain and app client per environment; the HTTPS listener authenticates every request before forwarding it to the service</li>
-      <li>One non-interactive test user per environment (<code>developer</code> dev, <code>reviewer</code> staging, <code>demo</code> prod) with generated credentials stored in Secrets Manager under <code>auth/&lt;app&gt;-&lt;env&gt;/&lt;user&gt;</code>; the apply job summary shows the sign-in domain, the username and the retrieval command, never the value</li>
+      <li>One non-interactive test user per environment (<code>developer</code> dev, <code>reviewer</code> staging, <code>demo</code> prod) with generated credentials stored in Secrets Manager under <code>auth/&lt;app&gt;-&lt;env&gt;/&lt;user&gt;</code>; the run's final summary and the app tracking issue show the application URL, the sign-in domain, the username and the retrieval command, never the value</li>
       <li>ECS Fargate cluster <code>&lt;app&gt;-&lt;env&gt;</code> with Container Insights, and a service of the same name</li>
       <li>Task definition sized per environment (0.25 vCPU / 512 MB dev, 0.5 / 1024 staging, 1 / 2048 prod)</li>
       <li>Two security groups (ALB and tasks) and a locked-down default security group</li>
