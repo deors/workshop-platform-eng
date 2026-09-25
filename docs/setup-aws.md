@@ -423,7 +423,7 @@ job (and the comment on the app repository's tracking issue) ends with an
 **Access** block per environment: the application URL, the hosted sign-in
 domain, the environment's test user (`developer` in dev, `reviewer` in
 staging, `demo` in prod) and the exact command that returns its credentials —
-`aws secretsmanager get-secret-value --region <region> --secret-id auth/<app>-<env>/<user> --query SecretString --output text`.
+`aws secretsmanager get-secret-value --region <region> --secret-id auth/<app>-<env>/<user> --query SecretString --output text | jq -r .password`.
 The credentials themselves never appear in logs or summaries.
 
 When `app_template_repo` is provided, the run also creates the application

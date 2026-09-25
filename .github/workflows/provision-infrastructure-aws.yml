@@ -982,10 +982,10 @@ jobs:
               echo "| Test user | \`${SECRET_NAME##*/}\` |"
               echo "| Credentials secret | \`${SECRET_NAME}\` (Secrets Manager, \`${AWS_REGION}\`) |"
               echo ""
-              echo "**Password of the test user** — run with credentials for the account (an administrator, or the platform role). The output is JSON with \`username\` and \`password\`:"
+              echo "**Password of the test user** — run with credentials for the account (an administrator, or the platform role); it prints the plain password:"
               echo ""
               echo '```bash'
-              echo "aws secretsmanager get-secret-value --region ${AWS_REGION} --secret-id ${SECRET_NAME} --query SecretString --output text"
+              echo "aws secretsmanager get-secret-value --region ${AWS_REGION} --secret-id ${SECRET_NAME} --query SecretString --output text | jq -r .password"
               echo '```'
             else
               echo "| Sign-in | not enabled (no \`main_domain\`) |"
