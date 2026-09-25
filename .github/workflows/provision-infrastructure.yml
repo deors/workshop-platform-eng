@@ -997,11 +997,11 @@ jobs:
               echo "| Sign-in | disabled (\`auth_enabled=false\`) |"
             fi
             echo ""
-          } > access-summary.md
+          } > "access-summary-${ENVIRONMENT}.md"
           {
             echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
             echo ""
-            cat access-summary.md
+            cat "access-summary-${ENVIRONMENT}.md"
             echo "<details><summary>Show apply output</summary>"
             echo ""
             echo '```'
@@ -1016,7 +1016,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name:              auth-summary-azure-${{ matrix.environment }}
-          path:              infra-repo/terraform/environments/${{ matrix.environment }}/access-summary.md
+          path:              infra-repo/terraform/environments/${{ matrix.environment }}/access-summary-${{ matrix.environment }}.md
           retention-days:    7
           if-no-files-found: warn
 
@@ -1650,8 +1650,9 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          pattern: auth-summary-azure-*
-          path:    access
+          pattern:        auth-summary-azure-*
+          path:           access
+          merge-multiple: true
 
       - name: Build and post app issue comment
         env:
@@ -1707,13 +1708,13 @@ jobs:
 
           # Per-environment access blocks written by the apply jobs (URL, test
           # user or test client, credential commands — never values).
-          if compgen -G "access/*/access-summary.md" >/dev/null; then
+          if compgen -G "access/access-summary-*.md" >/dev/null; then
             {
               echo
               echo "## Access"
               echo
               for ENV in dev staging prod; do
-                F="access/auth-summary-azure-${ENV}/access-summary.md"
+                F="access/access-summary-${ENV}.md"
                 if [[ -f "$F" ]]; then cat "$F"; fi
               done
             } >> /tmp/app-comment.md
@@ -1740,8 +1741,9 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          pattern: auth-summary-azure-*
-          path:    access
+          pattern:        auth-summary-azure-*
+          path:           access
+          merge-multiple: true
 
       - name: Write step summary
         env:
@@ -1761,13 +1763,13 @@ jobs:
 
           # Per-environment access blocks written by the apply jobs (URL, test
           # user or test client, credential commands — never values).
-          if compgen -G "access/*/access-summary.md" >/dev/null; then
+          if compgen -G "access/access-summary-*.md" >/dev/null; then
             {
               echo
               echo "## Access"
               echo
               for ENV in dev staging prod; do
-                F="access/auth-summary-azure-${ENV}/access-summary.md"
+                F="access/access-summary-${ENV}.md"
                 if [[ -f "$F" ]]; then cat "$F"; fi
               done
             } >> "$GITHUB_STEP_SUMMARY"
