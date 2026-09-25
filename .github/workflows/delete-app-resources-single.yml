@@ -335,6 +335,47 @@ jobs:
             done <<< "$IDS"
           fi
 
+      # Deleting the resource group does not touch Entra: the two app
+      # registrations the template created for this environment (the sign-in
+      # app and its end-to-end test client) outlive it and would collide with
+      # a later re-provision. The platform identity owns them, so
+      # Application.ReadWrite.OwnedBy is enough to delete them. Entra keeps
+      # deleted registrations recoverable for 30 days.
+      #
+      # The environment's Key Vault is left soft-deleted on purpose: non-prod
+      # vaults expire with their retention period and prod vaults are
+      # purge-protected, so a purge would either be redundant or refused.
+      - name: Delete Entra app registrations
+        id: app_regs
+        env:
+          APP_NAME:   ${{ needs.validate.outputs.app_name }}
+          TARGET_ENV: ${{ needs.validate.outputs.environment }}
+        run: |
+          set -euo pipefail
+
+          COUNT=0
+          STATUS=""
+          for NAME in "app-${APP_NAME}-${TARGET_ENV}" "app-${APP_NAME}-${TARGET_ENV}-e2e"; do
+            # --display-name is a prefix filter; the JMESPath filter makes it exact.
+            if ! APP_IDS=$(az ad app list --display-name "$NAME" \
+                             --query "[?displayName=='${NAME}'].appId" -o tsv 2>/tmp/app-list-err.txt); then
+              echo "::warning::Could not list app registrations named '${NAME}'; they may need manual cleanup:"
+              cat /tmp/app-list-err.txt >&2
+              STATUS="Error (see log)"
+              continue
+            fi
+            while IFS= read -r APP_ID; do
+              [[ -z "$APP_ID" ]] && continue
+              az ad app delete --id "$APP_ID"
+              echo "Deleted app registration '${NAME}' (${APP_ID})"
+              COUNT=$((COUNT + 1))
+            done <<< "$APP_IDS"
+          done
+
+          [[ -z "$STATUS" ]] && STATUS="${COUNT} deleted (soft-deleted, recoverable for 30 days)"
+          echo "$STATUS"
+          echo "app_registrations_status=$STATUS" >> "$GITHUB_OUTPUT"
+
       - name: Summary
         if: always()
         env:
@@ -343,6 +384,7 @@ jobs:
           RESOURCE_GROUP:  ${{ needs.validate.outputs.resource_group_name }}
           RG_STATUS:       ${{ needs.delete-rg.outputs.resource_group_status }}
           BLOB_STATUS:     ${{ steps.state_blob.outputs.state_blob_status }}
+          APP_REGS_STATUS: ${{ steps.app_regs.outputs.app_registrations_status }}
         run: |
           {
             echo "## Delete App Resource Group"
@@ -354,4 +396,5 @@ jobs:
             echo "- Terraform state blob (\`$ENVIRONMENT/terraform.tfstate\`): ${BLOB_STATUS:-Unknown}"
             echo "- GitHub environment cleanup: executed"
             echo "- OIDC federated credential cleanup: executed"
+            echo "- Entra app registrations (\`app-${APP_NAME}-${ENVIRONMENT}\`, \`app-${APP_NAME}-${ENVIRONMENT}-e2e\`): ${APP_REGS_STATUS:-Unknown}"
           } >> "$GITHUB_STEP_SUMMARY"

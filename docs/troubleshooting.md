@@ -277,6 +277,17 @@ directory-role admin (Global, Privileged Role, Cloud Application, or
 Application Administrator) — in a corporate tenant this is usually an internal
 request.
 
+### Azure — `Insufficient privileges to complete the operation` on `azuread_app_role_assignment` during apply
+
+The template assigns the environment's end-to-end test client to the
+`E2E.Access` role of the sign-in app. That call (`POST
+/servicePrincipals/{id}/appRoleAssignedTo` on Microsoft Graph) is not covered
+by `Application.ReadWrite.OwnedBy`: the SP also needs
+`AppRoleAssignment.ReadWrite.All` and `Application.Read.All` as Graph
+application permissions with admin consent. Both are granted in *step 3 —
+Allow the SP to manage its own federated credentials* of the
+[Azure setup guide](setup-azure.md), with the same `az rest` loop.
+
 ### Azure — `AuthorizationFailed` on `Microsoft.Authorization/roleAssignments/write` during apply
 
 Terraform tried to create a role assignment — on the standard setup that is

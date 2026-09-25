@@ -277,6 +277,18 @@ Ownership alone is sufficient for *user-delegated* flows but **not** for
 in your own tenant — the corporate Entra default policy denies the call
 with `Insufficient privileges to complete the operation`.
 
+The infrastructure template also creates Entra objects during `apply`: two
+app registrations per environment (the sign-in app `app-<app>-<env>` and its
+end-to-end test client `app-<app>-<env>-e2e`, both owned by this SP) and the
+role assignment that lets the test client call the API. That takes **two
+more** Graph application permissions, granted the same way:
+
+| Permission | Used for |
+| --- | --- |
+| `Application.ReadWrite.OwnedBy` | federated credentials on this SP; the app registrations the template creates (it owns them) |
+| `AppRoleAssignment.ReadWrite.All` | assigning the test client to the `E2E.Access` role of the sign-in app |
+| `Application.Read.All` | reading the service principals and roles involved in that assignment |
+
 #### 1. Add the SP as owner of its own App Registration
 
 ```bash
@@ -290,7 +302,7 @@ az ad app owner add \
 az ad app owner list --id "$APP_OBJECT_ID" --query "[].id" -o tsv
 ```
 
-#### 2. Grant `Application.ReadWrite.OwnedBy` on Microsoft Graph
+#### 2. Grant the Microsoft Graph application permissions
 
 This step **requires admin consent** in the tenant: a Global Administrator,
 Privileged Role Administrator, Cloud Application Administrator, or
@@ -302,21 +314,23 @@ corporate tenant this typically means filing an internal request.
 GRAPH_APP_ID="00000003-0000-0000-c000-000000000000"
 GRAPH_SP_ID=$(az ad sp show --id "$GRAPH_APP_ID" --query id -o tsv)
 
-# AppRoleId for Application.ReadWrite.OwnedBy on Graph
-ROLE_ID=$(az ad sp show --id "$GRAPH_APP_ID" \
-  --query "appRoles[?value=='Application.ReadWrite.OwnedBy'].id | [0]" -o tsv)
+for PERMISSION in Application.ReadWrite.OwnedBy AppRoleAssignment.ReadWrite.All Application.Read.All; do
+  # AppRoleId of the permission on Graph
+  ROLE_ID=$(az ad sp show --id "$GRAPH_APP_ID" \
+    --query "appRoles[?value=='${PERMISSION}'].id | [0]" -o tsv)
 
-# Grant it (admin consent required to execute this call)
-az rest --method POST \
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
-  --headers "Content-Type=application/json" \
-  --body "{
-    \"principalId\": \"${SP_OBJECT_ID}\",
-    \"resourceId\":  \"${GRAPH_SP_ID}\",
-    \"appRoleId\":   \"${ROLE_ID}\"
-  }"
+  # Grant it (admin consent required to execute this call)
+  az rest --method POST \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
+    --headers "Content-Type=application/json" \
+    --body "{
+      \"principalId\": \"${SP_OBJECT_ID}\",
+      \"resourceId\":  \"${GRAPH_SP_ID}\",
+      \"appRoleId\":   \"${ROLE_ID}\"
+    }"
+done
 
-# Verify — should list one row with role 'Application.ReadWrite.OwnedBy'
+# Verify — one row per permission granted above
 az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SP_OBJECT_ID}/appRoleAssignments" \
   --query "value[].{resource:resourceDisplayName, roleId:appRoleId}" -o table
@@ -325,14 +339,18 @@ az rest --method GET \
 #### Portal alternative
 
 Entra ID → App registrations → your app → **API permissions** → **Add a
-permission** → Microsoft Graph → **Application permissions** →
-`Application.ReadWrite.OwnedBy` → **Add**. Then click **Grant admin consent
-for &lt;tenant&gt;**.
+permission** → Microsoft Graph → **Application permissions** → tick
+`Application.ReadWrite.OwnedBy`, `AppRoleAssignment.ReadWrite.All` and
+`Application.Read.All` → **Add**. Then click
+**Grant admin consent for &lt;tenant&gt;**.
 
 > **Why `OwnedBy` and not `All`?** `Application.ReadWrite.OwnedBy` only lets
 > the SP write to App Registrations where it is an owner (set in step 1
-> above). `Application.ReadWrite.All` would let it write to *any* App
-> Registration in the tenant — a much wider blast radius.
+> above, and automatic for the ones the template creates).
+> `Application.ReadWrite.All` would let it write to *any* App Registration
+> in the tenant — a much wider blast radius. `AppRoleAssignment.ReadWrite.All`
+> has no owner-scoped variant, which is why it is listed separately rather
+> than folded into a broader grant.
 
 ### Bootstrap storage account — security model
 
@@ -486,7 +504,7 @@ Checkov · {env}                   ✓ no findings
 OpenTofu fmt check                ✓ formatting clean
 Bootstrap tfstate storage         ✓ rg-test-webapp-tfstate + storage account + container
 Plan · {env}                      ✓ tofu plan generated, artifact uploaded
-Apply · {env}                     ✓ tofu apply succeeded
+Apply · {env}                     ✓ tofu apply succeeded, authentication details in the job summary
 Verify · {env}                    ✓ control-plane assertions passed
 Create application repo           ✓ <owner>/<app_name> created from template   (app phase)
 Create run issue                  ✓ per-run tracking issue opened               (app phase)
@@ -504,6 +522,16 @@ is attached as a workflow artifact named `tfplan-test-webapp-dev`, retained
 for 7 days. The plan is then consumed by the `apply` job, which provisions
 the resources for real, after which `verify` runs control-plane assertions
 against the live infrastructure.
+
+Every environment enforces Microsoft Entra ID sign-in, so the apply job's
+summary ends with an **Authentication** block: the two app registrations and
+their client IDs, the environment's Key Vault (`kv-<app>-<env>`) with the
+names of the five secrets it holds, the `az keyvault secret show` commands
+that fetch the end-to-end test credentials, and how people get access — a
+directory administrator assigns them under Enterprise applications →
+`app-<app>-<env>` → Users and groups (unassigned users get `AADSTS50105`;
+Global Administrators are exempt). Secret values never appear in logs or
+summaries.
 
 When `app_template_repo` is provided, the run also creates the application
 repository from your template, configures its GitHub Environments + variables

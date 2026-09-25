@@ -956,8 +956,40 @@ jobs:
           APP_NAME:    ${{ needs.resolve-inputs.outputs.app_name }}
           ENVIRONMENT: ${{ matrix.environment }}
         run: |
+          # Authentication details come from the template's outputs; they are
+          # empty when auth_enabled=false (and absent on template refs without
+          # Entra authentication). Only names, IDs and commands are printed,
+          # never a secret value.
+          KV_NAME=$(tofu output -raw key_vault_name 2>/dev/null || true)
+          AUTH_CLIENT_ID=$(tofu output -raw auth_client_id 2>/dev/null || true)
+          E2E_CLIENT_ID=$(tofu output -raw e2e_client_id 2>/dev/null || true)
           {
             echo "## Apply · \`$APP_NAME\` / \`$ENVIRONMENT\`"
+            echo ""
+            if [[ -n "$AUTH_CLIENT_ID" ]]; then
+              echo "### Authentication"
+              echo ""
+              echo "Every request is authenticated with Microsoft Entra ID: browsers are redirected to sign-in, API clients without a bearer token get \`401\`."
+              echo ""
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Sign-in app registration | \`app-${APP_NAME}-${ENVIRONMENT}\` — client ID \`${AUTH_CLIENT_ID}\` |"
+              echo "| End-to-end test client | \`app-${APP_NAME}-${ENVIRONMENT}-e2e\` — client ID \`${E2E_CLIENT_ID}\` |"
+              echo "| Key Vault | \`${KV_NAME}\` |"
+              echo "| Secrets | \`easyauth-client-secret\`, \`e2e-tenant-id\`, \`e2e-client-id\`, \`e2e-client-secret\`, \`e2e-scope\` |"
+              echo ""
+              echo "**Granting people access** — a directory administrator assigns them under Entra ID → Enterprise applications → \`app-${APP_NAME}-${ENVIRONMENT}\` → Users and groups. Unassigned users get \`AADSTS50105\`; Global Administrators are exempt by Entra's design."
+              echo ""
+              echo "**End-to-end test credentials** (client-credentials grant; the values never appear in logs or summaries):"
+              echo ""
+              echo '```bash'
+              for S in e2e-tenant-id e2e-client-id e2e-client-secret e2e-scope; do
+                echo "az keyvault secret show --vault-name ${KV_NAME} -n ${S} --query value -o tsv"
+              done
+              echo '```'
+            else
+              echo "Authentication: disabled (\`auth_enabled=false\`)"
+            fi
             echo ""
             echo "<details><summary>Show apply output</summary>"
             echo ""

@@ -5,10 +5,17 @@
 #
 # Usage:
 #   bootstrap-tfstate-azure.sh --app-name <name> --azure-subscription-id <id> \
-#                              --location <region> [--principal-id <object-id>]
+#                              --location <region> \
+#                              [--principal-id <object-id> [--principal-type <ServicePrincipal|User|Group>]]
 #
 # --app-name, --azure-subscription-id and --location are all required; there is
 # no default location.
+#
+# --principal-id grants 'Storage Blob Data Contributor' on the storage account
+# to that object ID: the platform's service principal in CI, or your own user
+# (az ad signed-in-user show --query id -o tsv) for local runs. Role
+# assignments need the principal's type; when --principal-type is omitted the
+# script looks the object ID up in Entra to find out.
 #
 # Outputs (stdout, last lines):
 #   TFSTATE_RESOURCE_GROUP=rg-<app>-tfstate
@@ -30,6 +37,7 @@ APP_NAME=""
 AZURE_SUBSCRIPTION_ID=""
 LOCATION=""           # required — no default, see the check below
 PRINCIPAL_ID=""      # optional: object ID to assign Storage Blob Data Contributor
+PRINCIPAL_TYPE=""    # optional: ServicePrincipal | User | Group; detected when empty
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --azure-subscription-id) AZURE_SUBSCRIPTION_ID="$2"; shift 2 ;;
     --location)              LOCATION="$2";              shift 2 ;;
     --principal-id)          PRINCIPAL_ID="$2";          shift 2 ;;
+    --principal-type)        PRINCIPAL_TYPE="$2";        shift 2 ;;
     *) err "Unknown argument: $1" ;;
   esac
 done
@@ -66,6 +75,13 @@ log "Resource group      : $RESOURCE_GROUP_NAME"
 log "Storage account     : $STORAGE_ACCOUNT_NAME"
 log "Container           : $CONTAINER_NAME"
 [[ -n "$PRINCIPAL_ID" ]] && log "Principal ID  : $PRINCIPAL_ID"
+if [[ -n "$PRINCIPAL_TYPE" ]]; then
+  case "$PRINCIPAL_TYPE" in
+    ServicePrincipal|User|Group) ;;
+    *) err "--principal-type must be ServicePrincipal, User or Group (got '${PRINCIPAL_TYPE}')" ;;
+  esac
+  [[ -n "$PRINCIPAL_ID" ]] || err "--principal-type requires --principal-id"
+fi
 
 # ── Prerequisite check ────────────────────────────────────────────────────────
 
@@ -212,10 +228,23 @@ if [[ -n "$PRINCIPAL_ID" ]]; then
   if [[ -n "$EXISTING" ]]; then
     skip "Role assignment already exists"
   else
+    if [[ -z "$PRINCIPAL_TYPE" ]]; then
+      # The assignment call needs the principal type; resolve it from Entra.
+      if az ad sp show --id "$PRINCIPAL_ID" --only-show-errors -o none 2>/dev/null; then
+        PRINCIPAL_TYPE="ServicePrincipal"
+      elif az ad user show --id "$PRINCIPAL_ID" --only-show-errors -o none 2>/dev/null; then
+        PRINCIPAL_TYPE="User"
+      elif az ad group show --group "$PRINCIPAL_ID" --only-show-errors -o none 2>/dev/null; then
+        PRINCIPAL_TYPE="Group"
+      else
+        err "Could not determine the type of principal '${PRINCIPAL_ID}' (not a service principal, user or group visible to you); pass --principal-type explicitly"
+      fi
+      log "Principal type: ${PRINCIPAL_TYPE} (detected)"
+    fi
     log "Assigning '${ROLE}'…"
     az role assignment create \
       --assignee-object-id  "$PRINCIPAL_ID" \
-      --assignee-principal-type ServicePrincipal \
+      --assignee-principal-type "$PRINCIPAL_TYPE" \
       --role     "$ROLE" \
       --scope    "$SCOPE" \
       --output none
