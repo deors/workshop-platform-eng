@@ -1701,7 +1701,7 @@ jobs:
             CI_ROW="| CI + dev deploy (app repo) | $(fmt "$CI_RUN_URL" "${CI_CONCLUSION:-skipped}")${CI_RUN_ID:+ (run #${CI_RUN_ID})} |"
             ROWS=$(printf '%s\n%s\n%s\n%s' "$PROV_ROW" "$ENV_ROW" "$TRUST_ROW" "$CI_ROW")
             if [[ "$CI_CONCLUSION" == "success" ]]; then
-              CLOSING="The application repository is now ready for development. Merge the template README updates and start iterating — every push to \`main\` will run CI and (on success) deploy to dev."
+              CLOSING="The application repository is now ready for development. Its README is still the template's — replace it with your application's. Every push to \`main\` runs CI and, on success, deploys to dev."
             else
               CI_LINK="${CI_RUN_URL:-the CI run}"
               CLOSING="⚠️ The CI run did not succeed (conclusion: \`${CI_CONCLUSION:-unknown}\`). Investigate ${CI_LINK} and fix the failures before iterating on the application — pushes to \`main\` will keep failing until the issue is resolved. Re-run CI from the app repo's Actions tab once fixed; this platform run does not need to be re-invoked."
