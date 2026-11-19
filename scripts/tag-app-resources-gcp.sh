@@ -31,12 +31,12 @@ Required (flag OR env var):
   --gcp-project-id  <project>  GCP_PROJECT_ID
   --tags-json       <json>     TAGS_JSON
     A JSON object whose keys and values become the labels applied to every
-    resource. GCP label rules apply: keys start with a lowercase letter and,
-    like values, use only lowercase letters, digits, '_' and '-' (max 63
-    chars). The `application` key, if present, must equal the app name, and
-    the `environment` key is not accepted: resources are discovered and
-    grouped by those two labels.
-    Example: '{"app-id":"12345","cost-center":"cc-001","created-by":"user"}'
+    resource. Example: '{"AppId":"12345","Application":"myapp","CreatedBy":"user"}'
+    Keys and values are lowercased to meet GCP label rules (AppId → appid);
+    after that, keys must start with a letter and both may contain only
+    lowercase letters, digits, '_' and '-' (max 63 chars). The `application`
+    key, if present, must equal the app name, and the `environment` key is
+    not accepted: resources are discovered and grouped by those two labels.
 
 Optional (flag OR env var):
   --gcp-region      <region>   GCP_REGION
@@ -56,7 +56,7 @@ Example:
     --app-name       myapp \
     --gcp-project-id my-project-123 \
     --gcp-region     europe-west1 \
-    --tags-json      '{"app-id":"12345","cost-center":"cc-001","created-by":"user"}'
+    --tags-json      '{"AppId":"12345","Application":"myapp","CreatedBy":"user"}'
 USAGE
 }
 
@@ -115,8 +115,30 @@ if ! echo "$TAGS_JSON" | jq -e 'type == "object"' >/dev/null 2>&1; then
   exit 2
 fi
 
-# Label values are strings; numbers and booleans are accepted and stringified.
-LABELS_JSON=$(echo "$TAGS_JSON" | jq -c 'with_entries(.value |= tostring)')
+# GCP labels are lowercase strings: keys and values are lowercased, and
+# numbers and booleans stringified.
+NORMALIZE='to_entries | map({key: (.key | ascii_downcase), value: (.value | tostring | ascii_downcase)})'
+
+COLLISIONS=$(echo "$TAGS_JSON" | jq -r "
+  to_entries | group_by(.key | ascii_downcase)[] | select(length > 1)
+  | \"  \" + (map(.key) | join(\", \"))")
+if [[ -n "$COLLISIONS" ]]; then
+  echo "ERROR: these --tags-json keys collide once lowercased:" >&2
+  printf '%s\n' "$COLLISIONS" >&2
+  exit 2
+fi
+
+LABELS_JSON=$(echo "$TAGS_JSON" | jq -c "${NORMALIZE} | from_entries")
+
+RENAMED=$(echo "$TAGS_JSON" | jq -r '
+  to_entries[]
+  | (.value | tostring) as $v
+  | select(.key != (.key | ascii_downcase) or $v != ($v | ascii_downcase))
+  | "  \(.key)=\($v) → \(.key | ascii_downcase)=\($v | ascii_downcase)"')
+if [[ -n "$RENAMED" ]]; then
+  echo "Normalized to GCP label rules:"
+  printf '%s\n' "$RENAMED"
+fi
 
 TAG_COUNT=$(echo "$LABELS_JSON" | jq 'length')
 if [[ "$TAG_COUNT" -eq 0 ]]; then
@@ -134,10 +156,10 @@ INVALID=$(echo "$LABELS_JSON" | jq -r '
         or (.value | test("^[a-z0-9_-]{0,63}$") | not))
   | "  \(.key)=\(.value)"')
 if [[ -n "$INVALID" ]]; then
-  echo "ERROR: these entries are not valid GCP labels:" >&2
+  echo "ERROR: these entries are not valid GCP labels, even after lowercasing:" >&2
   printf '%s\n' "$INVALID" >&2
-  echo "Keys must start with a lowercase letter; keys and values may contain only" >&2
-  echo "lowercase letters, digits, '_' and '-', up to 63 characters." >&2
+  echo "Keys must start with a letter; keys and values may contain only letters," >&2
+  echo "digits, '_' and '-', up to 63 characters." >&2
   exit 2
 fi
 
