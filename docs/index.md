@@ -491,7 +491,7 @@ These hold across clouds; where a cloud forces an exception it is called out.
   provider imposes a stricter namespace — globally-unique storage names, for
   instance — and each archetype documents its own.
 - **Tags.** Every resource carries `application`, `environment`,
-  `managed-by=terraform`, and `platform=platform-engineering`. On AWS these
+  `managed-by=opentofu`, and `platform=platform-engineering`. On AWS these
   double as the resource-group query; on Azure they are plain metadata.
 - **Secrets.** No long-lived credentials anywhere. GitHub authenticates to the
   cloud via OIDC, and the application uses a workload identity — an Azure
