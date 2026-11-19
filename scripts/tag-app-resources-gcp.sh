@@ -40,10 +40,8 @@ Required (flag OR env var):
 
 Optional (flag OR env var):
   --gcp-region      <region>   GCP_REGION
-    Region of the app's regional resources (Cloud Run, Artifact Registry,
-    Certificate Manager). Falls back to CLOUDSDK_COMPUTE_REGION, then to the
-    gcloud `compute/region` property. Compute addresses and forwarding rules
-    are discovered in every region regardless.
+    Limit discovery to one region (global resources are always included).
+    When omitted, every region is searched.
   --dry-run                    DRYRUN=true
     Print the resources that would be tagged without writing any label.
     Resource discovery (read-only) still runs so you can preview the scope.
@@ -55,7 +53,6 @@ Example:
   scripts/tag-app-resources-gcp.sh \
     --app-name       myapp \
     --gcp-project-id my-project-123 \
-    --gcp-region     europe-west1 \
     --tags-json      '{"AppId":"12345","Application":"myapp","CreatedBy":"user"}'
 USAGE
 }
@@ -84,17 +81,6 @@ MISSING=()
 [[ -z "$APP_NAME"       ]] && MISSING+=("--app-name / APP_NAME")
 [[ -z "$GCP_PROJECT_ID" ]] && MISSING+=("--gcp-project-id / GCP_PROJECT_ID")
 [[ -z "$TAGS_JSON"      ]] && MISSING+=("--tags-json / TAGS_JSON")
-
-# Resolve region: flag → env var → CLOUDSDK_COMPUTE_REGION → gcloud compute/region
-if [[ -z "$GCP_REGION" ]]; then
-  GCP_REGION="${CLOUDSDK_COMPUTE_REGION:-}"
-fi
-if [[ -z "$GCP_REGION" ]] && command -v gcloud >/dev/null; then
-  GCP_REGION=$(gcloud config get-value compute/region 2>/dev/null || true)
-fi
-if [[ -z "$GCP_REGION" ]]; then
-  MISSING+=("--gcp-region / GCP_REGION or CLOUDSDK_COMPUTE_REGION or gcloud compute/region")
-fi
 
 if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "ERROR: missing required value(s):" >&2
@@ -199,7 +185,7 @@ if [[ "$RESOLVED_PROJECT" != "$GCP_PROJECT_ID" ]]; then
   exit 1
 fi
 echo "Project: ${RESOLVED_PROJECT} (as $(gcloud config get-value account 2>/dev/null || echo unknown))"
-echo "Region:  ${GCP_REGION}"
+echo "Region:  ${GCP_REGION:-all}"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -227,7 +213,7 @@ list_json() {
 # receives each item already narrowed to {labels, name, location, display}.
 record() {
   local type="$1" json="$2" shape="$3"
-  jq -r --arg app "$APP_NAME" --arg type "$type" "
+  jq -r --arg app "$APP_NAME" --arg type "$type" --arg region "$GCP_REGION" "
     .[] | ${shape}
     | select(.labels.application == \$app)
     | [(.labels.environment // \"\"), \$type, .name, (.location // \"\"), (.display // .name)]
@@ -309,25 +295,40 @@ tag_resource() {
 echo
 echo "Discovering resources labelled application=${APP_NAME}…"
 
-R="$GCP_REGION"
-if JSON=$(list_json "Cloud Run services" gcloud run services list --region "$R"); then
-  record run-service "$JSON" "{labels: .metadata.labels, name: .metadata.name, location: \"${R}\"}"
+# Regional listings span every location unless --gcp-region narrows them.
+if [[ -n "$GCP_REGION" ]]; then
+  RUN_SCOPE=(--region "$GCP_REGION")
+  AR_SCOPE=(--location "$GCP_REGION")
+  CM_SCOPE=(--location "$GCP_REGION")
+else
+  RUN_SCOPE=()
+  AR_SCOPE=(--location all)
+  CM_SCOPE=(--location -)
 fi
-if JSON=$(list_json "Artifact Registry repositories" gcloud artifacts repositories list --location "$R"); then
-  record artifact-repository "$JSON" "{labels, name: (.name | split(\"/\") | last), location: \"${R}\"}"
+# Location segment of a `projects/<p>/locations/<loc>/…` resource name.
+NAME_SHAPE='{labels, name: (.name | split("/") | last), location: (.name | split("/")[3])}'
+# Compute resources: region basename, or "global"; filtered to --gcp-region.
+COMPUTE_SHAPE='{labels, name, location: (.region // "global" | split("/") | last)}
+  | select($region == "" or .location == "global" or .location == $region)'
+
+if JSON=$(list_json "Cloud Run services" gcloud run services list ${RUN_SCOPE[@]+"${RUN_SCOPE[@]}"}); then
+  record run-service "$JSON" '{labels: .metadata.labels, name: .metadata.name,
+    location: .metadata.labels["cloud.googleapis.com/location"]}'
 fi
-if JSON=$(list_json "Certificate Manager certificates" gcloud certificate-manager certificates list --location "$R"); then
-  record certificate "$JSON" "{labels, name: (.name | split(\"/\") | last), location: \"${R}\"}"
+if JSON=$(list_json "Artifact Registry repositories" gcloud artifacts repositories list "${AR_SCOPE[@]}"); then
+  record artifact-repository "$JSON" "$NAME_SHAPE"
 fi
-if JSON=$(list_json "Certificate Manager DNS authorizations" gcloud certificate-manager dns-authorizations list --location "$R"); then
-  record dns-authorization "$JSON" "{labels, name: (.name | split(\"/\") | last), location: \"${R}\"}"
+if JSON=$(list_json "Certificate Manager certificates" gcloud certificate-manager certificates list "${CM_SCOPE[@]}"); then
+  record certificate "$JSON" "$NAME_SHAPE"
 fi
-# Addresses and forwarding rules are listed across all regions, plus global.
+if JSON=$(list_json "Certificate Manager DNS authorizations" gcloud certificate-manager dns-authorizations list "${CM_SCOPE[@]}"); then
+  record dns-authorization "$JSON" "$NAME_SHAPE"
+fi
 if JSON=$(list_json "compute addresses" gcloud compute addresses list); then
-  record address "$JSON" '{labels, name, location: (.region // "global" | split("/") | last)}'
+  record address "$JSON" "$COMPUTE_SHAPE"
 fi
 if JSON=$(list_json "compute forwarding rules" gcloud compute forwarding-rules list); then
-  record forwarding-rule "$JSON" '{labels, name, location: (.region // "global" | split("/") | last)}'
+  record forwarding-rule "$JSON" "$COMPUTE_SHAPE"
 fi
 if JSON=$(list_json "Cloud DNS managed zones" gcloud dns managed-zones list); then
   record dns-zone "$JSON" '{labels, name}'
